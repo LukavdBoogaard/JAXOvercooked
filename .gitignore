@@ -1,0 +1,21 @@
+.venv/
+jaxmarl
+__pycache__/
+
+# from the jaxmarl repo
+*.py[cod]
+*$py.class
+*.egg-info/
+*.ipynb
+*.DS_Store
+.vscode/
+.ipynb_checkpoints/
+docker/*
+*.pickle
+results/
+docs/
+tmp/
+*-checkpoint.py
+wandb/
+outputs/
+models/
