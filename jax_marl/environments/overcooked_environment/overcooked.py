@@ -5,8 +5,8 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 from jax import lax
-from jaxmarl.environments import MultiAgentEnv
-from jaxmarl.environments import spaces
+from jax_marl.environments import MultiAgentEnv
+from jax_marl.environments import spaces
 from typing import Tuple, Dict
 import chex
 from flax import struct
