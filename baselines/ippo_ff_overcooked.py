@@ -77,6 +77,12 @@ class Transition(NamedTuple):
 
 # 
 def get_rollout(train_state, config):
+    '''
+    Simulates the environment using the policy network
+    @param train_state: the current state of the training
+    @param config: the configuration of the training
+    returns the state sequence
+    '''
     env = jax_marl.make(config["ENV_NAME"], **config["ENV_KWARGS"])
     # env_params = env.default_params
     # env = LogWrapper(env) 
@@ -118,11 +124,26 @@ def get_rollout(train_state, config):
     return state_seq
 
 def batchify(x: dict, agent_list, num_actors):
+    '''
+    converts the observations of a batch of agents into an array of size (num_actors, -1) that can be used by the network
+    @param x: dictionary of observations
+    @param agent_list: list of agents
+    @param num_actors: number of actors
+    returns the batchified observations
+    '''
     x = jnp.stack([x[a] for a in agent_list])
     return x.reshape((num_actors, -1))
 
 
 def unbatchify(x: jnp.ndarray, agent_list, num_envs, num_actors):
+    '''
+    converts the array of size (num_actors, -1) into a dictionary of observations for all agents
+    @param x: array of observations
+    @param agent_list: list of agents
+    @param num_envs: number of environments
+    @param num_actors: number of actors
+    returns the unbatchified observations
+    '''
     x = x.reshape((num_actors, num_envs, -1))
     return {a: x[i] for i, a in enumerate(agent_list)}
 
@@ -167,6 +188,7 @@ def make_train(config):
         init_x = init_x.flatten()
         
         network_params = network.init(_rng, init_x) # initializes the network with the observation space
+
         if config["ANNEAL_LR"]: 
             # anneals the learning rate
             tx = optax.chain(
@@ -178,6 +200,7 @@ def make_train(config):
             tx = optax.chain(
                 optax.clip_by_global_norm(config["MAX_GRAD_NORM"]), 
                 optax.adam(config["LR"], eps=1e-5))
+                
         train_state = TrainState.create(
             apply_fn=network.apply,
             params=network_params,
@@ -218,7 +241,8 @@ def make_train(config):
                 pi, value = network.apply(train_state.params, obs_batch)
 
                 # sample the actions from the policy distribution
-                action = pi.sample(seed=_rng)
+                print(pi.sample(seed=_rng))
+                action = 0 #pi.sample(seed=_rng)
                 log_prob = pi.log_prob(action)
 
                 # format the actions to be compatible with the environment
@@ -249,10 +273,9 @@ def make_train(config):
                 )
                 runner_state = (train_state, env_state, obsv, rng)
                 return runner_state, transition
-
-            runner_state, traj_batch = jax.lax.scan(
-                _env_step, runner_state, None, config["NUM_STEPS"]
-            ) # JAX function that applies the _env_step function NUM_STEPS times to the runner_state 
+            
+            # JAX way to loop over the environment and apply the _env_step function num_steps times
+            runner_state, traj_batch = jax.lax.scan(f=_env_step, init=runner_state, xs=None, length=config["NUM_STEPS"]) 
             
             # CALCULATE ADVANTAGE
             train_state, env_state, last_obs, rng = runner_state # unpack the runner_state
@@ -406,9 +429,7 @@ def make_train(config):
 
         rng, _rng = jax.random.split(rng)
         runner_state = (train_state, env_state, obsv, _rng)
-        runner_state, metric = jax.lax.scan(
-            _update_step, runner_state, None, config["NUM_UPDATES"]
-        )
+        runner_state, metric = jax.lax.scan(f=_update_step, init=runner_state, xs=None, length=config["NUM_UPDATES"])
         return {"runner_state": runner_state, "metrics": metric}
 
     return train
@@ -424,7 +445,7 @@ def main(config):
     rng = jax.random.PRNGKey(30) # random number generator
     num_seeds = 20
 
-    with jax.disable_jit(False):
+    with jax.disable_jit(True):
         train_jit = jax.jit(jax.vmap(make_train(config))) #vectorizes the make_train function over multiple inputs and compiles it with jit
         rngs = jax.random.split(rng, num_seeds) # splits the random number generator into num_seeds number of seeds for parallelization
         out = train_jit(rngs) # runs the train_jit function with the rngs seeds
@@ -452,3 +473,4 @@ def main(config):
 if __name__ == "__main__":
     print("Running main...")
     main()
+
