@@ -431,7 +431,7 @@ def make_train(config):
                 # print('batch: ', batch)
 
                 # reshape the batch to be compatible with the network
-                jax.debug.print('tree leaves: {}', jax.tree_util.tree_leaves(batch))
+                # jax.debug.print('tree leaves: {}', jax.tree_util.tree_leaves(batch))
                 batch = jax.tree_util.tree_map(
                     f=(lambda x: x.reshape((batch_size,) + x.shape[2:])), tree=batch
                 )
@@ -486,12 +486,12 @@ def main(cfg):
 
     rng = jax.random.PRNGKey(30) # random number generator
     num_seeds = 20
-    train_jit = make_train(config)
-    out = train_jit(rng)
-    # with jax.disable_jit(True):
-    #     train_jit = jax.jit(jax.vmap(make_train(config))) #vectorizes the make_train function over multiple inputs and compiles it with jit
-    #     rngs = jax.random.split(rng, num_seeds) # splits the random number generator into num_seeds number of seeds for parallelization
-    #     out = train_jit(rngs) # runs the train_jit function with the rngs seeds
+    # train_jit = make_train(config)
+    # out = train_jit(rng)
+    with jax.disable_jit(True):
+        train_jit = jax.jit(jax.vmap(make_train(config))) #vectorizes the make_train function over multiple inputs and compiles it with jit
+        rngs = jax.random.split(rng, num_seeds) # splits the random number generator into num_seeds number of seeds for parallelization
+        out = train_jit(rngs) # runs the train_jit function with the rngs seeds
     
 
     # Save results to a gif and a plot
