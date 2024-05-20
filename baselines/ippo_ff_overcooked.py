@@ -244,7 +244,88 @@ def _loss_fn(params, traj_batch, gae, targets, network):
     return total_loss, (value_loss, loss_actor, entropy)
 
 
+def _update_minbatch(train_state_and_network, batch_info):
+    '''
+    performs a single update minibatch in the training loop
+    @param train_state: the current state of the training
+    @param batch_info: the information of the batch
+    returns the updated train_state and the total loss
+    '''
+    # unpack the batch information
+    traj_batch, advantages, targets = batch_info
 
+    # here was the definition of the loss function first
+
+    # We need network in this function so we add it to the carry (first argument)
+    train_state, network = train_state_and_network
+
+    jax.debug.print(f"train state: {type(train_state)}")
+
+    # returns a function with the same parameters as loss_fn that calculates the gradient of the loss function
+    grad_fn = jax.value_and_grad(_loss_fn, has_aux=True)
+
+    # call the grad_fn function to get the total loss and the gradients
+    total_loss, grads = grad_fn(train_state.params, traj_batch, advantages, targets, network)
+
+    # apply the gradients to the network
+    train_state = train_state.apply_gradients(grads=grads)
+
+    # Of course we also need to add the network to the carry here
+    return (train_state, network), total_loss
+
+# UPDATE NETWORK
+def _update_epoch(update_state, unused):
+    '''
+    performs a single update epoch in the training loop
+    @param update_state: the current state of the update
+    returns the updated update_state and the total loss
+    '''
+
+    # update minibatch function def
+    
+    # unpack the update_state (because of the scan function)
+    train_state, traj_batch, advantages, targets, rng, network = update_state
+    
+    # set the batch size and check if it is correct
+    batch_size = config["MINIBATCH_SIZE"] * config["NUM_MINIBATCHES"]
+    assert (
+        batch_size == config["NUM_STEPS"] * config["NUM_ACTORS"]
+    ), "batch size must be equal to number of steps * number of actors"
+    
+    # create a batch of the trajectory, advantages, and targets
+    batch = (traj_batch, advantages, targets)            
+    # print('batch: ', batch)
+
+    # reshape the batch to be compatible with the network
+    # jax.debug.print('tree leaves: {}', jax.tree_util.tree_leaves(batch))
+    batch = jax.tree_util.tree_map(
+        f=(lambda x: x.reshape((batch_size,) + x.shape[2:])), tree=batch
+    )
+    # split the random number generator for shuffling the batch
+    rng, _rng = jax.random.split(rng)
+
+    # creates random sequences of numbers from 0 to batch_size, one for each vmap 
+    permutation = jax.random.permutation(_rng, batch_size)
+    # jax.debug.print('permutation: {}', permutation)
+
+    # shuffle the batch
+    shuffled_batch = jax.tree_util.tree_map(
+        lambda x: jnp.take(x, permutation, axis=0), batch
+    ) # outputs a tuple of the batch, advantages, and targets shuffled 
+
+    minibatches = jax.tree_util.tree_map(
+        f=(lambda x: jnp.reshape(x, [config["NUM_MINIBATCHES"], -1] + list(x.shape[1:]))), tree=shuffled_batch,
+    )
+
+    jax.debug.print(f"network: {network}")
+    (train_state, _), total_loss = jax.lax.scan(
+        f=_update_minbatch, 
+        init=(train_state, network), 
+        xs=minibatches
+    )
+    
+    update_state = (train_state, traj_batch, advantages, targets, rng, network)
+    return update_state, total_loss
 
 ############################
 ##### TRAINING FUNCTION #####
@@ -322,7 +403,7 @@ def make_train(config):
             '''
 
             # COLLECT TRAJECTORIES
-            def _env_step(runner_state, unusedm):
+            def _env_step(runner_state, unused):
                 '''
                 selects an action based on the policy, calculates the log probability of the action, 
                 and performs the selected action in the environment
@@ -385,85 +466,20 @@ def make_train(config):
             _, last_val = network.apply(train_state.params, last_obs_batch) # apply the network to the last observation to get the value of the last state
 
             advantages, targets = _calculate_gae(traj_batch, last_val)
-            
-            # UPDATE NETWORK
-            def _update_epoch(update_state, unused):
-                '''
-                performs a single update epoch in the training loop
-                @param update_state: the current state of the update
-                returns the updated update_state and the total loss
-                '''
 
-                def _update_minbatch(train_state, batch_info):
-                    '''
-                    performs a single update minibatch in the training loop
-                    @param train_state: the current state of the training
-                    @param batch_info: the information of the batch
-                    returns the updated train_state and the total loss
-                    '''
-                    # unpack the batch information
-                    traj_batch, advantages, targets = batch_info
+            # _update_epoch definition used to be here
 
-                    # here was the definition of the loss function first
+            update_state = (train_state, traj_batch, advantages, targets, rng, network)
 
-                    # returns a function with the same parameters as loss_fn that calculates the gradient of the loss function
-                    grad_fn = jax.value_and_grad(_loss_fn, has_aux=True)
-
-                    # call the grad_fn function to get the total loss and the gradients
-                    total_loss, grads = grad_fn(train_state.params, traj_batch, advantages, targets, network)
-
-                    # apply the gradients to the network
-                    train_state = train_state.apply_gradients(grads=grads)
-
-                    return train_state, total_loss
-                
-                # unpack the update_state (because of the scan function)
-                train_state, traj_batch, advantages, targets, rng = update_state
-                
-                # set the batch size and check if it is correct
-                batch_size = config["MINIBATCH_SIZE"] * config["NUM_MINIBATCHES"]
-                assert (
-                    batch_size == config["NUM_STEPS"] * config["NUM_ACTORS"]
-                ), "batch size must be equal to number of steps * number of actors"
-                
-                # create a batch of the trajectory, advantages, and targets
-                batch = (traj_batch, advantages, targets)            
-                # print('batch: ', batch)
-
-                # reshape the batch to be compatible with the network
-                # jax.debug.print('tree leaves: {}', jax.tree_util.tree_leaves(batch))
-                batch = jax.tree_util.tree_map(
-                    f=(lambda x: x.reshape((batch_size,) + x.shape[2:])), tree=batch
-                )
-                # split the random number generator for shuffling the batch
-                rng, _rng = jax.random.split(rng)
-
-                # creates random sequences of numbers from 0 to batch_size, one for each vmap 
-                permutation = jax.random.permutation(_rng, batch_size)
-                # jax.debug.print('permutation: {}', permutation)
-
-                # shuffle the batch
-                shuffled_batch = jax.tree_util.tree_map(
-                    lambda x: jnp.take(x, permutation, axis=0), batch
-                ) # outputs a tuple of the batch, advantages, and targets shuffled 
-
-                minibatches = jax.tree_util.tree_map(
-                    f=(lambda x: jnp.reshape(x, [config["NUM_MINIBATCHES"], -1] + list(x.shape[1:]))), tree=shuffled_batch,
-                )
-
-                train_state, total_loss = jax.lax.scan(
-                    _update_minbatch, train_state, minibatches
-                )
-                update_state = (train_state, traj_batch, advantages, targets, rng)
-                return update_state, total_loss
-
-            update_state = (train_state, traj_batch, advantages, targets, rng)
-            update_state, loss_info = jax.lax.scan( 
-                _update_epoch, update_state, None, config["UPDATE_EPOCHS"]
+            update_state, unused_loss_info = jax.lax.scan( 
+                f=_update_epoch, 
+                init=update_state, 
+                xs=None, 
+                length=config["UPDATE_EPOCHS"]
             )
             train_state = update_state[0]
             metric = traj_batch.info
-            rng = update_state[-1]
+            rng = update_state[-2]
             
             runner_state = (train_state, env_state, last_obs, rng)
             return runner_state, metric
