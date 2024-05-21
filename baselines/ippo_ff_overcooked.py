@@ -11,7 +11,7 @@ from flax.linen.initializers import constant, orthogonal
 from typing import Sequence, NamedTuple, Any
 from flax.training.train_state import TrainState
 import distrax
-from gymnax.wrappers.purerl import LogWrapper, FlattenObservationWrapper
+from gymnax.wrappers.purerl import LogWrapper
 import jax_marl
 from jax_marl.wrappers.baselines import LogWrapper
 from jax_marl.environments.overcooked_environment import overcooked_layouts
@@ -259,7 +259,7 @@ def _update_minbatch(train_state_and_network, batch_info):
     # We need network in this function so we add it to the carry (first argument)
     train_state, network = train_state_and_network
 
-    jax.debug.print(f"train state: {type(train_state)}")
+    # jax.debug.print(f"train state: {type(train_state)}")
 
     # returns a function with the same parameters as loss_fn that calculates the gradient of the loss function
     grad_fn = jax.value_and_grad(_loss_fn, has_aux=True)
@@ -293,11 +293,9 @@ def _update_epoch(update_state, unused):
     ), "batch size must be equal to number of steps * number of actors"
     
     # create a batch of the trajectory, advantages, and targets
-    batch = (traj_batch, advantages, targets)            
-    # print('batch: ', batch)
+    batch = (traj_batch, advantages, targets)          
 
     # reshape the batch to be compatible with the network
-    # jax.debug.print('tree leaves: {}', jax.tree_util.tree_leaves(batch))
     batch = jax.tree_util.tree_map(
         f=(lambda x: x.reshape((batch_size,) + x.shape[2:])), tree=batch
     )
@@ -327,50 +325,54 @@ def _update_epoch(update_state, unused):
     update_state = (train_state, traj_batch, advantages, targets, rng, network)
     return update_state, total_loss
 
-############################
-##### TRAINING FUNCTION #####
-############################
+##########################################################
+##########################################################
+#######            TRAINING FUNCTION               #######
+##########################################################
+##########################################################
 
 def make_train(config):
     '''
-    Creates a function that trains the network using PPO
-    @param config: the configuration of the training
+    Creates a 'train' function that trains the network using PPO
+    @param config: the configuration of the algorithm and environment
     returns the training function
     '''
-    env = jax_marl.make(config["ENV_NAME"], **config["ENV_KWARGS"])                                                 #Where does num_agents come from? it is not in the config
 
+    # Create config
+    env = jax_marl.make(config["ENV_NAME"], **config["ENV_KWARGS"])
+
+    # set extra config parameters based on the environment
     config["NUM_ACTORS"] = env.num_agents * config["NUM_ENVS"]
-
-    # print('num_agents:', env.num_agents)
-    # print(f"NUM_ACTORS: {config['NUM_ACTORS']}")
-
-    config["NUM_UPDATES"] = (
-        config["TOTAL_TIMESTEPS"] // config["NUM_STEPS"] // config["NUM_ENVS"] 
-    )
-    config["MINIBATCH_SIZE"] = (
-        config["NUM_ACTORS"] * config["NUM_STEPS"] // config["NUM_MINIBATCHES"]
-    )
+    config["NUM_UPDATES"] = (config["TOTAL_TIMESTEPS"] // config["NUM_STEPS"] // config["NUM_ENVS"])
+    config["MINIBATCH_SIZE"] = (config["NUM_ACTORS"] * config["NUM_STEPS"] // config["NUM_MINIBATCHES"])
     
+    # log the environment
     env = LogWrapper(env)
     
-    # here was the definition of the linear schedule function first
+    # linear schedule definition used to be here
 
     def train(rng):
         '''
         Trains the network using IPPO
-        @param rng: random number generator
+        @param rng: random number generator 
         returns the runner state and the metrics
         '''
-        # INIT NETWORK
+        # Initialize network
         network = ActorCritic(env.action_space().n, activation=config["ACTIVATION"])
-
-        rng, _rng = jax.random.split(rng)
-        init_x = jnp.zeros(env.observation_space().shape) # initializes the observation space to zeros
         
+        # Initialize the observation space 
+        init_x = jnp.zeros(env.observation_space().shape) 
         init_x = init_x.flatten()
+        # print(f"init_x: {init_x}")
         
-        network_params = network.init(_rng, init_x) # initializes the network with the observation space
+        # Initialize the network parameters
+        rng, network_rng = jax.random.split(rng)
 
+        # Initialize the network parameters
+        network_params = network.init(network_rng, init_x)           # VAN DEZE LINE SNAP IK NOG NIKS  
+        # print(f"network_params: {network_params}")
+
+        # Initialize the optimizer
         if config["ANNEAL_LR"]: 
             # anneals the learning rate
             tx = optax.chain(
@@ -381,25 +383,32 @@ def make_train(config):
             # uses the default learning rate
             tx = optax.chain(
                 optax.clip_by_global_norm(config["MAX_GRAD_NORM"]), 
-                optax.adam(config["LR"], eps=1e-5))
-                
+                optax.adam(config["LR"], eps=1e-5)
+            )
+
+
+        # Initialize the training state      
         train_state = TrainState.create(
             apply_fn=network.apply,
             params=network_params,
             tx=tx,
         )
         
-        # INIT ENV
-        rng, _rng = jax.random.split(rng)
-        reset_rng = jax.random.split(_rng, config["NUM_ENVS"])
+        # Initialize environment 
+        rng, env_rng = jax.random.split(rng) # env_rng shape is (1, 2)
+
+        # create config["NUM_ENVS"] seeds for each environment 
+        reset_rng = jax.random.split(env_rng, config["NUM_ENVS"]) # reset_rng shape is ('num_envs', 2)
+
+        # create and reset the environment
         obsv, env_state = jax.vmap(env.reset, in_axes=(0,))(reset_rng)
         
         # TRAIN LOOP
         def _update_step(runner_state, unused):
             '''
             perform a single update step in the training loop
-            @param runner_state: the current state of the runner
-            returns the updated runner state and the metric
+            @param runner_state: the carry state that contains all important training information
+            returns the updated runner state and the metrics 
             '''
 
             # COLLECT TRAJECTORIES
@@ -457,18 +466,29 @@ def make_train(config):
                 runner_state = (train_state, env_state, obsv, rng)
                 return runner_state, transition
             
-            # JAX way to loop over the environment and apply the _env_step function num_steps times
-            runner_state, traj_batch = jax.lax.scan(f=_env_step, init=runner_state, xs=None, length=config["NUM_STEPS"]) 
+            # Apply the _env_step function a series of times, while keeping track of the runner state
+            runner_state, traj_batch = jax.lax.scan(
+                f=_env_step, 
+                init=runner_state, 
+                xs=None, 
+                length=config["NUM_STEPS"]
+            ) 
             
-            # CALCULATE ADVANTAGE
-            train_state, env_state, last_obs, rng = runner_state # unpack the runner_state
-            last_obs_batch = batchify(last_obs, env.agents, config["NUM_ACTORS"]) # format the last observation for the network
-            _, last_val = network.apply(train_state.params, last_obs_batch) # apply the network to the last observation to get the value of the last state
+            # unpack the runner state that is returned after the scan function
+            train_state, env_state, last_obs, rng = runner_state
 
+            # create a batch of the observations that is compatible with the network
+            last_obs_batch = batchify(last_obs, env.agents, config["NUM_ACTORS"])
+
+            # apply the network to the batch of observations to get the value of the last state
+            _, last_val = network.apply(train_state.params, last_obs_batch)
+
+            # calculate the generalized advantage estimate (GAE) for the trajectory batch
             advantages, targets = _calculate_gae(traj_batch, last_val)
 
             # _update_epoch definition used to be here
 
+            # create a tuple to be passed into the jax.lax.scan function
             update_state = (train_state, traj_batch, advantages, targets, rng, network)
 
             update_state, unused_loss_info = jax.lax.scan( 
@@ -477,6 +497,7 @@ def make_train(config):
                 xs=None, 
                 length=config["UPDATE_EPOCHS"]
             )
+
             train_state = update_state[0]
             metric = traj_batch.info
             rng = update_state[-2]
@@ -484,9 +505,20 @@ def make_train(config):
             runner_state = (train_state, env_state, last_obs, rng)
             return runner_state, metric
 
-        rng, _rng = jax.random.split(rng)
-        runner_state = (train_state, env_state, obsv, _rng)
-        runner_state, metric = jax.lax.scan(f=_update_step, init=runner_state, xs=None, length=config["NUM_UPDATES"])
+        rng, train_rng = jax.random.split(rng)
+
+        # initialize a carrier that keeps track of the states and observations of the agents
+        runner_state = (train_state, env_state, obsv, train_rng)
+        
+        # apply the _update_step function a series of times, while keeping track of the state 
+        runner_state, metric = jax.lax.scan(
+            f=_update_step, 
+            init=runner_state, 
+            xs=None, 
+            length=config["NUM_UPDATES"]
+        )
+
+        # Return the runner state after the training loop, and the metric arrays
         return {"runner_state": runner_state, "metrics": metric}
 
     return train
@@ -495,19 +527,28 @@ def make_train(config):
 
 @hydra.main(version_base=None, config_path="config", config_name="ippo_ff_overcooked") 
 def main(cfg):
+    
+    # set the config to global 
     global config
-    config = OmegaConf.to_container(cfg) # Creates a python container of the hydra config
 
+    # convert the config to a dictionary
+    config = OmegaConf.to_container(cfg)
+
+    # set the layout of the environment
     config["ENV_KWARGS"]["layout"] = overcooked_layouts[config["ENV_KWARGS"]["layout"]]
 
+    # set the random number generator and number of seeds
     rng = jax.random.PRNGKey(30) # random number generator
-    num_seeds = 20
-    # train_jit = make_train(config)
-    # out = train_jit(rng)
+    num_seeds = 1
+
+    # run the training loop
     with jax.disable_jit(True):
-        train_jit = jax.jit(jax.vmap(make_train(config))) #vectorizes the make_train function over multiple inputs and compiles it with jit
-        rngs = jax.random.split(rng, num_seeds) # splits the random number generator into num_seeds number of seeds for parallelization
-        out = train_jit(rngs) # runs the train_jit function with the rngs seeds
+        # vectorize the training function
+        train_jit = jax.jit(jax.vmap(make_train(config))) 
+        # split the rng into num_seed seeds
+        rngs = jax.random.split(rng, num_seeds) 
+        # run the train function num_seeds times
+        out = train_jit(rngs)
     
 
     # Save results to a gif and a plot
