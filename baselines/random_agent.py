@@ -6,6 +6,9 @@ import jax # a numerical computing library
 from jax_marl.wrappers.baselines import LogWrapper
 import jax.numpy as jnp 
 from typing import Sequence, NamedTuple, Any
+import numpy as np
+import matplotlib.pyplot as plt
+from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
 
 # Set global variable
 config = None
@@ -35,17 +38,58 @@ def unbatchify(x: jnp.ndarray, agent_list, num_envs, num_actors):
     x = x.reshape((num_actors, num_envs, -1))
     return {a: x[i] for i, a in enumerate(agent_list)}
 
-### HELPER CLASSES ###
+### HELPER CLASS ###
 class Transition(NamedTuple):
     done: jnp.ndarray
     action: jnp.ndarray
-    value: jnp.ndarray
     reward: jnp.ndarray
-    log_prob: jnp.ndarray
     obs: jnp.ndarray
     info: jnp.ndarray
 
 
+def get_rollout(config):
+    '''
+    Function that generates a rollout of the environment
+    @param state: state of the environment
+    @param config: configuration file
+    @return: rollout of the environment
+    '''
+    key = jax.random.PRNGKey(0)
+    key, key_r= jax.random.split(key, 2) 
+
+    # create the environment
+    env = jax_marl.registration.make(config["ENV_NAME"], **config["ENV_KWARGS"])
+    env = LogWrapper(env)
+
+    done = False
+
+    # reset the environment
+    obsv, env_state = env.reset(key_r)
+
+    # intitialze array to store the results with the first state
+    state_seq = [env_state]
+
+    while not done:
+        key, key_a1, key_a2, key_s = jax.random.split(key, 4)
+
+        # get random actions for both agents
+        #TODO: change this so that one agent is also possible
+        action_a1 = jax.random.choice(key_a1, env.action_space().n)
+        action_a2 = jax.random.choice(key_a1, env.action_space().n)
+        actions = {'agent_0': action_a1, 'agent_1': action_a2}
+
+
+        # take a step in the environment
+        obsv, state, reward, done, info = env.step(key_s, env_state, actions)
+
+        done = done["__all__"]
+
+        # append the state to the state sequence
+        state_seq.append(state) 
+    return state_seq
+
+
+### TRAINING FUNCTION ###
 def make_train(config):
     '''
     Function that creates a training function based on the configuration file. The training function 
@@ -90,75 +134,73 @@ def make_train(config):
 
         # create and reset the environment
         obsv, env_state = jax.vmap(env.reset, in_axes=(0,))(reset_rng)
-        
-        # TRAIN LOOP
-        def _update_step(runner_state, unused):
+
+        rng, train_rng = jax.random.split(rng)
+
+
+        def _update_step(runner_state, _):
             '''
-            perform a single update step in the training loop
-            @param runner_state: the carry state that contains all important training information
-            returns the updated runner state and the metrics 
+            Function that updates the runner state
+            @param runner_state: runner state
+            @param _: not used
+            @return: updated runner state
             '''
 
             # COLLECT TRAJECTORIES
             def _env_step(runner_state, unused):
                 '''
-                selects an action randomly, and performs the selected action in the environment
+                selects an action based on the policy, calculates the log probability of the action, 
+                and performs the selected action in the environment
                 @param runner_state: the current state of the runner
                 returns the updated runner state and the transition
                 '''
-                env_state, last_obs, rng = runner_state
+                # unpack the runner state
+                env_state, obsv, rng = runner_state
 
-                # SELECT RANDOM ACTION
-                rng, _rng = jax.random.split(rng)
+                # create a random key for each actor
+                rng, key_a1, key_a2 = jax.random.split(rng, 3)
 
-                # prepare the observations for the network
-                obs_batch = batchify(last_obs, env.agents, config["NUM_ACTORS"])
+                # create a dictionary of actions in all environments for each agent
+                actions = {
+                    'agent_0': jax.random.choice(key_a1, env.action_space().n, shape=(config["NUM_ENVS"],)),
+                    'agent_1': jax.random.choice(key_a2, env.action_space().n, shape=(config["NUM_ENVS"],))
+                }
 
-                # sample random actions
-                actions = {agent: env.action_space().sample(seed=_rng) for agent in last_obs.keys()}
-
-                # format the actions to be compatible with the environment
-                env_act = unbatchify(actions, env.agents, config["NUM_ENVS"], env.num_agents)
-                env_act = {k:v.flatten() for k,v in env_act.items()}
-                
-                # STEP ENV
-                # split the random number generator for stepping the environment
+                # take a step in the environment
                 rng, _rng = jax.random.split(rng)
                 rng_step = jax.random.split(_rng, config["NUM_ENVS"])
-                
+
                 # simultaniously step all environments with the selected actions (parallelized over the number of environments with vmap)
                 obsv, env_state, reward, done, info = jax.vmap(env.step, in_axes=(0,0,0))(
-                    rng_step, env_state, env_act
+                    rng_step, env_state, actions
                 )
 
-                # format the outputs of the environment to a 'transition' structure that can be used for analysis
+                # create a transition object that stores the results of the step
                 info = jax.tree_map(lambda x: x.reshape((config["NUM_ACTORS"])), info)
+                action = batchify(actions, env.agents, config["NUM_ACTORS"]).squeeze()
+                obs_batch = batchify(obsv, env.agents, config["NUM_ACTORS"]).squeeze()
+
                 transition = Transition(
                     batchify(done, env.agents, config["NUM_ACTORS"]).squeeze(), 
-                    actions,
-                    jnp.zeros_like(batchify(reward, env.agents, config["NUM_ACTORS"]).squeeze()), # no value network, so dummy values
+                    action,
                     batchify(reward, env.agents, config["NUM_ACTORS"]).squeeze(),
-                    jnp.zeros_like(batchify(reward, env.agents, config["NUM_ACTORS"]).squeeze()), # no policy network, so dummy log probs
                     obs_batch,
-                    info
+                    info 
                 )
                 runner_state = (env_state, obsv, rng)
                 return runner_state, transition
-            
-            # Apply the _env_step function a series of times, while keeping track of the runner state
-            runner_state, traj_batch = jax.lax.scan(
-                f=_env_step, 
-                init=runner_state, 
-                xs=None, 
-                length=config["NUM_STEPS"]
-            ) 
 
-            metric = traj_batch.info
-            
-            runner_state = (env_state, obsv, rng)
+            runner_state, transition_batch = jax.lax.scan(
+                f=_env_step,
+                init=runner_state,
+                xs=None,
+                length=config["NUM_STEPS"]
+            )
+
+            metric = transition_batch.info
             return runner_state, metric
 
-        rng, train_rng = jax.random.split(rng)
+        
 
         # initialize a carrier that keeps track of the states and observations of the agents
         runner_state = (env_state, obsv, train_rng)
@@ -171,8 +213,8 @@ def make_train(config):
             length=config["NUM_UPDATES"]
         )
 
-        return {"runner_state": runner_state, "metrics": metric} 
-
+        # return the runner state and the metrics
+        return {"runner_state": runner_state, "metrics": metric}
 
     return train
 
@@ -192,15 +234,44 @@ def main(cfg):
     # for reproducibility, we need to create a seed for the random number generator
     rng = jax.random.PRNGKey(30) # 30 is the seed value
     
-    number_of_seeds = 20 # number of seeds to generate
+    number_of_seeds = 1 # number of seeds to generate
 
+    out = make_train(config)(rng)
     # run the model
-    with jax.disable_jit(True): # disable JIT for debugging purposes
-        train_jit = jax.jit(jax.vmap(make_train(config))) # make_train is a function that returns a function
-        prng = jax.random.split(rng, number_of_seeds) # split the random number generator into 20 new keys
-        train_jit(prng) # runs the model 20 times in parallel due to the vmap function
+    # with jax.disable_jit(True): # disable JIT for debugging purposes
+    #     train_jit = jax.jit(jax.vmap(make_train(config))) # make_train is a function that returns a function
+    #     prng = jax.random.split(rng, number_of_seeds) # split the random number generator into 20 new keys
+    #     out = train_jit(prng) # runs the model 20 times in parallel due to the vmap function
 
     print("Done running main...")
+
+    # Save results to a gif and a plot
+    print('** Saving Results **')
+
+    filename = f'{config["ENV_NAME"]}_cramped_room_new'
+    filename = 'random_agent_results'
+
+    # unpack the results
+    # obsv, env_state, reward, done, info = out['runner_state']
+
+    rewards = out['metrics']["returned_episode_returns"].mean(-1).reshape((number_of_seeds, -1)) 
+    reward_mean = rewards.mean(0)  # mean 
+    reward_std = rewards.std(0) / np.sqrt(number_of_seeds)  # standard error
+    
+    plt.plot(reward_mean)
+    plt.fill_between(range(len(reward_mean)), reward_mean - reward_std, reward_mean + reward_std, alpha=0.2)
+    # compute standard error
+    plt.xlabel("Update Step")
+    plt.ylabel("Return")
+    plt.savefig(f'{filename}.png')
+
+    # # animate first seed
+    # train_state = jax.tree_map(lambda x: x[0], out["runner_state"][0])
+    # state_seq = get_rollout(train_state, config)
+    # viz = OvercookedVisualizer()
+    # # agent_view_size is hardcoded as it determines the padding around the layout.
+    # viz.animate(state_seq, agent_view_size=5, filename=f"{filename}.gif")
+
 
 
 if __name__ == "__main__":

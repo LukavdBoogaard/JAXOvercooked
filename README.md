@@ -27,7 +27,7 @@ pip install -r requirements.txt
 
 After this, the IPPO implementation can be run from the base folder:
 ```
-python -m baselines.ippo_ff_overcooked
+python -m baselines.IPPO
 ```
 
 
