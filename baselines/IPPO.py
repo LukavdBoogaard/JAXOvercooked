@@ -11,7 +11,7 @@ from flax.linen.initializers import constant, orthogonal
 from typing import Sequence, NamedTuple, Any
 from flax.training.train_state import TrainState
 import distrax
-from gymnax.wrappers.purerl import LogWrapper
+from gymnax.wrappers.purerl import LogWrapper, FlattenObservationWrapper
 import jax_marl
 from jax_marl.wrappers.baselines import LogWrapper
 from jax_marl.environments.overcooked_environment import overcooked_layouts
@@ -20,6 +20,7 @@ import hydra
 from omegaconf import OmegaConf
 
 import matplotlib.pyplot as plt
+import wandb
 
 # Set the global config variable
 config = None
@@ -425,8 +426,11 @@ def make_train(config):
                 # split the random number generator for action selection
                 rng, _rng = jax.random.split(rng)
 
+
+                # jax.debug.print(f'last observations: {last_obs}') 
                 # prepare the observations for the network
                 obs_batch = batchify(last_obs, env.agents, config["NUM_ACTORS"])
+                # jax.debug.print(f'obs_batch: {obs_batch}')
                 
                 # apply the policy network to the observations to get the suggested actions and their values
                 pi, value = network.apply(train_state.params, obs_batch)
@@ -448,6 +452,7 @@ def make_train(config):
                 obsv, env_state, reward, done, info = jax.vmap(env.step, in_axes=(0,0,0))(
                     rng_step, env_state, env_act
                 )
+
                 # format the outputs of the environment to a 'transition' structure that can be used for analysis
                 info = jax.tree_map(lambda x: x.reshape((config["NUM_ACTORS"])), info)
                 transition = Transition(
@@ -459,6 +464,7 @@ def make_train(config):
                     obs_batch,
                     info 
                 )
+
                 runner_state = (train_state, env_state, obsv, rng)
                 return runner_state, transition
             
@@ -515,6 +521,17 @@ def make_train(config):
             xs=None, 
             length=config["NUM_UPDATES"]
         )
+        print('metric: ', metric)
+
+        # Logging to WandB
+        mean_reward = jax.device_get(jnp.mean(metric['returned_episode_returns']))
+        print('mean_reward: ', mean_reward)
+        mean_reward = mean_reward.astype(float)
+
+        def callback(mean_reward):
+            wandb.log({"mean_reward": mean_reward})
+        
+        jax.experimental.io_callback(callback=callback, result_shape_dtypes=None, args=mean_reward)
 
         # Return the runner state after the training loop, and the metric arrays
         return {"runner_state": runner_state, "metrics": metric}
@@ -525,6 +542,8 @@ def make_train(config):
 
 @hydra.main(version_base=None, config_path="config", config_name="ippo_ff_overcooked") 
 def main(cfg):
+    # check available devices
+    print(jax.devices())
     
     # set the config to global 
     global config
@@ -534,6 +553,12 @@ def main(cfg):
 
     # set the layout of the environment
     config["ENV_KWARGS"]["layout"] = overcooked_layouts[config["ENV_KWARGS"]["layout"]]
+
+    # Initialize wandb
+    wandb.init(
+        project="ippo-overcooked", 
+        config=config
+    )
 
     # set the random number generator and number of seeds
     rng = jax.random.PRNGKey(30) # random number generator
