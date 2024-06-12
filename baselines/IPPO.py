@@ -11,7 +11,7 @@ from flax.linen.initializers import constant, orthogonal
 from typing import Sequence, NamedTuple, Any
 from flax.training.train_state import TrainState
 import distrax
-from gymnax.wrappers.purerl import LogWrapper
+from gymnax.wrappers.purerl import LogWrapper, FlattenObservationWrapper
 import jax_marl
 from jax_marl.wrappers.baselines import LogWrapper
 from jax_marl.environments.overcooked_environment import overcooked_layouts
@@ -20,6 +20,7 @@ import hydra
 from omegaconf import OmegaConf
 
 import matplotlib.pyplot as plt
+import wandb
 
 # Set the global config variable
 config = None
@@ -315,7 +316,7 @@ def _update_epoch(update_state, unused):
         f=(lambda x: jnp.reshape(x, [config["NUM_MINIBATCHES"], -1] + list(x.shape[1:]))), tree=shuffled_batch,
     )
 
-    jax.debug.print(f"network: {network}")
+    # jax.debug.print(f"network: {network}")
     (train_state, _), total_loss = jax.lax.scan(
         f=_update_minbatch, 
         init=(train_state, network), 
@@ -425,15 +426,16 @@ def make_train(config):
                 # split the random number generator for action selection
                 rng, _rng = jax.random.split(rng)
 
+
+                # jax.debug.print(f'last observations: {last_obs}') 
                 # prepare the observations for the network
                 obs_batch = batchify(last_obs, env.agents, config["NUM_ACTORS"])
+                # jax.debug.print(f'obs_batch: {obs_batch}')
                 
                 # apply the policy network to the observations to get the suggested actions and their values
                 pi, value = network.apply(train_state.params, obs_batch)
 
-                # sample the actions from the policy distribution
-                # print(pi.sample(seed=_rng))
-                # action = 0 
+                # sample the actions from the policy distribution 
                 action = pi.sample(seed=_rng)
                 log_prob = pi.log_prob(action)
 
@@ -460,9 +462,9 @@ def make_train(config):
                     batchify(reward, env.agents, config["NUM_ACTORS"]).squeeze(),
                     log_prob,
                     obs_batch,
-                    info
-                    
+                    info 
                 )
+
                 runner_state = (train_state, env_state, obsv, rng)
                 return runner_state, transition
             
@@ -476,12 +478,14 @@ def make_train(config):
             
             # unpack the runner state that is returned after the scan function
             train_state, env_state, last_obs, rng = runner_state
+            # print('last observations: ', last_obs)
 
             # create a batch of the observations that is compatible with the network
             last_obs_batch = batchify(last_obs, env.agents, config["NUM_ACTORS"])
 
             # apply the network to the batch of observations to get the value of the last state
             _, last_val = network.apply(train_state.params, last_obs_batch)
+            # this returns the value network for the last observation batch
 
             # calculate the generalized advantage estimate (GAE) for the trajectory batch
             advantages, targets = _calculate_gae(traj_batch, last_val)
@@ -517,6 +521,17 @@ def make_train(config):
             xs=None, 
             length=config["NUM_UPDATES"]
         )
+        print('metric: ', metric)
+
+        # Logging to WandB
+        mean_reward = jax.device_get(jnp.mean(metric['returned_episode_returns']))
+        print('mean_reward: ', mean_reward)
+        mean_reward = mean_reward.astype(float)
+
+        def callback(mean_reward):
+            wandb.log({"mean_reward": mean_reward})
+        
+        jax.experimental.io_callback(callback=callback, result_shape_dtypes=None, args=mean_reward)
 
         # Return the runner state after the training loop, and the metric arrays
         return {"runner_state": runner_state, "metrics": metric}
@@ -527,6 +542,8 @@ def make_train(config):
 
 @hydra.main(version_base=None, config_path="config", config_name="ippo_ff_overcooked") 
 def main(cfg):
+    # check available devices
+    print(jax.devices())
     
     # set the config to global 
     global config
@@ -536,6 +553,12 @@ def main(cfg):
 
     # set the layout of the environment
     config["ENV_KWARGS"]["layout"] = overcooked_layouts[config["ENV_KWARGS"]["layout"]]
+
+    # Initialize wandb
+    wandb.init(
+        project="ippo-overcooked", 
+        config=config
+    )
 
     # set the random number generator and number of seeds
     rng = jax.random.PRNGKey(30) # random number generator
@@ -560,7 +583,7 @@ def main(cfg):
     
     plt.plot(reward_mean)
     plt.fill_between(range(len(reward_mean)), reward_mean - reward_std, reward_mean + reward_std, alpha=0.2)
-    # compute standard error
+    # compute standard errorƒ
     plt.xlabel("Update Step")
     plt.ylabel("Return")
     plt.savefig(f'{filename}.png')
