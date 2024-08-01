@@ -83,8 +83,11 @@ class LogWrapper(JaxMARLWrapper):
             key, state.env_state, action
         )
         ep_done = done["__all__"]
-        new_episode_return = state.episode_returns + self._batchify_floats(reward)
-        new_episode_length = state.episode_lengths + 1
+
+
+        new_episode_return = state.episode_returns + self._batchify_floats(reward) # reward of the current step
+        new_episode_length = state.episode_lengths + 1  # length of the current episode
+        
         state = LogEnvState(
             env_state=env_state,
             episode_returns=new_episode_return * (1 - ep_done),
@@ -93,7 +96,7 @@ class LogWrapper(JaxMARLWrapper):
             + new_episode_return * ep_done,
             returned_episode_lengths=state.returned_episode_lengths * (1 - ep_done)
             + new_episode_length * ep_done,
-        )
+        ) 
         if self.replace_info:
             info = {}
         info["returned_episode_returns"] = state.returned_episode_returns
