@@ -116,7 +116,8 @@ class Overcooked(MultiAgentEnv):
         state = state.replace(terminal=done)
 
         obs = self.get_obs(state)
-        rewards = {"agent_0": shaped_rewards[0], "agent_1": shaped_rewards[1]}
+        rewards = {"agent_0": reward, "agent_1": reward}
+        shaped_rewards = {"agent_0": shaped_rewards[0], "agent_1": shaped_rewards[1]}
         dones = {"agent_0": done, "agent_1": done, "__all__": done}
 
         return (
@@ -124,7 +125,7 @@ class Overcooked(MultiAgentEnv):
             lax.stop_gradient(state),
             rewards,
             dones,
-            {'shaped_rewards': shaped_rewards},
+            {'shaped_reward': shaped_rewards},
         )
 
     def reset(

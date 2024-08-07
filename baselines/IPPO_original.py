@@ -185,174 +185,13 @@ def unbatchify(x: jnp.ndarray, agent_list, num_envs, num_actors):
     return {a: x[i] for i, a in enumerate(agent_list)}
 
 
-def linear_schedule(count):
-    '''
-    Linearly decays the learning rate depending on the number of minibatches and number of epochs
-    returns the learning rate
-    '''
-    frac = 1.0 - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])) / config["NUM_UPDATES"]
-    return config["LR"] * frac
-
-def _get_advantages(gae_and_next_value, transition):
-    '''
-    calculates the advantage for a single transition
-    @param gae_and_next_value: the GAE and value of the next state
-    @param transition: the transition to calculate the advantage for
-    returns the updated GAE and the advantage
-    '''
-    gae, next_value = gae_and_next_value
-    done, value, reward = (
-        transition.done,
-        transition.value,
-        transition.reward,
-    )
-    delta = reward + config["GAMMA"] * next_value * (1 - done) - value # calculate the temporal difference
-    gae = (
-        delta
-        + config["GAMMA"] * config["GAE_LAMBDA"] * (1 - done) * gae
-    ) # calculate the GAE (used instead of the standard advantage estimate in PPO)
-    return (gae, value), gae
-
-def _calculate_gae(traj_batch, last_val):
-    '''
-    calculates the generalized advantage estimate (GAE) for the trajectory batch
-    @param traj_batch: the trajectory batch
-    @param last_val: the value of the last state
-    returns the advantages and the targets
-    '''
-    # iteratively apply the _get_advantages function to calculate the advantage for each step in the trajectory batch
-    _, advantages = jax.lax.scan(
-        f=_get_advantages,
-        init=(jnp.zeros_like(last_val), last_val),
-        xs=traj_batch,
-        reverse=True,
-        unroll=16,
-    )
-    return advantages, advantages + traj_batch.value
-
-def _loss_fn(params, traj_batch, gae, targets, network):
-    '''
-    calculates the loss of the network
-    @param params: the parameters of the network
-    @param traj_batch: the trajectory batch
-    @param gae: the generalized advantage estimate
-    @param targets: the targets
-    @param network: the network
-    returns the total loss and the value loss, actor loss, and entropy
-    '''
-    # apply the network to the observations in the trajectory batch
-    pi, value = network.apply(params, traj_batch.obs) 
-    log_prob = pi.log_prob(traj_batch.action)
-
-    # calculate critic loss 
-    value_pred_clipped = traj_batch.value + (value - traj_batch.value).clip(-config["CLIP_EPS"], config["CLIP_EPS"]) 
-    value_losses = jnp.square(value - targets) 
-    value_losses_clipped = jnp.square(value_pred_clipped - targets) 
-    value_loss = (0.5 * jnp.maximum(value_losses, value_losses_clipped).mean()) 
-
-    # Calculate actor loss
-    ratio = jnp.exp(log_prob - traj_batch.log_prob) 
-    gae = (gae - gae.mean()) / (gae.std() + 1e-8)  
-    loss_actor_unclipped = ratio * gae 
-    loss_actor_clipped = (
-        jnp.clip(
-            ratio,
-            1.0 - config["CLIP_EPS"],
-            1.0 + config["CLIP_EPS"],
-        )
-        * gae
-    ) 
-
-    loss_actor = -jnp.minimum(loss_actor_unclipped, loss_actor_clipped) # calculate the actor loss as the minimum of the clipped and unclipped actor loss
-    loss_actor = loss_actor.mean() # calculate the mean of the actor loss
-    entropy = pi.entropy().mean() # calculate the entropy of the policy 
-
-    total_loss = (
-        loss_actor
-        + config["VF_COEF"] * value_loss
-        - config["ENT_COEF"] * entropy
-    )
-    return total_loss, (value_loss, loss_actor, entropy)
 
 
-def _update_minbatch(train_state_and_network, batch_info):
-    '''
-    performs a single update minibatch in the training loop
-    @param train_state: the current state of the training
-    @param batch_info: the information of the batch
-    returns the updated train_state and the total loss
-    '''
-    # unpack the batch information
-    traj_batch, advantages, targets = batch_info
 
-    # here was the definition of the loss function first
 
-    # We need network in this function so we add it to the carry (first argument)
-    train_state, network = train_state_and_network
 
-    # returns a function with the same parameters as loss_fn that calculates the gradient of the loss function
-    grad_fn = jax.value_and_grad(_loss_fn, has_aux=True)
 
-    # call the grad_fn function to get the total loss and the gradients
-    total_loss, grads = grad_fn(train_state.params, traj_batch, advantages, targets, network)
 
-    # apply the gradients to the network
-    train_state = train_state.apply_gradients(grads=grads)
-
-    # Of course we also need to add the network to the carry here
-    return (train_state, network), total_loss
-
-# UPDATE NETWORK
-def _update_epoch(update_state, unused):
-    '''
-    performs a single update epoch in the training loop
-    @param update_state: the current state of the update
-    returns the updated update_state and the total loss
-    '''
-
-    # update minibatch function def
-    
-    # unpack the update_state (because of the scan function)
-    train_state, traj_batch, advantages, targets, rng, network = update_state
-    
-    # set the batch size and check if it is correct
-    batch_size = config["MINIBATCH_SIZE"] * config["NUM_MINIBATCHES"]
-    assert (
-        batch_size == config["NUM_STEPS"] * config["NUM_ACTORS"]
-    ), "batch size must be equal to number of steps * number of actors"
-    
-    # create a batch of the trajectory, advantages, and targets
-    batch = (traj_batch, advantages, targets)          
-
-    # reshape the batch to be compatible with the network
-    batch = jax.tree_util.tree_map(
-        f=(lambda x: x.reshape((batch_size,) + x.shape[2:])), tree=batch
-    )
-    # split the random number generator for shuffling the batch
-    rng, _rng = jax.random.split(rng)
-
-    # creates random sequences of numbers from 0 to batch_size, one for each vmap 
-    permutation = jax.random.permutation(_rng, batch_size)
-    # jax.debug.print('permutation: {}', permutation)
-
-    # shuffle the batch
-    shuffled_batch = jax.tree_util.tree_map(
-        lambda x: jnp.take(x, permutation, axis=0), batch
-    ) # outputs a tuple of the batch, advantages, and targets shuffled 
-
-    minibatches = jax.tree_util.tree_map(
-        f=(lambda x: jnp.reshape(x, [config["NUM_MINIBATCHES"], -1] + list(x.shape[1:]))), tree=shuffled_batch,
-    )
-
-    # jax.debug.print(f"network: {network}")
-    (train_state, _), total_loss = jax.lax.scan(
-        f=_update_minbatch, 
-        init=(train_state, network), 
-        xs=minibatches
-    )
-    
-    update_state = (train_state, traj_batch, advantages, targets, rng, network)
-    return update_state, total_loss
 
 ##########################################################
 ##########################################################
@@ -378,7 +217,13 @@ def make_train(config):
     # log the environment
     env = LogWrapper(env, replace_info=False)
     
-    # linear schedule definition used to be here
+    def linear_schedule(count):
+        '''
+        Linearly decays the learning rate depending on the number of minibatches and number of epochs
+        returns the learning rate
+        '''
+        frac = 1.0 - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])) / config["NUM_UPDATES"]
+        return config["LR"] * frac
 
     # REWARD SHAPING IN NEW VERSION
     rew_shaping_anneal = optax.linear_schedule(
@@ -529,13 +374,168 @@ def make_train(config):
             _, last_val = network.apply(train_state.params, last_obs_batch)
             # this returns the value network for the last observation batch
 
+            def _calculate_gae(traj_batch, last_val):
+                '''
+                calculates the generalized advantage estimate (GAE) for the trajectory batch
+                @param traj_batch: the trajectory batch
+                @param last_val: the value of the last state
+                returns the advantages and the targets
+                '''
+                def _get_advantages(gae_and_next_value, transition):
+                    '''
+                    calculates the advantage for a single transition
+                    @param gae_and_next_value: the GAE and value of the next state
+                    @param transition: the transition to calculate the advantage for
+                    returns the updated GAE and the advantage
+                    '''
+                    gae, next_value = gae_and_next_value
+                    done, value, reward = (
+                        transition.done,
+                        transition.value,
+                        transition.reward,
+                    )
+                    delta = reward + config["GAMMA"] * next_value * (1 - done) - value # calculate the temporal difference
+                    gae = (
+                        delta
+                        + config["GAMMA"] * config["GAE_LAMBDA"] * (1 - done) * gae
+                    ) # calculate the GAE (used instead of the standard advantage estimate in PPO)
+                    
+                    return (gae, value), gae
+                
+                # iteratively apply the _get_advantages function to calculate the advantage for each step in the trajectory batch
+                _, advantages = jax.lax.scan(
+                    f=_get_advantages,
+                    init=(jnp.zeros_like(last_val), last_val),
+                    xs=traj_batch,
+                    reverse=True,
+                    unroll=16,
+                )
+                return advantages, advantages + traj_batch.value
+
             # calculate the generalized advantage estimate (GAE) for the trajectory batch
             advantages, targets = _calculate_gae(traj_batch, last_val)
 
-            # _update_epoch definition used to be here
+            # UPDATE NETWORK
+
+            # UPDATE NETWORK
+            def _update_epoch(update_state, unused):
+                '''
+                performs a single update epoch in the training loop
+                @param update_state: the current state of the update
+                returns the updated update_state and the total loss
+                '''
+                
+                def _update_minbatch(train_state, batch_info):
+                    '''
+                    performs a single update minibatch in the training loop
+                    @param train_state: the current state of the training
+                    @param batch_info: the information of the batch
+                    returns the updated train_state and the total loss
+                    '''
+                    # unpack the batch information
+                    traj_batch, advantages, targets = batch_info
+
+                    def _loss_fn(params, traj_batch, gae, targets):
+                        '''
+                        calculates the loss of the network
+                        @param params: the parameters of the network
+                        @param traj_batch: the trajectory batch
+                        @param gae: the generalized advantage estimate
+                        @param targets: the targets
+                        @param network: the network
+                        returns the total loss and the value loss, actor loss, and entropy
+                        '''
+                        # apply the network to the observations in the trajectory batch
+                        pi, value = network.apply(params, traj_batch.obs) 
+                        log_prob = pi.log_prob(traj_batch.action)
+
+                        # calculate critic loss 
+                        value_pred_clipped = traj_batch.value + (value - traj_batch.value).clip(-config["CLIP_EPS"], config["CLIP_EPS"]) 
+                        value_losses = jnp.square(value - targets) 
+                        value_losses_clipped = jnp.square(value_pred_clipped - targets) 
+                        value_loss = (0.5 * jnp.maximum(value_losses, value_losses_clipped).mean()) 
+
+                        # Calculate actor loss
+                        ratio = jnp.exp(log_prob - traj_batch.log_prob) 
+                        gae = (gae - gae.mean()) / (gae.std() + 1e-8)  
+                        loss_actor_unclipped = ratio * gae 
+                        loss_actor_clipped = (
+                            jnp.clip(
+                                ratio,
+                                1.0 - config["CLIP_EPS"],
+                                1.0 + config["CLIP_EPS"],
+                            )
+                            * gae
+                        ) 
+
+                        loss_actor = -jnp.minimum(loss_actor_unclipped, loss_actor_clipped) # calculate the actor loss as the minimum of the clipped and unclipped actor loss
+                        loss_actor = loss_actor.mean() # calculate the mean of the actor loss
+                        entropy = pi.entropy().mean() # calculate the entropy of the policy 
+
+                        total_loss = (
+                            loss_actor
+                            + config["VF_COEF"] * value_loss
+                            - config["ENT_COEF"] * entropy
+                        )
+                        return total_loss, (value_loss, loss_actor, entropy)
+
+                    # returns a function with the same parameters as loss_fn that calculates the gradient of the loss function
+                    grad_fn = jax.value_and_grad(_loss_fn, has_aux=True)
+
+                    # call the grad_fn function to get the total loss and the gradients
+                    total_loss, grads = grad_fn(train_state.params, traj_batch, advantages, targets)
+
+                    # apply the gradients to the network
+                    train_state = train_state.apply_gradients(grads=grads)
+
+                    # Of course we also need to add the network to the carry here
+                    return train_state, total_loss
+                
+                
+                # unpack the update_state (because of the scan function)
+                train_state, traj_batch, advantages, targets, rng = update_state
+                
+                # set the batch size and check if it is correct
+                batch_size = config["MINIBATCH_SIZE"] * config["NUM_MINIBATCHES"]
+                assert (
+                    batch_size == config["NUM_STEPS"] * config["NUM_ACTORS"]
+                ), "batch size must be equal to number of steps * number of actors"
+                
+                # create a batch of the trajectory, advantages, and targets
+                batch = (traj_batch, advantages, targets)          
+
+                # reshape the batch to be compatible with the network
+                batch = jax.tree_util.tree_map(
+                    f=(lambda x: x.reshape((batch_size,) + x.shape[2:])), tree=batch
+                )
+                # split the random number generator for shuffling the batch
+                rng, _rng = jax.random.split(rng)
+
+                # creates random sequences of numbers from 0 to batch_size, one for each vmap 
+                permutation = jax.random.permutation(_rng, batch_size)
+                # jax.debug.print('permutation: {}', permutation)
+
+                # shuffle the batch
+                shuffled_batch = jax.tree_util.tree_map(
+                    lambda x: jnp.take(x, permutation, axis=0), batch
+                ) # outputs a tuple of the batch, advantages, and targets shuffled 
+
+                minibatches = jax.tree_util.tree_map(
+                    f=(lambda x: jnp.reshape(x, [config["NUM_MINIBATCHES"], -1] + list(x.shape[1:]))), tree=shuffled_batch,
+                )
+
+                # jax.debug.print(f"network: {network}")
+                train_state, total_loss = jax.lax.scan(
+                    f=_update_minbatch, 
+                    init=train_state,
+                    xs=minibatches
+                )
+                
+                update_state = (train_state, traj_batch, advantages, targets, rng)
+                return update_state, total_loss
 
             # create a tuple to be passed into the jax.lax.scan function
-            update_state = (train_state, traj_batch, advantages, targets, rng, network)
+            update_state = (train_state, traj_batch, advantages, targets, rng)
 
             update_state, loss_info = jax.lax.scan( 
                 f=_update_epoch, 
@@ -551,7 +551,7 @@ def make_train(config):
             metric["shaped_reward"] = metric["shaped_reward"]["agent_0"]
             metric["shaped_reward_annealed"] = metric["shaped_reward"]*rew_shaping_anneal(current_timestep)
 
-            rng = update_state[-2]
+            rng = update_state[-1]
 
             def callback(metric):
                 wandb.log(
@@ -595,6 +595,9 @@ def make_train(config):
 def main(cfg):
     # check available devices
     print(jax.devices())
+
+    # set the device to the first available GPU
+    jax.config.update("jax_platform_name", "gpu")
     
     # set the config to global 
     global config
@@ -619,7 +622,7 @@ def main(cfg):
         rng = jax.random.PRNGKey(config["SEED"]) # create a pseudo-random key 
         rngs = jax.random.split(rng, config["NUM_SEEDS"]) # split the random key into num_seeds keys
         train_jit = jax.jit(make_train(config)) # JIT compile the training function for faster execution
-        out = jax.vmap(train_jit)(rngs) # Vi
+        out = jax.vmap(train_jit)(rngs) # Vectorize the training function and run it num_seeds times
 
 
     # # run the training loop
@@ -637,6 +640,8 @@ def main(cfg):
     viz = OvercookedVisualizer()
     # agent_view_size is hardcoded as it determines the padding around the layout.
     viz.animate(state_seq, agent_view_size=5, filename=f"{filename}.gif")
+
+    print("Done")
     
     '''
     # Save results to a gif and a plot
