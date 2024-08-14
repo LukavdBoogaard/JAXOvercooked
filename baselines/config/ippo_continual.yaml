@@ -14,12 +14,16 @@
 "ACTIVATION": "tanh"
 "ENV_NAME": "overcooked"
 "ENV_KWARGS": 
-  "layout" : "coord_ring"
+  - {"layout": "cramped_room"}
+  - {"layout": "coord_ring"}
 "ANNEAL_LR": True
 "SEED": 30
 "NUM_SEEDS": 1
+"EVALUATION":
+  "num_rollouts": 10
+  "evaluation_interval": 10000
 
 # Wandb settings
 "WANDB_MODE": "online"
 "ENTITY": ""
-"PROJECT": "ippo_overcooked"
+"PROJECT": "ippo_continual"

@@ -162,6 +162,33 @@ def get_rollout(train_state, config):
 
     return state_seq
 
+def run_evaluation(train_state, config):
+    '''
+    runs an evaluation on a list of different overcooked maps and returns the average reward after 10 runs
+
+    @param train_state: the current state of the training
+    @param config: the configuration taken from the yaml file
+    returns the average reward for each map
+    '''
+    results = {}
+    maps = config["MAPS"]
+    num_rollouts = config["EVALUATION"]["num_rollouts"]
+    
+    for map_name in maps:
+        config["ENV_KWARGS"]["layout"] = map_name  # Set the environment layout to the current map
+        all_rewards = []
+        
+        for _ in range(num_rollouts):
+            state_seq = get_rollout(train_state, config)  # Run a rollout
+            rewards = [step["reward"] for step in state_seq]  # Extract rewards from the rollout
+            total_reward = np.sum(rewards)  # Sum the rewards to get the total reward for this rollout
+            all_rewards.append(total_reward)  # Store the total reward
+        
+        avg_reward = np.mean(all_rewards)  # Compute the average reward across all rollouts for this map
+        results[map_name] = avg_reward  # Store the average reward in the results dictionary
+    
+    return results 
+
 def batchify(x: dict, agent_list, num_actors):
     '''
     converts the observations of a batch of agents into an array of size (num_actors, -1) that can be used by the network
@@ -187,24 +214,19 @@ def unbatchify(x: jnp.ndarray, agent_list, num_envs, num_actors):
     return {a: x[i] for i, a in enumerate(agent_list)}
 
 
-
-
 ##########################################################
 ##########################################################
 #######            TRAINING FUNCTION               #######
 ##########################################################
 ##########################################################
 
-def make_train(config):
+def make_train(config, env, network, params, num_steps, evaluation_interval):
     '''
     Creates a 'train' function that trains the network using PPO
     @param config: the configuration of the algorithm and environment
     returns the training function
     '''
-
-    # Create config
-    print("config: ", config["ENV_KWARGS"])
-    env = jax_marl.make(config["ENV_NAME"], **config["ENV_KWARGS"])
+    # env = jax_marl.make(config["ENV_NAME"], **config["ENV_KWARGS"]) # creates the environment
 
     # set extra config parameters based on the environment
     config["NUM_ACTORS"] = env.num_agents * config["NUM_ENVS"]
@@ -236,19 +258,20 @@ def make_train(config):
         returns the runner state and the metrics
         '''
         # Initialize network
-        network = ActorCritic(env.action_space().n, activation=config["ACTIVATION"])
+        # network = ActorCritic(env.action_space().n, activation=config["ACTIVATION"])
         
         # Initialize the observation space 
-        init_x = jnp.zeros(env.observation_space().shape) 
-        init_x = init_x.flatten()
+        # init_x = jnp.zeros(env.observation_space().shape) 
+        # init_x = init_x.flatten()
         
         # Initialize the network parameters
-        rng, network_rng = jax.random.split(rng)
+        # rng, network_rng = jax.random.split(rng)
 
         # Initialize the network parameters
-        network_params = network.init(network_rng, init_x)           # VAN DEZE LINE SNAP IK NOG NIKS  
+        # network_params = network.init(network_rng, init_x)           # VAN DEZE LINE SNAP IK NOG NIKS  
 
         # Initialize the optimizer
+
         if config["ANNEAL_LR"]: 
             # anneals the learning rate
             tx = optax.chain(
@@ -266,18 +289,18 @@ def make_train(config):
         # Initialize the training state      
         train_state = TrainState.create(
             apply_fn=network.apply,
-            params=network_params,
+            params=params,
             tx=tx,
         )
         
         # Initialize environment 
-        rng, env_rng = jax.random.split(rng) # env_rng shape is (1, 2)
+        rng, env_rng = jax.random.split(rng) 
 
         # create config["NUM_ENVS"] seeds for each environment 
-        reset_rng = jax.random.split(env_rng, config["NUM_ENVS"]) # reset_rng shape is ('num_envs', 2)
+        reset_rng = jax.random.split(env_rng, config["NUM_ENVS"]) 
 
         # create and reset the environment
-        obsv, env_state = jax.vmap(env.reset, in_axes=(0,))(reset_rng) # Creates all environments in parallel
+        obsv, env_state = jax.vmap(env.reset, in_axes=(0,))(reset_rng) 
         
         # TRAIN LOOP
         def _update_step(runner_state, unused):
@@ -588,12 +611,10 @@ def make_train(config):
 
 
 
-@hydra.main(version_base=None, config_path="config", config_name="ippo_ff_overcooked") 
+@hydra.main(version_base=None, config_path="config", config_name="ippo_continual") 
 def main(cfg):
-    # check available devices
+    # make sure that the code is running on the GPU
     print(jax.devices())
-
-    # set the device to the first available GPU
     jax.config.update("jax_platform_name", "gpu")
     
     # set the config to global 
@@ -602,57 +623,73 @@ def main(cfg):
     # convert the config to a dictionary
     config = OmegaConf.to_container(cfg)
 
-    # set the layout of the environment
-    layout = config["ENV_KWARGS"]["layout"]
-    config["ENV_KWARGS"]["layout"] = overcooked_layouts[layout]
-
     # Initialize wandb
     wandb.init(
-        project="ippo-overcooked", 
+        project=config["PROJECT"], 
         config=config, 
-        mode = config["WANDB_MODE"],
-        name = f'ippo_{layout}'
+        mode=config["WANDB_MODE"],
+        name=f'ippo_{config["ENV_KWARGS"][0]}'  # Start with the first map name for naming
     )
+    
+    # create a list of all maps to train on 
+    maps = [env_kwargs["layout"] for env_kwargs in config["ENV_KWARGS"]]
+    print(f"Training on maps: {maps}")
 
-    # Create the training function
-    with jax.disable_jit(False):    
-        rng = jax.random.PRNGKey(config["SEED"]) # create a pseudo-random key 
-        rngs = jax.random.split(rng, config["NUM_SEEDS"]) # split the random key into num_seeds keys
-        train_jit = jax.jit(make_train(config)) # JIT compile the training function for faster execution
-        out = jax.vmap(train_jit)(rngs) # Vectorize the training function and run it num_seeds times
+    # # Create the training function
+    # with jax.disable_jit(False):    
 
+    # Set upt the initial random number generator
+    rng = jax.random.PRNGKey(config["SEED"]) 
+    rngs = jax.random.split(rng, config["NUM_SEEDS"]) 
 
-    filename = f'{config["ENV_NAME"]}_{layout}'
-    train_state = jax.tree_util.tree_map(lambda x: x[0], out["runner_state"][0])
-    state_seq = get_rollout(train_state, config)
-    viz = OvercookedVisualizer()
-    # agent_view_size is hardcoded as it determines the padding around the layout.
-    viz.animate(state_seq, agent_view_size=5, filename=f"{filename}.gif")
+    # Set up the training parameters
+    num_steps = config["TOTAL_TIMESTEPS"]
+    steps_per_map = num_steps // len(maps)
+    evaluation_interval = config["EVALUATION"]["evaluation_interval"]
+
+    for layout_config in config["ENV_KWARGS"]:
+        # Extract the layout name
+        layout_name = layout_config["layout"]
+        print(f"Training on layout: {layout_name}")
+        
+        # Set the layout in the config
+        config["ENV_KWARGS"]["layout"] = overcooked_layouts[layout_name]
+
+    env = jax_marl.make(config["ENV_NAME"], **(config["ENV_KWARGS"][0]))  # Start with the first map
+    network = ActorCritic(env.action_space().n, activation=config["ACTIVATION"])
+
+    # Initialize the network parameters
+    params = network.init(rngs[0], jnp.zeros(env.observation_space().shape).flatten())
+
+    for map_idx, map_name in enumerate(maps):
+        print(f"Training on map: {map_name}")
+        env_args = config["ENV_KWARGS"][map_idx]
+        env = jax_marl.make(config["ENV_NAME"], **env_args)
+
+        # create the training function
+        train_fn = make_train(config, env, network, params, steps_per_map, evaluation_interval)
+        train_jit = jax.jit(train_fn)
+        output = jax.vmap(train_jit)(rngs, env, network)
+
+        # Optional: Evaluate the model after training on each map
+        train_state = jax.tree_util.tree_map(lambda x: x[0], output["runner_state"][0])
+        state_seq = get_rollout(train_state, config)
+        viz = OvercookedVisualizer()
+        viz.animate(state_seq, agent_view_size=5, filename=f"{config['ENV_NAME']}_{map_name}.gif")
+
+        
+        
+     
+
+    # filename = f'{config["ENV_NAME"]}_{maps[0]}'
+    # train_state = jax.tree_util.tree_map(lambda x: x[0], out["runner_state"][0])
+    # state_seq = get_rollout(train_state, config)
+    # viz = OvercookedVisualizer()
+    # # agent_view_size is hardcoded as it determines the padding around the layout.
+    # viz.animate(state_seq, agent_view_size=5, filename=f"{filename}.gif")
 
     print("Done")
     
-    '''
-    # Save results to a gif and a plot
-    print('** Saving Results **')
-    filename = f'{config["ENV_NAME"]}_cramped_room_new'
-    rewards = out["metrics"]["returned_episode_returns"].mean(-1).reshape((num_seeds, -1)) 
-    reward_mean = rewards.mean(0)  # mean 
-    reward_std = rewards.std(0) / np.sqrt(num_seeds)  # standard error
-    
-    plt.plot(reward_mean)
-    plt.fill_between(range(len(reward_mean)), reward_mean - reward_std, reward_mean + reward_std, alpha=0.2)
-    # compute standard errorƒ
-    plt.xlabel("Update Step")
-    plt.ylabel("Return")
-    plt.savefig(f'{filename}.png')
-
-    # animate first seed
-    train_state = jax.tree_map(lambda x: x[0], out["runner_state"][0])
-    state_seq = get_rollout(train_state, config)
-    viz = OvercookedVisualizer()
-    # agent_view_size is hardcoded as it determines the padding around the layout.
-    viz.animate(state_seq, agent_view_size=5, filename=f"{filename}.gif")
-    '''
 
 if __name__ == "__main__":
     print("Running main...")
