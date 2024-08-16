@@ -203,7 +203,6 @@ def make_train(config):
     '''
 
     # Create config
-    print("config: ", config["ENV_KWARGS"])
     env = jax_marl.make(config["ENV_NAME"], **config["ENV_KWARGS"])
 
     # set extra config parameters based on the environment
@@ -412,7 +411,6 @@ def make_train(config):
             # calculate the generalized advantage estimate (GAE) for the trajectory batch
             advantages, targets = _calculate_gae(traj_batch, last_val)
 
-            # UPDATE NETWORK
 
             # UPDATE NETWORK
             def _update_epoch(update_state, unused):

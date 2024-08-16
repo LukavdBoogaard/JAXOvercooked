@@ -1,29 +1,29 @@
-"LR": 2.5e-4
-"NUM_ENVS": 16
-"NUM_STEPS": 128
-"TOTAL_TIMESTEPS": 5e6 #5e6
-"UPDATE_EPOCHS": 4
-"NUM_MINIBATCHES": 4
-"GAMMA": 0.99
-"GAE_LAMBDA": 0.95
-"CLIP_EPS": 0.2
-"ENT_COEF": 0.01
-"VF_COEF": 0.5
-"MAX_GRAD_NORM": 0.5
-"REWARD_SHAPING_HORIZON": 2.5e6
-"ACTIVATION": "tanh"
-"ENV_NAME": "overcooked"
-"ENV_KWARGS": 
+LR: 2.5e-4
+NUM_ENVS: 16
+NUM_STEPS: 128
+TOTAL_TIMESTEPS: 5e6 #5e6
+UPDATE_EPOCHS: 4
+NUM_MINIBATCHES: 4
+GAMMA: 0.99
+GAE_LAMBDA: 0.95
+CLIP_EPS: 0.2
+ENT_COEF: 0.01
+VF_COEF: 0.5
+MAX_GRAD_NORM: 0.5
+REWARD_SHAPING_HORIZON: 2.5e6
+ACTIVATION: "tanh"
+ENV_NAME: "overcooked"
+ENV_KWARGS: 
   - {"layout": "cramped_room"}
   - {"layout": "coord_ring"}
-"ANNEAL_LR": True
-"SEED": 30
-"NUM_SEEDS": 1
-"EVALUATION":
+ANNEAL_LR: True
+SEED: 30
+NUM_SEEDS: 1
+EVALUATION:
   "num_rollouts": 10
   "evaluation_interval": 10000
 
 # Wandb settings
-"WANDB_MODE": "online"
-"ENTITY": ""
-"PROJECT": "ippo_continual"
+WANDB_MODE: "online"
+ENTITY: ""
+PROJECT: "ippo_continual"
