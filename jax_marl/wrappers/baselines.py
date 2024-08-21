@@ -79,6 +79,8 @@ class LogWrapper(JaxMARLWrapper):
         state: LogEnvState,
         action: Union[int, float],
     ) -> Tuple[chex.Array, LogEnvState, float, bool, dict]:
+        
+        # perform the step
         obs, env_state, reward, done, info = self._env.step(
             key, state.env_state, action
         )
