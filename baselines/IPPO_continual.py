@@ -101,6 +101,152 @@ class Transition(NamedTuple):
 ############################
 ##### HELPER FUNCTIONS #####
 ############################
+import jax
+import jax.numpy as jnp
+import wandb
+
+def evaluate_model(train_state, config):
+    '''
+    Evaluates the model by running 10 episodes on all environments and returns the average reward
+    @param train_state: the current state of the training
+    @param config: the configuration of the training
+    returns the average reward
+    '''
+
+    def run_episode(env, key_r, network, network_params):
+        """
+        Run a single episode in the environment.
+        """
+        key, key_s = jax.random.split(key_r)
+        obs, state = env.reset(key_s)
+        state_seq = [state]
+        rewards = []
+        shaped_rewards = []
+        
+        def step_fn(carry, unused_input):
+            key, state, obs, done = carry
+            key, key_a0, key_a1, key_s = jax.random.split(key, 4)
+
+            obs = {k: v.flatten() for k, v in obs.items()}
+            pi_0, _ = network.apply(network_params, obs["agent_0"])
+            pi_1, _ = network.apply(network_params, obs["agent_1"])
+
+            actions = {"agent_0": pi_0.sample(seed=key_a0), "agent_1": pi_1.sample(seed=key_a1)}
+
+            obs, state, reward, done, info = env.step(key_s, state, actions)
+            done = done["__all__"]
+            reward = reward["agent_0"]
+            shaped_reward = info["shaped_reward"]["agent_0"]
+
+            return (key, state, obs, done), (reward, shaped_reward)
+
+        # Use lax.scan to run the episode loop
+        (key, state, obs, done), (rewards, shaped_rewards) = jax.lax.scan(
+            step_fn,
+            (key, state, obs, jnp.array(False)),
+            xs=None,
+            length=1000  
+        )
+
+        total_rewards = jnp.sum(rewards)
+        return total_rewards
+
+    # Loop through all environments
+    all_avg_rewards = []
+    for env_args in config["ENV_KWARGS"]:
+        env_name = env_args["layout"]  # Extract the layout name
+        env = jax_marl.make(config["ENV_NAME"], **env_args)  # Create the environment
+
+        # Initialize the network
+        network = ActorCritic(env.action_space().n, activation=config["ACTIVATION"])
+        key = jax.random.PRNGKey(0)
+        key, key_a = jax.random.split(key)
+        init_x = jnp.zeros(env.observation_space().shape).flatten()  # initializes and flattens observation space
+
+        network.init(key_a, init_x)  # initializes the network with the observation space
+        network_params = train_state.params
+
+        # Run 10 episodes
+        all_rewards = jax.vmap(lambda k: run_episode(env, k, network, network_params))(
+            jax.random.split(key, 5)
+        )
+        
+        avg_reward = jnp.mean(all_rewards)
+        all_avg_rewards.append(avg_reward)
+
+        # Log the results to wandb
+        def callback(avg_reward):
+            wandb.log({
+                f"{env_name}_reward": avg_reward
+            })
+
+        jax.debug.callback(callback, avg_reward)
+
+    return all_avg_rewards
+
+
+def evaluate_models(train_state, config):
+    '''
+    Evaluates the model by running 10 episodes on all environments and returns the average reward
+    @param train_state: the current state of the training
+    @param config: the configuration of the training
+    returns the average reward
+    '''
+
+    # Loop through all environments
+    for env_args in config["ENV_KWARGS"]:
+        env = jax_marl.make(config["ENV_NAME"], **env_args)  # Create the environment
+        env_name = env_args["layout"]  # Extract the layout name
+
+        # Initialize the network
+        network = ActorCritic(env.action_space().n, activation=config["ACTIVATION"])
+        key = jax.random.PRNGKey(0)
+        key, key_r, key_a = jax.random.split(key, 3)
+        init_x = jnp.zeros(env.observation_space().shape) # initializes the observation space to zeros
+        init_x = init_x.flatten() # flattens the observation space to a 1D array
+
+        network.init(key_a, init_x) # initializes the network with the observation space
+        network_params = train_state.params 
+
+        all_rewards = []  # Initialize a list to store the rewards
+
+        # run 10 episodes
+        for _ in range(10):
+            done = False
+            obs, state = env.reset(key_r)
+            state_seq = [state]
+            rewards = []
+            shaped_rewards = []
+
+            while not done:
+                key, key_a0, key_a1, key_s = jax.random.split(key, 4)
+
+                obs = {k: v.flatten() for k, v in obs.items()}
+
+                pi_0, _ = network.apply(network_params, obs["agent_0"])
+                pi_1, _ = network.apply(network_params, obs["agent_1"])
+
+                actions = {"agent_0": pi_0.sample(seed=key_a0), "agent_1": pi_1.sample(seed=key_a1)}
+
+                obs, state, reward, done, info = env.step(key_s, state, actions)
+                done = done["__all__"]
+                rewards.append(reward["agent_0"])
+                shaped_rewards.append(info["shaped_reward"]["agent_0"])
+
+                state_seq.append(state)
+
+            total_rewards = np.sum(rewards)
+            all_rewards.append(total_rewards)
+        
+        avg_reward = np.mean(all_rewards) 
+
+
+        # log the results to wandb
+        wandb.log({
+            f"{env_name}_reward": avg_reward
+        }) 
+
+    return None
 
 def get_rollout(train_state, config):
     '''
@@ -113,10 +259,8 @@ def get_rollout(train_state, config):
     for env_args in config["ENV_KWARGS"]:
         # Create the environment
         env = jax_marl.make(config["ENV_NAME"], **env_args)
+        env_name = env_args["layout"]
 
-    # env = jax_marl.make(config["ENV_NAME"], **config["ENV_KWARGS"])
-    # env_params = env.default_params
-    # env = LogWrapper(env) 
 
         network = ActorCritic(env.action_space().n, activation=config["ACTIVATION"]) # Sets up the network
         key = jax.random.PRNGKey(0) 
@@ -293,7 +437,7 @@ def make_train(config):
         )
 
 
-        def train_on_environment(rng, train_state, env, env_name):
+        def train_on_environment(rng, train_state, env):
             '''
             Trains the network using IPPO
             @param rng: random number generator 
@@ -577,8 +721,7 @@ def make_train(config):
 
                 rng = update_state[-1]
 
-                def callback(metric, env_name):
-                    metric = {f"{env_name}/{key}": value for key, value in metric.items()}
+                def callback(metric):
                     wandb.log(
                         metric
                     )
@@ -590,7 +733,10 @@ def make_train(config):
                 metric["update_step"] = update_step
                 metric["env_step"] = update_step*config["NUM_STEPS"]*config["NUM_ENVS"]
 
-                jax.debug.callback(lambda metric: callback(metric, env_name), metric)
+                jax.debug.callback(callback, metric)
+
+                # run the 'evaluate_model' function 
+                evaluate_model(train_state, config)
                 
                 runner_state = (train_state, env_state, last_obs, update_step, rng)
 
@@ -609,8 +755,10 @@ def make_train(config):
                 length=config["NUM_UPDATES"]
             )
 
+            
+
             # Return the runner state after the training loop, and the metric arrays
-            return runner_state,  metric
+            return runner_state, metric
 
         
         # step 7: loop over the environments and train the network
@@ -632,9 +780,9 @@ def make_train(config):
         # split the random number generator for training on the environments
         rng, _rng = jax.random.split(rng)
 
-        runner_state, metrics1 = train_on_environment(rng, train_state, envs[0], env_name="forced_coord")
+        runner_state, metrics1 = train_on_environment(rng, train_state, envs[0])
         train_state = runner_state[0]
-        train_state, metrics2 = train_on_environment(_rng, train_state, envs[1], env_name="coord_ring")
+        train_state, metrics2 = train_on_environment(_rng, train_state, envs[1])
         
 
         return {"runner_state": train_state, "metrics": [metrics1, metrics2]}
