@@ -105,7 +105,7 @@ import jax
 import jax.numpy as jnp
 import wandb
 
-def evaluate_model(train_state, config):
+def evaluate_model(train_state, config, key):
     '''
     Evaluates the model by running 10 episodes on all environments and returns the average reward
     @param train_state: the current state of the training
@@ -113,43 +113,60 @@ def evaluate_model(train_state, config):
     returns the average reward
     '''
 
-    def run_episode(env, key_r, network, network_params):
+    def run_episode_while(env, key_r, network, network_params, max_steps=1000):
         """
-        Run a single episode in the environment.
+        Run a single episode using jax.lax.while_loop for dynamic episode lengths.
         """
-        key, key_s = jax.random.split(key_r)
-        obs, state = env.reset(key_s)
-        state_seq = [state]
-        rewards = []
-        shaped_rewards = []
-        
-        def step_fn(carry, unused_input):
-            key, state, obs, done = carry
+        class LoopState(NamedTuple):
+            key: Any
+            state: Any
+            obs: Any
+            done: bool
+            total_reward: float
+            step_count: int
+
+        def loop_cond(state: LoopState):
+            return jnp.logical_and(~state.done, state.step_count < max_steps)
+
+        def loop_body(state: LoopState):
+            key, state_env, obs, _, total_reward, step_count = state
             key, key_a0, key_a1, key_s = jax.random.split(key, 4)
 
-            obs = {k: v.flatten() for k, v in obs.items()}
-            pi_0, _ = network.apply(network_params, obs["agent_0"])
-            pi_1, _ = network.apply(network_params, obs["agent_1"])
+            # Flatten observations
+            flat_obs = {k: v.flatten() for k, v in obs.items()}
 
-            actions = {"agent_0": pi_0.sample(seed=key_a0), "agent_1": pi_1.sample(seed=key_a1)}
+            # Get action distributions
+            pi_0, _ = network.apply(network_params, flat_obs["agent_0"])
+            pi_1, _ = network.apply(network_params, flat_obs["agent_1"])
 
-            obs, state, reward, done, info = env.step(key_s, state, actions)
-            done = done["__all__"]
-            reward = reward["agent_0"]
-            shaped_reward = info["shaped_reward"]["agent_0"]
+            # Sample actions
+            actions = {
+                "agent_0": pi_0.sample(seed=key_a0),
+                "agent_1": pi_1.sample(seed=key_a1)
+            }
 
-            return (key, state, obs, done), (reward, shaped_reward)
+            # Environment step
+            next_obs, next_state, reward, done_step, info = env.step(key_s, state_env, actions)
+            done = done_step["__all__"]
+            reward = reward["agent_0"]  # Adjust as needed
+            total_reward += reward
+            step_count += 1
 
-        # Use lax.scan to run the episode loop
-        (key, state, obs, done), (rewards, shaped_rewards) = jax.lax.scan(
-            step_fn,
-            (key, state, obs, jnp.array(False)),
-            xs=None,
-            length=1000  
+            return LoopState(key, next_state, next_obs, done, total_reward, step_count)
+
+        # Initialize
+        key, key_s = jax.random.split(key_r)
+        obs, state = env.reset(key_s)
+        init_state = LoopState(key, state, obs, False, 0.0, 0)
+
+        # Run while loop
+        final_state = jax.lax.while_loop(
+            loop_cond,
+            loop_body,
+            init_state
         )
 
-        total_rewards = jnp.sum(rewards)
-        return total_rewards
+        return final_state.total_reward
 
     # Loop through all environments
     all_avg_rewards = []
@@ -159,7 +176,6 @@ def evaluate_model(train_state, config):
 
         # Initialize the network
         network = ActorCritic(env.action_space().n, activation=config["ACTIVATION"])
-        key = jax.random.PRNGKey(0)
         key, key_a = jax.random.split(key)
         init_x = jnp.zeros(env.observation_space().shape).flatten()  # initializes and flattens observation space
 
@@ -167,21 +183,20 @@ def evaluate_model(train_state, config):
         network_params = train_state.params
 
         # Run 10 episodes
-        all_rewards = jax.vmap(lambda k: run_episode(env, k, network, network_params))(
+        all_rewards = jax.vmap(lambda k: run_episode_while(env, k, network, network_params, 500))(
             jax.random.split(key, 5)
         )
         
         avg_reward = jnp.mean(all_rewards)
         all_avg_rewards.append(avg_reward)
 
-        # Log the results to wandb
-        def callback(avg_reward):
-            wandb.log({
-                f"{env_name}_reward": avg_reward
-            })
+        # # Log the results to wandb
+        # def callback(avg_reward):
+        #     wandb.log({
+        #         f"{env_name}_reward": avg_reward
+        #     })
 
-        jax.debug.callback(callback, avg_reward)
-
+        # jax.debug.callback(callback, avg_reward)
     return all_avg_rewards
 
 
@@ -443,7 +458,20 @@ def make_train(config):
             @param rng: random number generator 
             returns the runner state and the metrics
             '''
-
+            # reset the learning rate and the optimizer
+            if config["ANNEAL_LR"]:
+                tx = optax.chain(
+                    optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
+                    optax.adam(learning_rate=linear_schedule, eps=1e-5),
+                )
+            else:
+                tx = optax.chain(
+                    optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
+                    optax.adam(config["LR"], eps=1e-5)
+                )
+            
+            train_state = train_state.replace(tx=tx)
+            
             # Initialize environment 
             rng, env_rng = jax.random.split(rng) 
 
@@ -721,6 +749,13 @@ def make_train(config):
 
                 rng = update_state[-1]
 
+                # Run the evaluation function
+                rng, eval_rng = jax.random.split(rng)
+                evaluation_rewards = evaluate_model(train_state, config, eval_rng)
+                metric[f"evaluation_reward_env_0"] = evaluation_rewards[0]
+                metric[f"evaluation_reward_env_1"] = evaluation_rewards[1]
+
+
                 def callback(metric):
                     wandb.log(
                         metric
@@ -734,9 +769,6 @@ def make_train(config):
                 metric["env_step"] = update_step*config["NUM_STEPS"]*config["NUM_ENVS"]
 
                 jax.debug.callback(callback, metric)
-
-                # run the 'evaluate_model' function 
-                evaluate_model(train_state, config)
                 
                 runner_state = (train_state, env_state, last_obs, update_step, rng)
 
