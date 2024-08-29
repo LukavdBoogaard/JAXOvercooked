@@ -451,26 +451,53 @@ def make_train(config):
             tx=tx,
         )
 
-
         def train_on_environment(rng, train_state, env):
             '''
             Trains the network using IPPO
             @param rng: random number generator 
             returns the runner state and the metrics
             '''
-            # reset the learning rate and the optimizer
-            if config["ANNEAL_LR"]:
+            
+            network = ActorCritic(temp_env.action_space().n, activation=config["ACTIVATION"])
+
+            # step 3: initialize the network parameters
+            rng, network_rng = jax.random.split(rng)
+            init_x = jnp.zeros(env.observation_space().shape).flatten()
+            network_params = network.init(network_rng, init_x)
+            # step 4: initialize the optimizer
+            if config["ANNEAL_LR"]: 
+                # anneals the learning rate
                 tx = optax.chain(
                     optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
                     optax.adam(learning_rate=linear_schedule, eps=1e-5),
                 )
             else:
+                # uses the default learning rate
                 tx = optax.chain(
-                    optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
+                    optax.clip_by_global_norm(config["MAX_GRAD_NORM"]), 
                     optax.adam(config["LR"], eps=1e-5)
                 )
+
+            # step 5: Initialize the training state      
+            train_state = TrainState.create(
+                apply_fn=network.apply,
+                params=network_params,
+                tx=tx,
+            )
+
+            # # reset the learning rate and the optimizer
+            # if config["ANNEAL_LR"]:
+            #     tx = optax.chain(
+            #         optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
+            #         optax.adam(learning_rate=linear_schedule, eps=1e-5),
+            #     )
+            # else:
+            #     tx = optax.chain(
+            #         optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
+            #         optax.adam(config["LR"], eps=1e-5)
+            #     )
             
-            train_state = train_state.replace(tx=tx)
+            # train_state = train_state.replace(tx=tx)
             
             # Initialize environment 
             rng, env_rng = jax.random.split(rng) 
@@ -710,7 +737,6 @@ def make_train(config):
 
                     # creates random sequences of numbers from 0 to batch_size, one for each vmap 
                     permutation = jax.random.permutation(_rng, batch_size)
-                    # jax.debug.print('permutation: {}', permutation)
 
                     # shuffle the batch
                     shuffled_batch = jax.tree_util.tree_map(
@@ -721,7 +747,6 @@ def make_train(config):
                         f=(lambda x: jnp.reshape(x, [config["NUM_MINIBATCHES"], -1] + list(x.shape[1:]))), tree=shuffled_batch,
                     )
 
-                    # jax.debug.print(f"network: {network}")
                     train_state, total_loss = jax.lax.scan(
                         f=_update_minbatch, 
                         init=train_state,
@@ -746,14 +771,15 @@ def make_train(config):
                 current_timestep = update_step*config["NUM_STEPS"]*config["NUM_ENVS"]
                 metric["shaped_reward"] = metric["shaped_reward"]["agent_0"]
                 metric["shaped_reward_annealed"] = metric["shaped_reward"]*rew_shaping_anneal(current_timestep)
+                metric['learning_rate'] = linear_schedule(current_timestep)
 
                 rng = update_state[-1]
 
                 # Run the evaluation function
-                rng, eval_rng = jax.random.split(rng)
-                evaluation_rewards = evaluate_model(train_state, config, eval_rng)
-                metric[f"evaluation_reward_env_0"] = evaluation_rewards[0]
-                metric[f"evaluation_reward_env_1"] = evaluation_rewards[1]
+                # rng, eval_rng = jax.random.split(rng)
+                # evaluation_rewards = evaluate_model(train_state, config, eval_rng)
+                # metric[f"evaluation_reward_env_0"] = evaluation_rewards[0]
+                # metric[f"evaluation_reward_env_1"] = evaluation_rewards[1]
 
 
                 def callback(metric):
@@ -765,8 +791,19 @@ def make_train(config):
                 update_step = update_step + 1
                 # update the metric with the current timestep
                 metric = jax.tree_util.tree_map(lambda x: x.mean(), metric)
+
+                # If update step is a multiple of 10, run the evaluation function
+                rng, eval_rng = jax.random.split(rng)
+                train_state_eval = jax.tree_util.tree_map(lambda x: x.copy(), train_state)
+                evaluations = jax.lax.cond((update_step % 20) == 0, 
+                                           lambda x: evaluate_model(train_state_eval, config, eval_rng), 
+                                           lambda x: [0.0, 0.0], 
+                                           None)
+
                 metric["update_step"] = update_step
                 metric["env_step"] = update_step*config["NUM_STEPS"]*config["NUM_ENVS"]
+                metric[config["LAYOUT_NAME"][0]] = evaluations[0]
+                metric[config["LAYOUT_NAME"][0]] = evaluations[1]
 
                 jax.debug.callback(callback, metric)
                 
@@ -786,8 +823,6 @@ def make_train(config):
                 xs=None, 
                 length=config["NUM_UPDATES"]
             )
-
-            
 
             # Return the runner state after the training loop, and the metric arrays
             return runner_state, metric

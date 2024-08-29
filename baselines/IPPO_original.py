@@ -136,8 +136,6 @@ def get_rollout(train_state, config):
         # breakpoint()
         obs = {k: v.flatten() for k, v in obs.items()}
 
-        print("obs = ", obs)
-
         pi_0, _ = network.apply(network_params, obs["agent_0"])
         pi_1, _ = network.apply(network_params, obs["agent_1"])
 

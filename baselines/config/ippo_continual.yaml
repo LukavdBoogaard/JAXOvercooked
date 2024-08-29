@@ -14,14 +14,12 @@ REWARD_SHAPING_HORIZON: 2.5e6
 ACTIVATION: "tanh"
 ENV_NAME: "overcooked"
 ENV_KWARGS: 
-  - {"layout": "forced_coord"}
   - {"layout": "coord_ring"}
+  - {"layout": "forced_coord"}
+LAYOUT_NAME: ["coord_ring", "forced_coord"]
 ANNEAL_LR: True
 SEED: 1
 NUM_SEEDS: 1
-EVALUATION:
-  "num_rollouts": 10
-  "evaluation_interval": 10000
 
 # Wandb settings
 WANDB_MODE: "online"
