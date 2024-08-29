@@ -14,9 +14,9 @@ REWARD_SHAPING_HORIZON: 2.5e6
 ACTIVATION: "tanh"
 ENV_NAME: "overcooked"
 ENV_KWARGS: 
-  - {"layout": "coord_ring"}
   - {"layout": "forced_coord"}
-LAYOUT_NAME: ["coord_ring", "forced_coord"]
+  - {"layout": "coord_ring"}
+LAYOUT_NAME: ["forced_coord", "coord_ring"]
 ANNEAL_LR: True
 SEED: 1
 NUM_SEEDS: 1

@@ -781,30 +781,28 @@ def make_train(config):
                 # metric[f"evaluation_reward_env_0"] = evaluation_rewards[0]
                 # metric[f"evaluation_reward_env_1"] = evaluation_rewards[1]
 
-
-                def callback(metric):
-                    wandb.log(
-                        metric
-                    )
-
                 # Update the step counter
                 update_step = update_step + 1
                 # update the metric with the current timestep
                 metric = jax.tree_util.tree_map(lambda x: x.mean(), metric)
 
                 # If update step is a multiple of 10, run the evaluation function
-                rng, eval_rng = jax.random.split(rng)
-                train_state_eval = jax.tree_util.tree_map(lambda x: x.copy(), train_state)
-                evaluations = jax.lax.cond((update_step % 20) == 0, 
-                                           lambda x: evaluate_model(train_state_eval, config, eval_rng), 
-                                           lambda x: [0.0, 0.0], 
-                                           None)
+                # rng, eval_rng = jax.random.split(rng)
+                # train_state_eval = jax.tree_util.tree_map(lambda x: x.copy(), train_state)
+                # evaluations = jax.lax.cond((update_step % 20) == 0, 
+                #                            lambda x: evaluate_model(train_state_eval, config, eval_rng), 
+                #                            lambda x: [0.0, 0.0], 
+                #                            None)
+                # metric[f"evaluation {config['LAYOUT_NAME'][0]}"] = evaluations[0]
+                # metric[f"evaluation {config['LAYOUT_NAME'][1]}"] = evaluations[1]
 
                 metric["update_step"] = update_step
                 metric["env_step"] = update_step*config["NUM_STEPS"]*config["NUM_ENVS"]
-                metric[config["LAYOUT_NAME"][0]] = evaluations[0]
-                metric[config["LAYOUT_NAME"][0]] = evaluations[1]
 
+                def callback(metric):
+                    wandb.log(
+                        metric
+                    )
                 jax.debug.callback(callback, metric)
                 
                 runner_state = (train_state, env_state, last_obs, update_step, rng)
@@ -853,9 +851,6 @@ def make_train(config):
         
 
         return {"runner_state": train_state, "metrics": [metrics1, metrics2]}
-
-    # # Using jax.jit to jit the make_train function
-    # train_state, metrics = train_on_all_envs(train_state, None)
     return train
 
 
