@@ -105,7 +105,8 @@ import jax
 import jax.numpy as jnp
 import wandb
 
-def evaluate_model(train_state, config, key):
+# @jax.jit
+def evaluate_model_unused(train_state, config, key):
     '''
     Evaluates the model by running 10 episodes on all environments and returns the average reward
     @param train_state: the current state of the training
@@ -378,6 +379,10 @@ def unbatchify(x: jnp.ndarray, agent_list, num_envs, num_actors):
     return {a: x[i] for i, a in enumerate(agent_list)}
 
 
+@jax.jit
+
+
+
 ##########################################################
 ##########################################################
 #######            TRAINING FUNCTION               #######
@@ -405,7 +410,7 @@ def make_train(config):
             Linearly decays the learning rate depending on the number of minibatches and number of epochs
             returns the learning rate
             '''
-            frac = 1.0 - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])) / config["NUM_UPDATES"]
+            frac = 1.0 - ((count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])) / config["NUM_UPDATES"])
             return config["LR"] * frac
         
         # step 6: set the extra config parameters based on the environment
@@ -430,6 +435,7 @@ def make_train(config):
         rng, network_rng = jax.random.split(rng)
         init_x = jnp.zeros(env.observation_space().shape).flatten()
         network_params = network.init(network_rng, init_x)
+
           # step 4: initialize the optimizer
         if config["ANNEAL_LR"]: 
             # anneals the learning rate
@@ -457,9 +463,8 @@ def make_train(config):
             @param rng: random number generator 
             returns the runner state and the metrics
             '''
-            
-            network = ActorCritic(temp_env.action_space().n, activation=config["ACTIVATION"])
 
+            network = ActorCritic(env.action_space().n, activation=config["ACTIVATION"])
             # step 3: initialize the network parameters
             rng, network_rng = jax.random.split(rng)
             init_x = jnp.zeros(env.observation_space().shape).flatten()
@@ -771,9 +776,11 @@ def make_train(config):
                 current_timestep = update_step*config["NUM_STEPS"]*config["NUM_ENVS"]
                 metric["shaped_reward"] = metric["shaped_reward"]["agent_0"]
                 metric["shaped_reward_annealed"] = metric["shaped_reward"]*rew_shaping_anneal(current_timestep)
-                metric['learning_rate'] = linear_schedule(current_timestep)
+                metric['learning_rate'] = linear_schedule(update_step*config["NUM_MINIBATCHES"]*config["UPDATE_EPOCHS"])
 
                 rng = update_state[-1]
+
+               
 
                 # Run the evaluation function
                 # rng, eval_rng = jax.random.split(rng)
@@ -786,18 +793,110 @@ def make_train(config):
                 # update the metric with the current timestep
                 metric = jax.tree_util.tree_map(lambda x: x.mean(), metric)
 
-                # If update step is a multiple of 10, run the evaluation function
-                # rng, eval_rng = jax.random.split(rng)
-                # train_state_eval = jax.tree_util.tree_map(lambda x: x.copy(), train_state)
-                # evaluations = jax.lax.cond((update_step % 20) == 0, 
-                #                            lambda x: evaluate_model(train_state_eval, config, eval_rng), 
-                #                            lambda x: [0.0, 0.0], 
-                #                            None)
-                # metric[f"evaluation {config['LAYOUT_NAME'][0]}"] = evaluations[0]
-                # metric[f"evaluation {config['LAYOUT_NAME'][1]}"] = evaluations[1]
+                def evaluate_model(state):
+                    '''
+                    Evaluates the model by running 10 episodes on all environments and returns the average reward
+                    @param train_state: the current state of the training
+                    @param config: the configuration of the training
+                    returns the average reward
+                    '''
 
-                metric["update_step"] = update_step
-                metric["env_step"] = update_step*config["NUM_STEPS"]*config["NUM_ENVS"]
+                    def run_episode_while(env, key_r, network, network_params, max_steps=1000):
+                        """
+                        Run a single episode using jax.lax.while_loop for dynamic episode lengths.
+                        """
+                        class LoopState(NamedTuple):
+                            key: Any
+                            state: Any
+                            obs: Any
+                            done: bool
+                            total_reward: float
+                            step_count: int
+
+                        def loop_cond(state: LoopState):
+                            return jnp.logical_and(~state.done, state.step_count < max_steps)
+
+                        def loop_body(state: LoopState):
+                            key, state_env, obs, _, total_reward, step_count = state
+                            key, key_a0, key_a1, key_s = jax.random.split(key, 4)
+
+                            # Flatten observations
+                            flat_obs = {k: v.flatten() for k, v in obs.items()}
+
+                            # Get action distributions
+                            pi_0, _ = network.apply(network_params, flat_obs["agent_0"])
+                            pi_1, _ = network.apply(network_params, flat_obs["agent_1"])
+
+                            # Sample actions
+                            actions = {
+                                "agent_0": pi_0.sample(seed=key_a0),
+                                "agent_1": pi_1.sample(seed=key_a1)
+                            }
+
+                            # Environment step
+                            next_obs, next_state, reward, done_step, info = env.step(key_s, state_env, actions)
+                            done = done_step["__all__"]
+                            reward = reward["agent_0"]  # Adjust as needed
+                            total_reward += reward
+                            step_count += 1
+
+                            return LoopState(key, next_state, next_obs, done, total_reward, step_count)
+
+                        # Initialize
+                        key, key_s = jax.random.split(key_r)
+                        obs, state = env.reset(key_s)
+                        init_state = LoopState(key, state, obs, False, 0.0, 0)
+
+                        # Run while loop
+                        final_state = jax.lax.while_loop(
+                            loop_cond,
+                            loop_body,
+                            init_state
+                        )
+
+                        return final_state.total_reward
+
+                    # Loop through all environments
+                    train_state, config, key = state
+                    
+                    all_avg_rewards = []
+                    for env_args in config["ENV_KWARGS"]:
+                        env_name = env_args["layout"]  # Extract the layout name
+                        env = jax_marl.make(config["ENV_NAME"], **env_args)  # Create the environment
+
+                        # Initialize the network
+                        network = ActorCritic(env.action_space().n, activation=config["ACTIVATION"])
+                        key, key_a = jax.random.split(key)
+                        init_x = jnp.zeros(env.observation_space().shape).flatten()  # initializes and flattens observation space
+
+                        network.init(key_a, init_x)  # initializes the network with the observation space
+                        network_params = train_state.params
+
+                        # Run 10 episodes
+                        all_rewards = jax.vmap(lambda k: run_episode_while(env, k, network, network_params, 500))(
+                            jax.random.split(key, 5)
+                        )
+                        
+                        avg_reward = jnp.mean(all_rewards)
+                        all_avg_rewards.append(avg_reward)
+
+                    return all_avg_rewards
+
+
+                # If update step is a multiple of 20, run the evaluation function
+                rng, eval_rng = jax.random.split(rng)
+                train_state_eval = jax.tree_util.tree_map(lambda x: x.copy(), train_state)
+
+                state = (train_state_eval, eval_rng)
+                evaluations = jax.lax.cond((update_step % 20) == 0, 
+                                           lambda x: evaluate_model(state), 
+                                           lambda x: [0.0, 0.0], 
+                                           None)
+                metric[f"evaluation {config['LAYOUT_NAME'][0]}"] = evaluations[0]
+                metric[f"evaluation {config['LAYOUT_NAME'][1]}"] = evaluations[1]
+
+                # metric["update_step"] = update_step
+                # metric["env_step"] = update_step*config["NUM_STEPS"]*config["NUM_ENVS"]
 
                 def callback(metric):
                     wandb.log(
@@ -806,7 +905,7 @@ def make_train(config):
                 jax.debug.callback(callback, metric)
                 
                 runner_state = (train_state, env_state, last_obs, update_step, rng)
-
+ 
                 return runner_state, metric
 
             rng, train_rng = jax.random.split(rng)
@@ -822,32 +921,20 @@ def make_train(config):
                 length=config["NUM_UPDATES"]
             )
 
+            
+
             # Return the runner state after the training loop, and the metric arrays
             return runner_state, metric
 
         
         # step 7: loop over the environments and train the network
-       
-        # Sequentially apply the train function across environments using lax.scan
-        # def apply_train(carry, env_index):
-        #     rng, train_state = carry
-        #     env = envs[env_index]
-        #     train_state, metrics = train_on_environment(rng, train_state, env)
-        #     return (rng, train_state), metrics
-        
-        # # Call lax.scan over the environments
-        # (rng, train_state), metrics = jax.lax.scan(
-        #     f=apply_train, 
-        #     init=(rng, train_state), 
-        #     xs=jnp.array([0,1])
-        # )
 
         # split the random number generator for training on the environments
-        rng, _rng = jax.random.split(rng)
+        rng, env1_rng, env2_rng = jax.random.split(rng, 3)
 
-        runner_state, metrics1 = train_on_environment(rng, train_state, envs[0])
+        runner_state, metrics1 = train_on_environment(env1_rng, train_state, envs[0])
         train_state = runner_state[0]
-        train_state, metrics2 = train_on_environment(_rng, train_state, envs[1])
+        train_state, metrics2 = train_on_environment(env2_rng, train_state, envs[1])
         
 
         return {"runner_state": train_state, "metrics": [metrics1, metrics2]}
@@ -888,6 +975,7 @@ def main(cfg):
     # Create the training function
     with jax.disable_jit(False):    
         rng = jax.random.PRNGKey(config["SEED"]) # create a pseudo-random key 
+        jax.debug.print("prng key = {rng}", rng=rng)
         rngs = jax.random.split(rng, config["NUM_SEEDS"]) # split the random key into num_seeds keys
         train_jit = jax.jit(make_train(config)) # JIT compile the training function for faster execution
         out = jax.vmap(train_jit)(rngs) # Vectorize the training function and run it num_seeds times

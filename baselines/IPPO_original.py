@@ -1,7 +1,8 @@
 """ 
 Based on PureJaxRL Implementation of PPO
 """
-
+import os
+os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
 import jax
 import jax.numpy as jnp
 import flax.linen as nn
@@ -218,6 +219,7 @@ def make_train(config):
         Linearly decays the learning rate depending on the number of minibatches and number of epochs
         returns the learning rate
         '''
+        
         frac = 1.0 - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])) / config["NUM_UPDATES"]
         return config["LR"] * frac
 
@@ -236,13 +238,14 @@ def make_train(config):
         '''
         # Initialize network
         network = ActorCritic(env.action_space().n, activation=config["ACTIVATION"])
+
+        # Initialize the network parameters
+        rng, network_rng = jax.random.split(rng)
         
         # Initialize the observation space 
         init_x = jnp.zeros(env.observation_space().shape) 
         init_x = init_x.flatten()
         
-        # Initialize the network parameters
-        rng, network_rng = jax.random.split(rng)
 
         # Initialize the network parameters
         network_params = network.init(network_rng, init_x)           # VAN DEZE LINE SNAP IK NOG NIKS  
@@ -269,14 +272,12 @@ def make_train(config):
             tx=tx,
         )
         
-        # Initialize environment 
-        rng, env_rng = jax.random.split(rng) # env_rng shape is (1, 2)
-
-        # create config["NUM_ENVS"] seeds for each environment 
-        reset_rng = jax.random.split(env_rng, config["NUM_ENVS"]) # reset_rng shape is ('num_envs', 2)
+        # split the rng key into config["NUM_ENVS"] keys
+        rng, env_rng = jax.random.split(rng)
+        reset_rng = jax.random.split(env_rng, config["NUM_ENVS"])
 
         # create and reset the environment
-        obsv, env_state = jax.vmap(env.reset, in_axes=(0,))(reset_rng) # Creates all environments in parallel
+        obsv, env_state = jax.vmap(env.reset, in_axes=(0,))(reset_rng) 
         
         # TRAIN LOOP
         def _update_step(runner_state, unused):
@@ -296,10 +297,10 @@ def make_train(config):
                 '''
                 # Unpack the runner state
                 train_state, env_state, last_obs, update_step, rng = runner_state
+                # jax.debug.print("last_obs: {last_obs}", last_obs=last_obs)
 
                 # SELECT ACTION
-                # split the random number generator for action selection
-                rng, _rng = jax.random.split(rng)
+                rng, sample_rng = jax.random.split(rng)
 
                 # prepare the observations for the network
                 obs_batch = batchify(last_obs, env.agents, config["NUM_ACTORS"])
@@ -307,9 +308,11 @@ def make_train(config):
                 
                 # apply the policy network to the observations to get the suggested actions and their values
                 pi, value = network.apply(train_state.params, obs_batch)
+                # print("pi shape", pi.logits.shape)
+                # print("value shape", value.shape)
 
                 # sample the actions from the policy distribution 
-                action = pi.sample(seed=_rng)
+                action = pi.sample(seed=sample_rng)
                 log_prob = pi.log_prob(action)
 
                 # format the actions to be compatible with the environment
@@ -354,16 +357,10 @@ def make_train(config):
                 length=config["NUM_STEPS"]
             )  
 
-
-            # print the info of the trajectory batch
-            # print('traj_batch.info: ', traj_batch.info)
-
-            
             # unpack the runner state that is returned after the scan function
             train_state, env_state, last_obs, update_step, rng = runner_state
-            # print('last observations: ', last_obs)
 
-            # create a batch of the observations that is compatible with the network
+            # reshape the last observation to be compatible with the network
             last_obs_batch = batchify(last_obs, env.agents, config["NUM_ACTORS"])
 
             # apply the network to the batch of observations to get the value of the last state
@@ -380,7 +377,7 @@ def make_train(config):
                 def _get_advantages(gae_and_next_value, transition):
                     '''
                     calculates the advantage for a single transition
-                    @param gae_and_next_value: the GAE and value of the next state
+                    @param gae_and_next_value: the GAE and value of the previous state
                     @param transition: the transition to calculate the advantage for
                     returns the updated GAE and the advantage
                     '''
@@ -483,7 +480,6 @@ def make_train(config):
                     # apply the gradients to the network
                     train_state = train_state.apply_gradients(grads=grads)
 
-                    # Of course we also need to add the network to the carry here
                     return train_state, total_loss
                 
                 
@@ -508,7 +504,6 @@ def make_train(config):
 
                 # creates random sequences of numbers from 0 to batch_size, one for each vmap 
                 permutation = jax.random.permutation(_rng, batch_size)
-                # jax.debug.print('permutation: {}', permutation)
 
                 # shuffle the batch
                 shuffled_batch = jax.tree_util.tree_map(
@@ -540,18 +535,15 @@ def make_train(config):
             )
 
             train_state = update_state[0]
-            # metric = traj_batch.info
-            metric = info
+            metric = info #returned from the env_step function
+
+            # calculate the current timestep
+    
             current_timestep = update_step*config["NUM_STEPS"]*config["NUM_ENVS"]
+
+            # add the shaped rewards to the metric
             metric["shaped_reward"] = metric["shaped_reward"]["agent_0"]
             metric["shaped_reward_annealed"] = metric["shaped_reward"]*rew_shaping_anneal(current_timestep)
-
-            rng = update_state[-1]
-
-            def callback(metric):
-                wandb.log(
-                    metric
-                )
 
             # Update the step counter
             update_step = update_step + 1
@@ -560,8 +552,17 @@ def make_train(config):
             metric["update_step"] = update_step
             metric["env_step"] = update_step*config["NUM_STEPS"]*config["NUM_ENVS"]
 
+            # add the learning rate to the metric
+            metric["lr"] = linear_schedule(update_step*config["UPDATE_EPOCHS"]*config["NUM_MINIBATCHES"])
+
+            def callback(metric):
+                wandb.log(
+                    metric
+                )
+                
             jax.debug.callback(callback, metric)
             
+            rng = update_state[-1]
             runner_state = (train_state, env_state, last_obs, update_step, rng)
 
             return runner_state, metric
@@ -588,12 +589,12 @@ def make_train(config):
 
 @hydra.main(version_base=None, config_path="config", config_name="ippo_ff_overcooked") 
 def main(cfg):
+    # set the device to the first available GPU
+    jax.config.update("jax_platform_name", "gpu")
+
     # check available devices
     print(jax.devices())
 
-    # set the device to the first available GPU
-    jax.config.update("jax_platform_name", "gpu")
-    
     # set the config to global 
     global config
 
