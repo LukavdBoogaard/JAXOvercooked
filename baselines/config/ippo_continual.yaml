@@ -18,7 +18,7 @@ ENV_KWARGS:
   - {"layout": "coord_ring"}
 LAYOUT_NAME: ["forced_coord", "coord_ring"]
 ANNEAL_LR: True
-SEED: 1
+SEED: 30
 NUM_SEEDS: 1
 
 # Wandb settings
