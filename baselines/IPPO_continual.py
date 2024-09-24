@@ -664,6 +664,9 @@ def make_train(config):
                 # calculate the generalized advantage estimate (GAE) for the trajectory batch
                 advantages, targets = _calculate_gae(traj_batch, last_val)
 
+                print("advantages: ", advantages.shape)
+                print("targets: ", targets.shape)
+
                 # UPDATE NETWORK
                 def _update_epoch(update_state, unused):
                     '''
@@ -704,8 +707,12 @@ def make_train(config):
 
                             # Calculate actor loss
                             ratio = jnp.exp(log_prob - traj_batch.log_prob) 
-                            gae = (gae - gae.mean()) / (gae.std() + 1e-8)  
+                            jax.debug.print("ratio = {ratio}", ratio=ratio)
+                            jax.debug.print("gae before = {gae}", gae=gae)
+                            gae = (gae - gae.mean()) / (gae.std() + 1e-8) 
+                            jax.debug.print("gae after = {gae}", gae=gae)
                             loss_actor_unclipped = ratio * gae 
+                            jax.debug.print("loss actor unclipped = {loss_actor_unclipped}", loss_actor_unclipped=loss_actor_unclipped)
                             loss_actor_clipped = (
                                 jnp.clip(
                                     ratio,
@@ -714,9 +721,11 @@ def make_train(config):
                                 )
                                 * gae
                             ) 
+                            jax.debug.print("loss actor clipped = {loss_actor_clipped}", loss_actor_clipped=loss_actor_clipped)
 
                             loss_actor = -jnp.minimum(loss_actor_unclipped, loss_actor_clipped) # calculate the actor loss as the minimum of the clipped and unclipped actor loss
                             loss_actor = loss_actor.mean() # calculate the mean of the actor loss
+                            jax.debug.print("loss actor = {loss_actor}", loss_actor=loss_actor)
                             entropy = pi.entropy().mean() # calculate the entropy of the policy 
 
                             total_loss = (
@@ -796,7 +805,15 @@ def make_train(config):
                 metric["shaped_reward"] = metric["shaped_reward"]["agent_0"]
                 metric["shaped_reward_annealed"] = metric["shaped_reward"]*rew_shaping_anneal(current_timestep)
                 metric['learning_rate'] = linear_schedule(update_step*config["NUM_MINIBATCHES"]*config["UPDATE_EPOCHS"])
-                metric["total_loss"] = loss_info.mean()
+                # jax.debug.print("loss info: {loss_info}", loss_info=loss_info)
+                # metric["total_loss"] = loss_info.mean()
+                total_loss, (value_loss, loss_actor, entropy) = loss_info
+                metric["total_loss"] = total_loss.mean()
+                metric["value_loss"] = value_loss.mean()
+                metric["actor_loss"] = loss_actor.mean()
+                metric["entropy"] = entropy.mean()
+                metric['advantages'] = advantages.mean()    
+                metric['targets'] = targets.mean()
 
                 # Update the step counter
                 update_step = update_step + 1

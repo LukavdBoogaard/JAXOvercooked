@@ -357,6 +357,13 @@ def make_train(config):
                 length=config["NUM_STEPS"]
             )  
 
+            # jax.debug.print("traj_batch: {traj_batch}", traj_batch=traj_batch)
+            # jax.debug.print("info: {info}", info=info)
+            # #print the shape of the trajectory batch
+            # print("traj_batch shape", traj_batch.obs.shape)
+            # print("traj_batch value shape", traj_batch.value.shape)
+            
+
             # unpack the runner state that is returned after the scan function
             train_state, env_state, last_obs, update_step, rng = runner_state
 
@@ -408,6 +415,10 @@ def make_train(config):
             # calculate the generalized advantage estimate (GAE) for the trajectory batch
             advantages, targets = _calculate_gae(traj_batch, last_val)
 
+            # jax.debug.print("targets mean: {mean}, std: {std}, min: {min}, max: {max}", 
+            #     mean=targets.mean(), std=targets.std(), min=targets.min(), max=targets.max())
+
+
 
             # UPDATE NETWORK
             def _update_epoch(update_state, unused):
@@ -441,6 +452,10 @@ def make_train(config):
                         pi, value = network.apply(params, traj_batch.obs) 
                         log_prob = pi.log_prob(traj_batch.action)
 
+                        # jax.debug.print("value: {value}", value=value)
+                        # print("value shape", value.shape)
+                        # print('pi shape', pi.logits.shape)
+
                         # calculate critic loss 
                         value_pred_clipped = traj_batch.value + (value - traj_batch.value).clip(-config["CLIP_EPS"], config["CLIP_EPS"]) 
                         value_losses = jnp.square(value - targets) 
@@ -449,8 +464,12 @@ def make_train(config):
 
                         # Calculate actor loss
                         ratio = jnp.exp(log_prob - traj_batch.log_prob) 
-                        gae = (gae - gae.mean()) / (gae.std() + 1e-8)  
+                        jax.debug.print("ratio = {ratio}", ratio=ratio)
+                        jax.debug.print("gae before = {gae}", gae=gae)
+                        gae = (gae - gae.mean()) / (gae.std() + 1e-8) 
+                        jax.debug.print("gae after = {gae}", gae=gae)
                         loss_actor_unclipped = ratio * gae 
+                        jax.debug.print("loss actor unclipped = {loss_actor_unclipped}", loss_actor_unclipped=loss_actor_unclipped)
                         loss_actor_clipped = (
                             jnp.clip(
                                 ratio,
@@ -459,9 +478,11 @@ def make_train(config):
                             )
                             * gae
                         ) 
+                        jax.debug.print("loss actor clipped = {loss_actor_clipped}", loss_actor_clipped=loss_actor_clipped)
 
                         loss_actor = -jnp.minimum(loss_actor_unclipped, loss_actor_clipped) # calculate the actor loss as the minimum of the clipped and unclipped actor loss
                         loss_actor = loss_actor.mean() # calculate the mean of the actor loss
+                        jax.debug.print("loss actor = {loss_actor}", loss_actor=loss_actor)
                         entropy = pi.entropy().mean() # calculate the entropy of the policy 
 
                         total_loss = (
@@ -469,6 +490,7 @@ def make_train(config):
                             + config["VF_COEF"] * value_loss
                             - config["ENT_COEF"] * entropy
                         )
+
                         return total_loss, (value_loss, loss_actor, entropy)
 
                     # returns a function with the same parameters as loss_fn that calculates the gradient of the loss function
@@ -554,6 +576,13 @@ def make_train(config):
 
             # add the learning rate to the metric
             metric["lr"] = linear_schedule(update_step*config["UPDATE_EPOCHS"]*config["NUM_MINIBATCHES"])
+            total_loss, (value_loss, loss_actor, entropy) = loss_info
+            metric["total_loss"] = total_loss.mean()
+            metric["value_loss"] = value_loss.mean()
+            metric["actor_loss"] = loss_actor.mean()
+            metric["entropy"] = entropy.mean()
+            metric['advantages'] = advantages.mean()    
+            metric['targets'] = targets.mean()
 
             def callback(metric):
                 wandb.log(
