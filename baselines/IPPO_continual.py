@@ -566,8 +566,6 @@ def make_train(config):
                     # format the actions to be compatible with the environment
                     env_act = unbatchify(action, env.agents, config["NUM_ENVS"], env.num_agents)
                     env_act = {k:v.flatten() for k,v in env_act.items()}
-
-                    # jax.debug.print("env_act: {env_act}", env_act=env_act)
                     
                     # STEP ENV
                     # split the random number generator for stepping the environment
@@ -588,9 +586,6 @@ def make_train(config):
 
                     # add the shaped reward to the normal reward 
                     reward = jax.tree_util.tree_map(lambda x,y: x+y * rew_shaping_anneal(current_timestep), reward, info["shaped_reward"])
-
-                    # format the outputs of the environment to a 'transition' structure that can be used for analysis
-                    # info = jax.tree_map(lambda x: x.reshape((config["NUM_ACTORS"])), info) # this is gone in the new version
 
                     transition = Transition(
                         batchify(done, env.agents, config["NUM_ACTORS"]).squeeze(), 
@@ -614,7 +609,6 @@ def make_train(config):
 
                 # unpack the runner state that is returned after the scan function
                 train_state, env_state, last_obs, update_step, rng = runner_state
-                # print('last observations: ', last_obs)
 
                 # create a batch of the observations that is compatible with the network
                 last_obs_batch = batchify(last_obs, env.agents, config["NUM_ACTORS"])
@@ -741,15 +735,17 @@ def make_train(config):
                         # call the grad_fn function to get the total loss and the gradients
                         total_loss, grads = grad_fn(train_state.params, traj_batch, advantages, targets)
 
+                        loss_information = total_loss, grads
+
                         # apply the gradients to the network
                         train_state = train_state.apply_gradients(grads=grads)
 
                         # Of course we also need to add the network to the carry here
-                        return train_state, total_loss
+                        return train_state, loss_information
                     
                     
                     # unpack the update_state (because of the scan function)
-                    train_state, traj_batch, advantages, targets, rng = update_state
+                    train_state, traj_batch, advantages, targets, _, rng = update_state
                     
                     # set the batch size and check if it is correct
                     batch_size = config["MINIBATCH_SIZE"] * config["NUM_MINIBATCHES"]
@@ -779,17 +775,18 @@ def make_train(config):
                         f=(lambda x: jnp.reshape(x, [config["NUM_MINIBATCHES"], -1] + list(x.shape[1:]))), tree=shuffled_batch,
                     )
 
-                    train_state, total_loss = jax.lax.scan(
+                    train_state, loss_information = jax.lax.scan(
                         f=_update_minbatch, 
                         init=train_state,
                         xs=minibatches
                     )
                     
-                    update_state = (train_state, traj_batch, advantages, targets, rng)
+                    total_loss, grads = loss_information 
+                    update_state = (train_state, traj_batch, advantages, targets, grads, rng)
                     return update_state, total_loss
 
                 # create a tuple to be passed into the jax.lax.scan function
-                update_state = (train_state, traj_batch, advantages, targets, rng)
+                update_state = (train_state, traj_batch, advantages, targets, _, rng)
 
                 update_state, loss_info = jax.lax.scan( 
                     f=_update_epoch, 
@@ -798,15 +795,15 @@ def make_train(config):
                     length=config["UPDATE_EPOCHS"]
                 )
 
-                train_state = update_state[0]
+                # unpack update_state
+                train_state, traj_batch, advantages, targets, grads, rng = update_state
                 metric = info
+                metric["grads"] = grads
                 current_timestep = update_step*config["NUM_STEPS"]*config["NUM_ENVS"]
 
                 metric["shaped_reward"] = metric["shaped_reward"]["agent_0"]
                 metric["shaped_reward_annealed"] = metric["shaped_reward"]*rew_shaping_anneal(current_timestep)
                 metric['learning_rate'] = linear_schedule(update_step*config["NUM_MINIBATCHES"]*config["UPDATE_EPOCHS"])
-                # jax.debug.print("loss info: {loss_info}", loss_info=loss_info)
-                # metric["total_loss"] = loss_info.mean()
                 total_loss, (value_loss, loss_actor, entropy) = loss_info
                 metric["total_loss"] = total_loss.mean()
                 metric["value_loss"] = value_loss.mean()
