@@ -549,21 +549,36 @@ def make_train(config):
             metric["update_step"] = update_step
             metric["env_step"] = update_step*config["NUM_STEPS"]*config["NUM_ENVS"]
 
-            # add the learning rate to the metric
-            metric["lr"] = linear_schedule(update_step*config["UPDATE_EPOCHS"]*config["NUM_MINIBATCHES"])
-            total_loss, (value_loss, loss_actor, entropy) = loss_info
-            metric["total_loss"] = total_loss.mean()
-            metric["value_loss"] = value_loss.mean()
-            metric["actor_loss"] = loss_actor.mean()
-            metric["entropy"] = entropy.mean()
-            metric['advantages'] = advantages.mean()    
-            metric['targets'] = targets.mean()
+            # General section
+            metric["General/update_step"] = update_step
+            metric["General/env_step"] = update_step * config["NUM_STEPS"] * config["NUM_ENVS"]
+            metric["General/lr"] = linear_schedule(update_step * config["UPDATE_EPOCHS"] * config["NUM_MINIBATCHES"])
 
+            # Losses section
+            total_loss, (value_loss, loss_actor, entropy) = loss_info
+            metric["Losses/total_loss_mean"] = total_loss.mean()
+            metric["Losses/total_loss_max"] = total_loss.max()
+            metric["Losses/total_loss_min"] = total_loss.min()
+            metric["Losses/total_loss_var"] = total_loss.var()
+
+            metric["Losses/value_loss"] = value_loss.mean()
+            metric["Losses/actor_loss"] = loss_actor.mean()
+            metric["Losses/entropy"] = entropy.mean()
+
+            # Rewards section
+            metric["Rewards/shaped_reward"] = metric["shaped_reward"]
+            metric["Rewards/shaped_reward_annealed"] = metric["shaped_reward_annealed"]
+            metric["Rewards/episode_returns"] = metric["returned_episode_returns"]
+
+            # Advantages and Targets section
+            metric["Advantage_Targets/advantages"] = advantages.mean()
+            metric["Advantage_Targets/targets"] = targets.mean()
+            
+            # Callback to log all sections at once
             def callback(metric):
-                wandb.log(
-                    metric
-                )
-                
+                wandb.log(metric)
+
+            # Use jax.debug.callback to log the metrics
             jax.debug.callback(callback, metric)
             
             rng = update_state[-1]

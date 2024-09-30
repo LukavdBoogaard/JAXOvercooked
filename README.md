@@ -27,7 +27,8 @@ pip install -r requirements.txt
 
 After this, the IPPO implementation can be run from the base folder:
 ```
-python -m baselines.IPPO
+python -m baselines.IPPO_original
+python -m baselines.IPPO_continual
 ```
 
 

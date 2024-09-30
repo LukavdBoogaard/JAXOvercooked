@@ -8,6 +8,7 @@ import flax.linen as nn
 import numpy as np
 import optax
 from flax.linen.initializers import constant, orthogonal
+from flax.core.frozen_dict import FrozenDict, freeze, unfreeze
 from typing import Sequence, NamedTuple, Any
 from flax.training.train_state import TrainState
 import distrax
@@ -201,7 +202,6 @@ def evaluate_model(train_state, config, key):
         # jax.debug.callback(callback, avg_reward)
     return all_avg_rewards
 
-
 def evaluate_models(train_state, config):
     '''
     Evaluates the model by running 10 episodes on all environments and returns the average reward
@@ -384,7 +384,6 @@ def batchify(x: dict, agent_list, num_actors):
     x = jnp.stack([x[a] for a in agent_list])
     return x.reshape((num_actors, -1))
 
-
 def unbatchify(x: jnp.ndarray, agent_list, num_envs, num_actors):
     '''
     converts the array of size (num_actors, -1) into a dictionary of observations for all agents
@@ -398,6 +397,98 @@ def unbatchify(x: jnp.ndarray, agent_list, num_envs, num_actors):
     return {a: x[i] for i, a in enumerate(agent_list)}
 
 
+def pad_observation_space(config):
+    '''
+    Pads the observation space of the environment to be compatible with the network
+    @param envs: the environment
+    returns the padded observation space
+    '''
+    envs = []
+    for env_args in config["ENV_KWARGS"]:
+            # Create the environment
+            env = jax_marl.make(config["ENV_NAME"], **env_args)
+            envs.append(env)
+
+    # find the environment with the largest observation space
+    max_width, max_height = 0, 0
+    for env in envs:
+        max_width = max(max_width, env.layout["width"])
+        max_height = max(max_height, env.layout["height"])
+    
+    # pad the observation space of all environments to be the same size by adding extra walls to the outside
+    padded_envs = []
+    for env in envs:
+        env = unfreeze(env.layout)  # Unfreezes the environment to allow for modifications
+
+        # calculate the padding needed
+        width_diff = max_width - env["width"]
+        height_diff = max_height - env["height"]
+
+        # determine the padding needed on each side
+        left = width_diff // 2
+        right = width_diff - left
+        top = height_diff // 2
+        bottom = height_diff - top
+
+        width = env["width"]
+
+        # Adjust the indices of the observation space to match the padded observation space
+        def adjust_indices(indices):
+            '''
+            adjusts the indices of the observation space
+            @param indices: the indices to adjust
+            returns the adjusted indices
+            '''
+            adjusted_indices = []
+
+            for idx in indices:
+                # Compute the row and column (in 1D)
+                row = idx // width  # Get row in the original grid
+                col = idx % width   # Get column in the original grid
+                
+                # Shift the row and column by the padding
+                new_row = row + top
+                new_col = col + left
+                
+                # Convert back to 1D index in the new padded grid
+                new_idx = new_row * (width + left + right) + new_col
+                adjusted_indices.append(new_idx)
+            
+            return jnp.array(adjusted_indices)
+        
+        # adjust the indices of the observation space to account for the new walls
+        env["wall_idx"] = adjust_indices(env["wall_idx"])
+        env["agent_idx"] = adjust_indices(env["agent_idx"])
+        env["goal_idx"] = adjust_indices(env["goal_idx"])
+        env["plate_pile_idx"] = adjust_indices(env["plate_pile_idx"])
+        env["onion_pile_idx"] = adjust_indices(env["onion_pile_idx"])
+        env["pot_idx"] = adjust_indices(env["pot_idx"])
+
+        # pad the observation space with walls
+        padded_wall_idx = list(env["wall_idx"])  # Existing walls
+        
+        # Top and bottom padding
+        for y in range(top):
+            for x in range(max_width):
+                padded_wall_idx.append(y * max_width + x)  # Top row walls
+
+        for y in range(max_height - bottom, max_height):
+            for x in range(max_width):
+                padded_wall_idx.append(y * max_width + x)  # Bottom row walls
+
+        # Left and right padding
+        for y in range(top, max_height - bottom):
+            for x in range(left):
+                padded_wall_idx.append(y * max_width + x)  # Left column walls
+
+            for x in range(max_width - right, max_width):
+                padded_wall_idx.append(y * max_width + x)  # Right column walls
+
+        env["wall_idx"] = jnp.array(padded_wall_idx)
+
+        padded_envs.append(freeze(env)) # Freeze the environment to prevent further modifications
+
+    return padded_envs
 
 ##########################################################
 ##########################################################
@@ -414,16 +505,18 @@ def make_train(config):
     def train(rng):
 
         # step 1: loop through all the environments and 'create' them (i.e. transform from a string to an object)
+        padded_envs = pad_observation_space(config)
+
         envs = []
-        for env_args in config["ENV_KWARGS"]:
-            # Create the environment
-            env = jax_marl.make(config["ENV_NAME"], **env_args)
+        for env_layout in padded_envs:
+            env = jax_marl.make(config["ENV_NAME"], layout=env_layout)
             env = LogWrapper(env, replace_info=False)
             envs.append(env)
-
-        # step 6: set the extra config parameters based on the environment
+        
+    
         # set extra config parameters based on the environment
-        config["NUM_ACTORS"] = env.num_agents * config["NUM_ENVS"]
+        temp_env = envs[0]
+        config["NUM_ACTORS"] = temp_env.num_agents * config["NUM_ENVS"]
         config["NUM_UPDATES"] = (config["TOTAL_TIMESTEPS"] // config["NUM_STEPS"] // config["NUM_ENVS"])
         config["MINIBATCH_SIZE"] = (config["NUM_ACTORS"] * config["NUM_STEPS"] // config["NUM_MINIBATCHES"])
 
@@ -444,7 +537,6 @@ def make_train(config):
         )
 
         # step 2: initialize the network using the first environment
-        temp_env = envs[0]
         network = ActorCritic(temp_env.action_space().n, activation=config["ACTIVATION"])
 
         # step 3: initialize the network parameters
