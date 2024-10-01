@@ -15,8 +15,8 @@ ACTIVATION: "tanh"
 ENV_NAME: "overcooked"
 ENV_KWARGS: 
   - {"layout": "forced_coord"}
-  - {"layout": "coord_ring"}
-LAYOUT_NAME: ["forced_coord", "coord_ring"]
+  - {"layout": "cramped_room"}
+LAYOUT_NAME: ["forced_coord", "cramped_room"]
 ANNEAL_LR: True
 SEED: 30
 NUM_SEEDS: 1

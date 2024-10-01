@@ -442,15 +442,15 @@ def pad_observation_space(config):
             adjusted_indices = []
 
             for idx in indices:
-                # Compute the row and column (in 1D)
-                row = idx // width  # Get row in the original grid
-                col = idx % width   # Get column in the original grid
+                # Compute the row and column of the index
+                row = idx // width
+                col = idx % width
                 
                 # Shift the row and column by the padding
                 new_row = row + top
                 new_col = col + left
                 
-                # Convert back to 1D index in the new padded grid
+                # Compute the new index
                 new_idx = new_row * (width + left + right) + new_col
                 adjusted_indices.append(new_idx)
             
@@ -487,6 +487,8 @@ def pad_observation_space(config):
         env["wall_idx"] = jnp.array(padded_wall_idx)
 
         padded_envs.append(freeze(env)) # Freeze the environment to prevent further modifications
+    
+    
 
     return padded_envs
 
@@ -750,9 +752,6 @@ def make_train(config):
                 # calculate the generalized advantage estimate (GAE) for the trajectory batch
                 advantages, targets = _calculate_gae(traj_batch, last_val)
 
-                print("advantages: ", advantages.shape)
-                print("targets: ", targets.shape)
-
                 # UPDATE NETWORK
                 def _update_epoch(update_state, unused):
                     '''
@@ -793,12 +792,8 @@ def make_train(config):
 
                             # Calculate actor loss
                             ratio = jnp.exp(log_prob - traj_batch.log_prob) 
-                            jax.debug.print("ratio = {ratio}", ratio=ratio)
-                            jax.debug.print("gae before = {gae}", gae=gae)
                             gae = (gae - gae.mean()) / (gae.std() + 1e-8) 
-                            jax.debug.print("gae after = {gae}", gae=gae)
                             loss_actor_unclipped = ratio * gae 
-                            jax.debug.print("loss actor unclipped = {loss_actor_unclipped}", loss_actor_unclipped=loss_actor_unclipped)
                             loss_actor_clipped = (
                                 jnp.clip(
                                     ratio,
@@ -807,11 +802,9 @@ def make_train(config):
                                 )
                                 * gae
                             ) 
-                            jax.debug.print("loss actor clipped = {loss_actor_clipped}", loss_actor_clipped=loss_actor_clipped)
 
                             loss_actor = -jnp.minimum(loss_actor_unclipped, loss_actor_clipped) # calculate the actor loss as the minimum of the clipped and unclipped actor loss
                             loss_actor = loss_actor.mean() # calculate the mean of the actor loss
-                            jax.debug.print("loss actor = {loss_actor}", loss_actor=loss_actor)
                             entropy = pi.entropy().mean() # calculate the entropy of the policy 
 
                             total_loss = (
@@ -837,7 +830,7 @@ def make_train(config):
                     
                     
                     # unpack the update_state (because of the scan function)
-                    train_state, traj_batch, advantages, targets, _, rng = update_state
+                    train_state, traj_batch, advantages, targets, rng = update_state
                     
                     # set the batch size and check if it is correct
                     batch_size = config["MINIBATCH_SIZE"] * config["NUM_MINIBATCHES"]
@@ -874,11 +867,12 @@ def make_train(config):
                     )
                     
                     total_loss, grads = loss_information 
-                    update_state = (train_state, traj_batch, advantages, targets, grads, rng)
+                    avg_grads = jax.tree_util.tree_map(lambda x: jnp.mean(x, axis=0), grads)
+                    update_state = (train_state, traj_batch, advantages, targets, rng)
                     return update_state, total_loss
 
                 # create a tuple to be passed into the jax.lax.scan function
-                update_state = (train_state, traj_batch, advantages, targets, _, rng)
+                update_state = (train_state, traj_batch, advantages, targets, rng)
 
                 update_state, loss_info = jax.lax.scan( 
                     f=_update_epoch, 
@@ -888,9 +882,8 @@ def make_train(config):
                 )
 
                 # unpack update_state
-                train_state, traj_batch, advantages, targets, grads, rng = update_state
+                train_state, traj_batch, advantages, targets, rng = update_state
                 metric = info
-                metric["grads"] = grads
                 current_timestep = update_step*config["NUM_STEPS"]*config["NUM_ENVS"]
 
                 metric["shaped_reward"] = metric["shaped_reward"]["agent_0"]
