@@ -41,8 +41,9 @@ class Transition(NamedTuple):
 ##### HELPER FUNCTIONS #####
 ############################
 
-def sample_discrete_action(key, num_actions):
-    """Samples a discrete action based on the number of possible actions."""
+def sample_discrete_action(key, action_space):
+    """Samples a discrete action based on the action space provided."""
+    num_actions = action_space.n
     return jax.random.randint(key, (1,), 0, num_actions)
 
 def get_rollout(config):
@@ -65,13 +66,17 @@ def get_rollout(config):
     while not done:
         key, key_a0, key_a1, key_s = jax.random.split(key, 4)
 
-        # Sample random actions for each agent assuming a discrete action space
-        action_0 = sample_discrete_action(key_a0, env.action_space.n)  # Adjust env.action_space.n as needed
-        action_1 = sample_discrete_action(key_a1, env.action_space.n)
+        # Get the action space for each agent (assuming it's uniform and doesn't depend on the agent_id)
+        action_space_0 = env.action_space()  # Assuming the method needs to be called
+        action_space_1 = env.action_space()  # Same as above since action_space is uniform
+
+        # Sample actions for each agent
+        action_0 = sample_discrete_action(key_a0, action_space_0).item()  # Ensure it's a Python scalar
+        action_1 = sample_discrete_action(key_a1, action_space_1).item()
 
         actions = {
-            "agent_0": action_0.item(),  # Converting to standard Python int if needed
-            "agent_1": action_1.item()
+            "agent_0": action_0,
+            "agent_1": action_1
         }
 
         # STEP ENV
@@ -81,13 +86,6 @@ def get_rollout(config):
         shaped_rewards.append(info["shaped_reward"]["agent_0"])
 
         state_seq.append(state)
-    
-    from matplotlib import pyplot as plt
-    plt.plot(rewards, label="reward")
-    plt.plot(shaped_rewards, label="shaped_reward")
-    plt.legend()
-    plt.savefig("reward.png")
-    plt.show()
 
     return state_seq
 
