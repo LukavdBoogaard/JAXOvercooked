@@ -1,6 +1,3 @@
-""" 
-Based on PureJaxRL Implementation of PPO
-"""
 
 import jax
 import jax.numpy as jnp
@@ -103,12 +100,9 @@ class Transition(NamedTuple):
 ############################
 ##### HELPER FUNCTIONS #####
 ############################
-import jax
-import jax.numpy as jnp
-import wandb
 
 # @partial(jax.jit, static_argnums=1)
-def evaluate_model(train_state, config, key):
+def evaluate_model(train_state, config, network, key):
     '''
     Evaluates the model by running 10 episodes on all environments and returns the average reward
     @param train_state: the current state of the training
@@ -118,7 +112,7 @@ def evaluate_model(train_state, config, key):
 
     def run_episode_while(env, key_r, network, network_params, max_steps=1000):
         """
-        Run a single episode using jax.lax.while_loop for dynamic episode lengths.
+        Run a single episode using jax.lax.while_loop 
         """
         class LoopState(NamedTuple):
             key: Any
@@ -129,9 +123,19 @@ def evaluate_model(train_state, config, key):
             step_count: int
 
         def loop_cond(state: LoopState):
+            '''
+            Checks if the episode is done or if the maximum number of steps has been reached
+            @param state: the current state of the loop
+            returns a boolean indicating whether the loop should continue
+            '''
             return jnp.logical_and(~state.done, state.step_count < max_steps)
 
         def loop_body(state: LoopState):
+            '''
+            Performs a single step in the environment
+            @param state: the current state of the loop
+            returns the updated state
+            '''
             key, state_env, obs, _, total_reward, step_count = state
             key, key_a0, key_a1, key_s = jax.random.split(key, 4)
 
@@ -151,7 +155,7 @@ def evaluate_model(train_state, config, key):
             # Environment step
             next_obs, next_state, reward, done_step, info = env.step(key_s, state_env, actions)
             done = done_step["__all__"]
-            reward = reward["agent_0"]  # Adjust as needed
+            reward = reward["agent_0"]  
             total_reward += reward
             step_count += 1
 
@@ -164,28 +168,29 @@ def evaluate_model(train_state, config, key):
 
         # Run while loop
         final_state = jax.lax.while_loop(
-            loop_cond,
-            loop_body,
-            init_state
+            cond_fun=loop_cond,
+            body_fun=loop_body,
+            init_val=init_state
         )
 
         return final_state.total_reward
 
     # Loop through all environments
     all_avg_rewards = []
-    for env_args in config["ENV_KWARGS"]:
-        env_name = env_args["layout"]  # Extract the layout name
-        env = jax_marl.make(config["ENV_NAME"], **env_args)  # Create the environment
+
+    envs = pad_observation_space(config)
+
+    for env in envs:
+        env = jax_marl.make(config["ENV_NAME"], layout=env)  # Create the environment
 
         # Initialize the network
-        network = ActorCritic(env.action_space().n, activation=config["ACTIVATION"])
-        key, key_a = jax.random.split(key)
-        init_x = jnp.zeros(env.observation_space().shape).flatten()  # initializes and flattens observation space
+        # key, key_a = jax.random.split(key)
+        # init_x = jnp.zeros(env.observation_space().shape).flatten()  # initializes and flattens observation space
 
-        network.init(key_a, init_x)  # initializes the network with the observation space
+        # network.init(key_a, init_x)  # initializes the network with the observation space
         network_params = train_state.params
 
-        # Run 10 episodes
+        # Run k episodes
         all_rewards = jax.vmap(lambda k: run_episode_while(env, k, network, network_params, 500))(
             jax.random.split(key, 5)
         )
@@ -193,13 +198,6 @@ def evaluate_model(train_state, config, key):
         avg_reward = jnp.mean(all_rewards)
         all_avg_rewards.append(avg_reward)
 
-        # # Log the results to wandb
-        # def callback(avg_reward):
-        #     wandb.log({
-        #         f"{env_name}_reward": avg_reward
-        #     })
-
-        # jax.debug.callback(callback, avg_reward)
     return all_avg_rewards
 
 def evaluate_models(train_state, config):
@@ -418,7 +416,8 @@ def pad_observation_space(config):
     # pad the observation space of all environments to be the same size by adding extra walls to the outside
     padded_envs = []
     for env in envs:
-        env = unfreeze(env.layout)  # Unfreezes the environment to allow for modifications
+        # unfreeze the environment so that we can apply padding
+        env = unfreeze(env.layout)  
 
         # calculate the padding needed
         width_diff = max_width - env["width"]
@@ -486,9 +485,11 @@ def pad_observation_space(config):
 
         env["wall_idx"] = jnp.array(padded_wall_idx)
 
+        # set the height and width of the environment to the new padded height and width
+        env["height"] = max_height
+        env["width"] = max_width
+
         padded_envs.append(freeze(env)) # Freeze the environment to prevent further modifications
-    
-    
 
     return padded_envs
 
@@ -508,6 +509,7 @@ def make_train(config):
 
         # step 1: loop through all the environments and 'create' them (i.e. transform from a string to an object)
         padded_envs = pad_observation_space(config)
+        jax.debug.print("padded envs = {padded_envs}", padded_envs=padded_envs)
 
         envs = []
         for env_layout in padded_envs:
@@ -545,6 +547,17 @@ def make_train(config):
         rng, network_rng = jax.random.split(rng)
         init_x = jnp.zeros(env.observation_space().shape).flatten()
         network_params = network.init(network_rng, init_x)
+
+        # for env in envs: 
+        #     obs, state = env.reset(rng)
+
+        #     state_seq = get_rollout(state, env)
+
+        #     # create gif 
+        #     visualizer = OvercookedVisualizer()
+        #     visualizer.animate(state_seq=state_seq, agent_view_size=5, filename="initial_state.gif")
+
+
 
           # step 4: initialize the optimizer
         if config["ANNEAL_LR"]: 
@@ -904,24 +917,29 @@ def make_train(config):
                 metric["update_step"] = update_step
                 metric["env_step"] = update_step*config["NUM_STEPS"]*config["NUM_ENVS"]
 
+                metric[f"evaluation {config['LAYOUT_NAME'][0]}"] = jnp.nan
+                metric[f"evaluation {config['LAYOUT_NAME'][1]}"] = jnp.nan
+
 
                 # If update step is a multiple of 20, run the evaluation function
-                # rng, eval_rng = jax.random.split(rng)
-                # train_state_eval = jax.tree_util.tree_map(lambda x: x.copy(), train_state)
+                rng, eval_rng = jax.random.split(rng)
+                train_state_eval = jax.tree_util.tree_map(lambda x: x.copy(), train_state)
 
-                # state = (train_state_eval, eval_rng)
-                # evaluations = jax.lax.cond((update_step % 20) == 0, 
-                #                            lambda x: evaluate_model(train_state_eval, config, eval_rng), 
-                #                            lambda x: [0.0, 0.0], 
-                #                            None)
-                # metric[f"evaluation {config['LAYOUT_NAME'][0]}"] = evaluations[0]
-                # metric[f"evaluation {config['LAYOUT_NAME'][1]}"] = evaluations[1]
+                def true_fun(metric):
+                    evaluations = evaluate_model(train_state_eval, config, network, eval_rng)
+                    metric[f"evaluation {config['LAYOUT_NAME'][0]}"] = evaluations[0]
+                    metric[f"evaluation {config['LAYOUT_NAME'][1]}"] = evaluations[1]
+                    return metric
+                
+                def false_fun(metric):
+                    return metric
+                
+                metric = jax.lax.cond((update_step % 100) == 0, true_fun, false_fun, metric)
 
                 def callback(metric):
                     wandb.log(
                         metric
                     )
-
                 
                 jax.debug.callback(callback, metric)
                 
