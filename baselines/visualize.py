@@ -13,7 +13,6 @@ from typing import Sequence, NamedTuple, Any
 from flax.training.train_state import TrainState
 import distrax
 from gymnax.wrappers.purerl import LogWrapper, FlattenObservationWrapper
-from torch import layout
 
 import jax_marl
 from jax_marl.wrappers.baselines import LogWrapper

@@ -14,6 +14,7 @@ import jax_marl
 from jax_marl.wrappers.baselines import LogWrapper
 from jax_marl.environments.overcooked_environment import overcooked_layouts
 from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
+from jax_marl.environments.overcooked_environment.layouts import counter_circuit_grid
 import hydra
 from omegaconf import OmegaConf
 
@@ -344,32 +345,32 @@ def get_rollout(train_state, env):
 
     return state_seq
 
-def run_evaluation(train_state, config):
-    '''
-    runs an evaluation on a list of different overcooked maps and returns the average reward after 10 runs
+# def run_evaluation(train_state, config):
+#     '''
+#     runs an evaluation on a list of different overcooked maps and returns the average reward after 10 runs
 
-    @param train_state: the current state of the training
-    @param config: the configuration taken from the yaml file
-    returns the average reward for each map
-    '''
-    results = {}
-    maps = config["MAPS"]
-    num_rollouts = config["EVALUATION"]["num_rollouts"]
+#     @param train_state: the current state of the training
+#     @param config: the configuration taken from the yaml file
+#     returns the average reward for each map
+#     '''
+#     results = {}
+#     maps = config["MAPS"]
+#     num_rollouts = config["EVALUATION"]["num_rollouts"]
     
-    for map_name in maps:
-        config["ENV_KWARGS"]["layout"] = map_name  # Set the environment layout to the current map
-        all_rewards = []
+#     for map_name in maps:
+#         config["ENV_KWARGS"]["layout"] = map_name  # Set the environment layout to the current map
+#         all_rewards = []
         
-        for _ in range(num_rollouts):
-            state_seq = get_rollout(train_state, config)  # Run a rollout
-            rewards = [step["reward"] for step in state_seq]  # Extract rewards from the rollout
-            total_reward = np.sum(rewards)  # Sum the rewards to get the total reward for this rollout
-            all_rewards.append(total_reward)  # Store the total reward
+#         for _ in range(num_rollouts):
+#             state_seq = get_rollout(train_state, config)  # Run a rollout
+#             rewards = [step["reward"] for step in state_seq]  # Extract rewards from the rollout
+#             total_reward = np.sum(rewards)  # Sum the rewards to get the total reward for this rollout
+#             all_rewards.append(total_reward)  # Store the total reward
         
-        avg_reward = np.mean(all_rewards)  # Compute the average reward across all rollouts for this map
-        results[map_name] = avg_reward  # Store the average reward in the results dictionary
+#         avg_reward = np.mean(all_rewards)  # Compute the average reward across all rollouts for this map
+#         results[map_name] = avg_reward  # Store the average reward in the results dictionary
     
-    return results 
+#     return results 
 
 def batchify(x: dict, agent_list, num_actors):
     '''
@@ -493,6 +494,76 @@ def pad_observation_space(config):
 
     return padded_envs
 
+
+def sample_discrete_action(key, action_space):
+    """Samples a discrete action based on the action space provided."""
+    num_actions = action_space.n
+    return jax.random.randint(key, (1,), 0, num_actions)
+
+def get_rollout_for_visualization(config):
+    '''
+    Simulates the environment using the network
+    @param train_state: the current state of the training
+    @param config: the configuration of the training
+    returns the state sequence
+    '''
+
+    # Add the padding
+    envs = pad_observation_space(config)
+
+    state_sequences = []
+    for env_layout in envs:
+        env = jax_marl.make(config["ENV_NAME"], layout=env_layout)
+
+        key = jax.random.PRNGKey(0)
+        key, key_r, key_a = jax.random.split(key, 3)
+
+        done = False
+
+        obs, state = env.reset(key_r)
+        state_seq = [state]
+        rewards = []
+        shaped_rewards = []
+        while not done:
+            key, key_a0, key_a1, key_s = jax.random.split(key, 4)
+
+            # Get the action space for each agent (assuming it's uniform and doesn't depend on the agent_id)
+            action_space_0 = env.action_space()  # Assuming the method needs to be called
+            action_space_1 = env.action_space()  # Same as above since action_space is uniform
+
+            # Sample actions for each agent
+            action_0 = sample_discrete_action(key_a0, action_space_0).item()  # Ensure it's a Python scalar
+            action_1 = sample_discrete_action(key_a1, action_space_1).item()
+
+            actions = {
+                "agent_0": action_0,
+                "agent_1": action_1
+            }
+
+            # STEP ENV
+            obs, state, reward, done, info = env.step(key_s, state, actions)
+            done = done["__all__"]
+            rewards.append(reward["agent_0"])
+            shaped_rewards.append(info["shaped_reward"]["agent_0"])
+
+            state_seq.append(state)
+        state_sequences.append(state_seq)
+
+    return state_sequences
+    
+def visualize_environments(config):
+    '''
+    Visualizes the environments using the OvercookedVisualizer
+    @param config: the configuration of the training
+    returns None
+    '''
+    state_sequences = get_rollout_for_visualization(config)
+    visualizer = OvercookedVisualizer()
+    visualizer.animate(state_seq=state_sequences[0], agent_view_size=5, filename="initial_state_env1.gif")
+    visualizer.animate(state_seq=state_sequences[1], agent_view_size=5, filename="initial_state_env2.gif")
+
+    return None
+
 ##########################################################
 ##########################################################
 #######            TRAINING FUNCTION               #######
@@ -511,13 +582,14 @@ def make_train(config):
         padded_envs = pad_observation_space(config)
         jax.debug.print("padded envs = {padded_envs}", padded_envs=padded_envs)
 
+
         envs = []
         for env_layout in padded_envs:
             env = jax_marl.make(config["ENV_NAME"], layout=env_layout)
             env = LogWrapper(env, replace_info=False)
             envs.append(env)
-        
-    
+
+      
         # set extra config parameters based on the environment
         temp_env = envs[0]
         config["NUM_ACTORS"] = temp_env.num_agents * config["NUM_ENVS"]
@@ -1011,7 +1083,8 @@ def main(cfg):
     )
 
     # Create the training function
-    with jax.disable_jit(False):    
+    with jax.disable_jit(False):   
+        visualize_environments(config) 
         rng = jax.random.PRNGKey(config["SEED"]) # create a pseudo-random key 
         jax.debug.print("prng key = {rng}", rng=rng)
         rngs = jax.random.split(rng, config["NUM_SEEDS"]) # split the random key into num_seeds keys
