@@ -201,150 +201,6 @@ def evaluate_model(train_state, network, key):
 
     return all_avg_rewards
 
-def evaluate_models(train_state, config):
-    '''
-    Evaluates the model by running 10 episodes on all environments and returns the average reward
-    @param train_state: the current state of the training
-    @param config: the configuration of the training
-    returns the average reward
-    '''
-
-    # Loop through all environments
-    for env_args in config["ENV_KWARGS"]:
-        env = jax_marl.make(config["ENV_NAME"], **env_args)  # Create the environment
-        env_name = env_args["layout"]  # Extract the layout name
-
-        # Initialize the network
-        network = ActorCritic(env.action_space().n, activation=config["ACTIVATION"])
-        key = jax.random.PRNGKey(0)
-        key, key_r, key_a = jax.random.split(key, 3)
-        init_x = jnp.zeros(env.observation_space().shape) # initializes the observation space to zeros
-        init_x = init_x.flatten() # flattens the observation space to a 1D array
-
-        network.init(key_a, init_x) # initializes the network with the observation space
-        network_params = train_state.params 
-
-        all_rewards = []  # Initialize a list to store the rewards
-
-        # run 10 episodes
-        for _ in range(10):
-            done = False
-            obs, state = env.reset(key_r)
-            state_seq = [state]
-            rewards = []
-            shaped_rewards = []
-
-            while not done:
-                key, key_a0, key_a1, key_s = jax.random.split(key, 4)
-
-                obs = {k: v.flatten() for k, v in obs.items()}
-
-                pi_0, _ = network.apply(network_params, obs["agent_0"])
-                pi_1, _ = network.apply(network_params, obs["agent_1"])
-
-                actions = {"agent_0": pi_0.sample(seed=key_a0), "agent_1": pi_1.sample(seed=key_a1)}
-
-                obs, state, reward, done, info = env.step(key_s, state, actions)
-                done = done["__all__"]
-                rewards.append(reward["agent_0"])
-                shaped_rewards.append(info["shaped_reward"]["agent_0"])
-
-                state_seq.append(state)
-
-            total_rewards = np.sum(rewards)
-            all_rewards.append(total_rewards)
-        
-        avg_reward = np.mean(all_rewards) 
-
-
-        # log the results to wandb
-        wandb.log({
-            f"{env_name}_reward": avg_reward
-        }) 
-
-    return None
-
-# @partial(jax.jit, static_argnames=['config'])
-def get_rollout(train_state, env):
-    '''
-    Simulates the environment using the network
-    @param train_state: the current state of the training
-    @param config: the configuration of the training
-    returns the state sequence
-    '''
-    # env = jax_marl.make(config["ENV_NAME"], **config["ENV_KWARGS"])
-    # env_params = env.default_params
-    # env = LogWrapper(env) 
-
-    network = ActorCritic(env.action_space().n, activation="tanh") # Sets up the network
-    key = jax.random.PRNGKey(0) 
-    key, key_r, key_a = jax.random.split(key, 3) 
-
-    init_x = jnp.zeros(env.observation_space().shape) # initializes the observation space to zeros
-    init_x = init_x.flatten() # flattens the observation space to a 1D array
-
-    network.init(key_a, init_x) # initializes the network with the observation space
-    network_params = train_state.params 
-
-    done = False
-
-    obs, state = env.reset(key_r)
-    state_seq = [state]
-    rewards = []
-    shaped_rewards = []
-
-    def condition_fn(carry):
-        _, _, done, _, _ = carry
-        return ~done["__all__"]
-    
-    def body_fn(carry):
-        key, state, done, obs, rewards = carry
-        key, key_a0, key_a1, key_s = jax.random.split(key, 4)
-
-        # obs_batch = batchify(obs, env.agents, config["NUM_ACTORS"])
-        # breakpoint()
-        obs = {k: v.flatten() for k, v in obs.items()}
-
-        pi_0, _ = network.apply(network_params, obs["agent_0"])
-        pi_1, _ = network.apply(network_params, obs["agent_1"])
-
-        actions = {"agent_0": pi_0.sample(seed=key_a0), "agent_1": pi_1.sample(seed=key_a1)}
-        # env_act = unbatchify(action, env.agents, config["NUM_ENVS"], env.num_agents)
-        # env_act = {k: v.flatten() for k, v in env_act.items()}
-
-        # STEP ENV
-        obs, state, reward, done, info = env.step(key_s, state, actions)
-
-         # Collect rewards
-        rewards["agent_0"] = rewards["agent_0"].at[len(rewards["agent_0"])].set(reward["agent_0"])
-
-        # Add shaped reward and state to the carry
-        return key, state, done, obs, rewards
-        # done = done["__all__"]
-        # rewards.append(reward["agent_0"])
-        # shaped_rewards.append(info["shaped_reward"]["agent_0"])
-
-        # state_seq.append(state)
-    # Initialize carry for lax.while_loop
-    carry = (key, state, done, obs, {"agent_0": jnp.array([])})
-
-    # Run the JAX while loop
-    carry = jax.lax.while_loop(condition_fn, body_fn, carry)
-
-    # Extract the final state and rewards
-    _, final_state, _, final_obs, final_rewards = carry
-    # from matplotlib import pyplot as plt
-    # plt.plot(rewards, label="reward")
-    # plt.plot(shaped_rewards, label="shaped_reward")
-    # plt.xlabel("Time Steps")
-    # plt.ylabel("Reward Value")
-    # plt.title("Rewards over Time")
-    # plt.legend()
-    # plt.savefig("reward_coord_ring.png")
-
-    return state_seq
-
-
 def batchify(x: dict, agent_list, num_actors):
     '''
     converts the observations of a batch of agents into an array of size (num_actors, -1) that can be used by the network
@@ -367,7 +223,6 @@ def unbatchify(x: jnp.ndarray, agent_list, num_envs, num_actors):
     '''
     x = x.reshape((num_actors, num_envs, -1))
     return {a: x[i] for i, a in enumerate(agent_list)}
-
 
 def pad_observation_space(config):
     '''
@@ -467,7 +322,6 @@ def pad_observation_space(config):
 
     return padded_envs
 
-
 def sample_discrete_action(key, action_space):
     """Samples a discrete action based on the action space provided."""
     num_actions = action_space.n
@@ -551,10 +405,8 @@ def make_train(config):
     '''
     def train(rng):
 
-        # step 1: loop through all the environments and 'create' them (i.e. transform from a string to an object)
+        # step 1: make sure all envs are the same size and create the environments
         padded_envs = pad_observation_space(config)
-
-
         envs = []
         for env_layout in padded_envs:
             env = jax_marl.make(config["ENV_NAME"], layout=env_layout)
@@ -592,18 +444,7 @@ def make_train(config):
         init_x = jnp.zeros(env.observation_space().shape).flatten()
         network_params = network.init(network_rng, init_x)
 
-        # for env in envs: 
-        #     obs, state = env.reset(rng)
-
-        #     state_seq = get_rollout(state, env)
-
-        #     # create gif 
-        #     visualizer = OvercookedVisualizer()
-        #     visualizer.animate(state_seq=state_seq, agent_view_size=5, filename="initial_state.gif")
-
-
-
-          # step 4: initialize the optimizer
+        # step 4: initialize the optimizer
         if config["ANNEAL_LR"]: 
             # anneals the learning rate
             tx = optax.chain(
@@ -943,38 +784,49 @@ def make_train(config):
                 metric = info
                 current_timestep = update_step*config["NUM_STEPS"]*config["NUM_ENVS"]
 
-                metric["shaped_reward"] = metric["shaped_reward"]["agent_0"]
-                metric["shaped_reward_annealed"] = metric["shaped_reward"]*rew_shaping_anneal(current_timestep)
-                metric['learning_rate'] = linear_schedule(update_step*config["NUM_MINIBATCHES"]*config["UPDATE_EPOCHS"])
-                total_loss, (value_loss, loss_actor, entropy) = loss_info
-                metric["total_loss"] = total_loss.mean()
-                metric["value_loss"] = value_loss.mean()
-                metric["actor_loss"] = loss_actor.mean()
-                metric["entropy"] = entropy.mean()
-                metric['advantages'] = advantages.mean()    
-                metric['targets'] = targets.mean()
-
                 # Update the step counter
                 update_step = update_step + 1
                 # update the metric with the current timestep
                 metric = jax.tree_util.tree_map(lambda x: x.mean(), metric)
-                metric["update_step"] = update_step
-                metric["env_step"] = update_step*config["NUM_STEPS"]*config["NUM_ENVS"]
 
-                metric[f"evaluation {config['LAYOUT_NAME'][0]}"] = jnp.nan
-                metric[f"evaluation {config['LAYOUT_NAME'][1]}"] = jnp.nan
+                # General section
+                metric["General/update_step"] = update_step
+                metric["General/env_step"] = update_step * config["NUM_STEPS"] * config["NUM_ENVS"]
+                metric["General/learning_rate"] = linear_schedule(update_step * config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])
+
+                # Losses section
+                total_loss, (value_loss, loss_actor, entropy) = loss_info
+                metric["Losses/total_loss"] = total_loss.mean()
+                metric["Losses/total_loss_max"] = total_loss.max()
+                metric["Losses/total_loss_min"] = total_loss.min()
+                metric["Losses/total_loss_var"] = total_loss.var()
+                metric["Losses/value_loss"] = value_loss.mean()
+                metric["Losses/actor_loss"] = loss_actor.mean()
+                metric["Losses/entropy"] = entropy.mean()
+
+                # Rewards section
+                metric["General/shaped_reward_agent0"] = metric["shaped_reward"]["agent_0"]
+                metric["General/shaped_reward_agent1"] = metric["shaped_reward"]["agent_1"]
+                metric["General/shaped_reward_annealed_agent0"] = metric["General/shaped_reward_agent0"] * rew_shaping_anneal(current_timestep)
+                metric["General/shaped_reward_annealed_agent1"] = metric["General/shaped_reward_agent1"] * rew_shaping_anneal(current_timestep)
+
+                # Advantages and Targets section
+                metric["Advantage_Targets/advantages"] = advantages.mean()
+                metric["Advantage_Targets/targets"] = targets.mean()
+
+                # Evaluation section
+                metric[f"Evaluation/{config['LAYOUT_NAME'][0]}"] = jnp.nan
+                metric[f"Evaluation/{config['LAYOUT_NAME'][1]}"] = jnp.nan
 
 
                 # If update step is a multiple of 20, run the evaluation function
                 rng, eval_rng = jax.random.split(rng)
                 train_state_eval = jax.tree_util.tree_map(lambda x: x.copy(), train_state)
 
-            
-
                 def true_fun(metric):
                     evaluations = evaluate_model(train_state_eval, network, eval_rng)
-                    metric[f"evaluation {config['LAYOUT_NAME'][0]}"] = evaluations[0]
-                    metric[f"evaluation {config['LAYOUT_NAME'][1]}"] = evaluations[1]
+                    metric[f"Evaluation/{config['LAYOUT_NAME'][0]}"] = evaluations[0]
+                    metric[f"Evaluation/{config['LAYOUT_NAME'][1]}"] = evaluations[1]
                     return metric
                 
                 def false_fun(metric):
@@ -1058,7 +910,7 @@ def main(cfg):
 
     # Create the training function
     with jax.disable_jit(False):   
-        visualize_environments(config) 
+        # visualize_environments(config) 
         rng = jax.random.PRNGKey(config["SEED"]) # create a pseudo-random key 
         rngs = jax.random.split(rng, config["NUM_SEEDS"]) # split the random key into num_seeds keys
         train_jit = jax.jit(make_train(config)) # JIT compile the training function for faster execution
