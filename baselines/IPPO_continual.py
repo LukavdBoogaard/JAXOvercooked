@@ -102,8 +102,8 @@ class Transition(NamedTuple):
 ##### HELPER FUNCTIONS #####
 ############################
 
-# @partial(jax.jit, static_argnums=1)
-def evaluate_model(train_state, config, network, key):
+@partial(jax.jit, static_argnums=(1))
+def evaluate_model(train_state, network, key):
     '''
     Evaluates the model by running 10 episodes on all environments and returns the average reward
     @param train_state: the current state of the training
@@ -272,7 +272,6 @@ def get_rollout(train_state, env):
     @param config: the configuration of the training
     returns the state sequence
     '''
-    print("env", env)  
     # env = jax_marl.make(config["ENV_NAME"], **config["ENV_KWARGS"])
     # env_params = env.default_params
     # env = LogWrapper(env) 
@@ -345,32 +344,6 @@ def get_rollout(train_state, env):
 
     return state_seq
 
-# def run_evaluation(train_state, config):
-#     '''
-#     runs an evaluation on a list of different overcooked maps and returns the average reward after 10 runs
-
-#     @param train_state: the current state of the training
-#     @param config: the configuration taken from the yaml file
-#     returns the average reward for each map
-#     '''
-#     results = {}
-#     maps = config["MAPS"]
-#     num_rollouts = config["EVALUATION"]["num_rollouts"]
-    
-#     for map_name in maps:
-#         config["ENV_KWARGS"]["layout"] = map_name  # Set the environment layout to the current map
-#         all_rewards = []
-        
-#         for _ in range(num_rollouts):
-#             state_seq = get_rollout(train_state, config)  # Run a rollout
-#             rewards = [step["reward"] for step in state_seq]  # Extract rewards from the rollout
-#             total_reward = np.sum(rewards)  # Sum the rewards to get the total reward for this rollout
-#             all_rewards.append(total_reward)  # Store the total reward
-        
-#         avg_reward = np.mean(all_rewards)  # Compute the average reward across all rollouts for this map
-#         results[map_name] = avg_reward  # Store the average reward in the results dictionary
-    
-#     return results 
 
 def batchify(x: dict, agent_list, num_actors):
     '''
@@ -580,7 +553,6 @@ def make_train(config):
 
         # step 1: loop through all the environments and 'create' them (i.e. transform from a string to an object)
         padded_envs = pad_observation_space(config)
-        jax.debug.print("padded envs = {padded_envs}", padded_envs=padded_envs)
 
 
         envs = []
@@ -997,8 +969,10 @@ def make_train(config):
                 rng, eval_rng = jax.random.split(rng)
                 train_state_eval = jax.tree_util.tree_map(lambda x: x.copy(), train_state)
 
+            
+
                 def true_fun(metric):
-                    evaluations = evaluate_model(train_state_eval, config, network, eval_rng)
+                    evaluations = evaluate_model(train_state_eval, network, eval_rng)
                     metric[f"evaluation {config['LAYOUT_NAME'][0]}"] = evaluations[0]
                     metric[f"evaluation {config['LAYOUT_NAME'][1]}"] = evaluations[1]
                     return metric
@@ -1086,7 +1060,6 @@ def main(cfg):
     with jax.disable_jit(False):   
         visualize_environments(config) 
         rng = jax.random.PRNGKey(config["SEED"]) # create a pseudo-random key 
-        jax.debug.print("prng key = {rng}", rng=rng)
         rngs = jax.random.split(rng, config["NUM_SEEDS"]) # split the random key into num_seeds keys
         train_jit = jax.jit(make_train(config)) # JIT compile the training function for faster execution
         out = jax.vmap(train_jit)(rngs) # Vectorize the training function and run it num_seeds times
