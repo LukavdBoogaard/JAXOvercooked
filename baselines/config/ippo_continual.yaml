@@ -1,4 +1,4 @@
-LR: 2.5e-4
+LR: 1e-4
 NUM_ENVS: 16
 NUM_STEPS: 128
 TOTAL_TIMESTEPS: 5e6 #5e6
@@ -14,10 +14,11 @@ REWARD_SHAPING_HORIZON: 2.5e6
 ACTIVATION: "tanh"
 ENV_NAME: "overcooked"
 ENV_KWARGS: 
-  - {"layout": "forced_coord"}
   - {"layout": "asymm_advantages"}
-LAYOUT_NAME: ["forced_coord", "asymm_advantages"]
-ANNEAL_LR: True
+  - {"layout": "forced_coord"}
+  - {"layout": "cramped_room"}
+LAYOUT_NAME: ["forced_coord", "asymm_advantages", "cramped_room"]
+ANNEAL_LR: False
 SEED: 30
 NUM_SEEDS: 1
 

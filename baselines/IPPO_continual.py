@@ -180,6 +180,7 @@ def evaluate_model(train_state, network, key):
     all_avg_rewards = []
 
     envs = pad_observation_space(config)
+    print("number of envs:", len(envs))
 
     for env in envs:
         env = jax_marl.make(config["ENV_NAME"], layout=env)  # Create the environment
@@ -465,6 +466,7 @@ def make_train(config):
             tx=tx,
         )
 
+        @partial(jax.jit, static_argnums=(2))
         def train_on_environment(rng, train_state, env):
             '''
             Trains the network using IPPO
@@ -472,45 +474,26 @@ def make_train(config):
             returns the runner state and the metrics
             '''
 
-            network = ActorCritic(env.action_space().n, activation=config["ACTIVATION"])
-            # step 3: initialize the network parameters
-            rng, network_creation_rng = jax.random.split(rng)
-            init_x = jnp.zeros(env.observation_space().shape).flatten()
-            network_params = network.init(network_creation_rng, init_x)
-            # step 4: initialize the optimizer
-            if config["ANNEAL_LR"]: 
-                # anneals the learning rate
+            # network = ActorCritic(env.action_space().n, activation=config["ACTIVATION"])
+            # # step 3: initialize the network parameters
+            # rng, network_creation_rng = jax.random.split(rng)
+            # init_x = jnp.zeros(env.observation_space().shape).flatten()
+            # network_params = network.init(network_creation_rng, init_x)
+
+
+            # reset the learning rate and the optimizer
+            if config["ANNEAL_LR"]:
                 tx = optax.chain(
                     optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
                     optax.adam(learning_rate=linear_schedule, eps=1e-5),
                 )
             else:
-                # uses the default learning rate
                 tx = optax.chain(
-                    optax.clip_by_global_norm(config["MAX_GRAD_NORM"]), 
+                    optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
                     optax.adam(config["LR"], eps=1e-5)
                 )
-
-            # step 5: Initialize the training state      
-            train_state = TrainState.create(
-                apply_fn=network.apply,
-                params=network_params,
-                tx=tx,
-            )
-
-            # # reset the learning rate and the optimizer
-            # if config["ANNEAL_LR"]:
-            #     tx = optax.chain(
-            #         optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-            #         optax.adam(learning_rate=linear_schedule, eps=1e-5),
-            #     )
-            # else:
-            #     tx = optax.chain(
-            #         optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-            #         optax.adam(config["LR"], eps=1e-5)
-            #     )
             
-            # train_state = train_state.replace(tx=tx)
+            train_state = train_state.replace(tx=tx)
             
             # Initialize environment 
             rng, env_rng = jax.random.split(rng) 
@@ -815,9 +798,9 @@ def make_train(config):
                 metric["Advantage_Targets/targets"] = targets.mean()
 
                 # Evaluation section
-                metric[f"Evaluation/{config['LAYOUT_NAME'][0]}"] = jnp.nan
-                metric[f"Evaluation/{config['LAYOUT_NAME'][1]}"] = jnp.nan
-
+                for i in range(len(config["LAYOUT_NAME"])):
+                    metric[f"Evaluation/{config['LAYOUT_NAME'][i]}"] = jnp.nan
+                
 
                 # If update step is a multiple of 20, run the evaluation function
                 rng, eval_rng = jax.random.split(rng)
@@ -825,8 +808,8 @@ def make_train(config):
 
                 def true_fun(metric):
                     evaluations = evaluate_model(train_state_eval, network, eval_rng)
-                    metric[f"Evaluation/{config['LAYOUT_NAME'][0]}"] = evaluations[0]
-                    metric[f"Evaluation/{config['LAYOUT_NAME'][1]}"] = evaluations[1]
+                    for i, evaluation in enumerate(evaluations):
+                        metric[f"Evaluation/{config['LAYOUT_NAME'][i]}"] = evaluation
                     return metric
                 
                 def false_fun(metric):
@@ -866,14 +849,31 @@ def make_train(config):
         # step 7: loop over the environments and train the network
 
         # split the random number generator for training on the environments
-        rng, env1_rng, env2_rng = jax.random.split(rng, 3)
+        num_envs = len(envs)+1
+        rngs = jax.random.split(rng, num_envs)
+        rng = rngs[0]
+        env_rngs = rngs[1:]
 
-        runner_state1, metrics1 = train_on_environment(env1_rng, train_state, envs[0])
-        train_state = runner_state1[0]
-        runner_state2, metrics2 = train_on_environment(env2_rng, train_state, envs[1])
+        def loop_over_envs(rng, train_state, envs):
+            '''
+            Loops over the environments and trains the network
+            @param rng: random number generator
+            @param train_state: the current state of the training
+            @param envs: the environments
+            returns the runner state and the metrics
+            '''
+            metrics = []
+            for env_rng, env in zip(env_rngs, envs):
+                print(env_rng)
+                runner_state, metric = train_on_environment(env_rng, train_state, env)
+                metrics.append(metric)
+            return runner_state, metrics
+        
+        # apply the loop_over_envs function to the environments
+        runner_state, metrics = loop_over_envs(rng, train_state, envs)
         
 
-        return {"runner_state": runner_state2, "metrics": [metrics1, metrics2]}
+        return {"runner_state": runner_state, "metrics": metrics}
     return train
 
 
@@ -919,83 +919,6 @@ def main(cfg):
 
     filename = f'{config["ENV_NAME"]}_continual'
     train_state = jax.tree_util.tree_map(lambda x: x[0], out["runner_state"][0])
-    # state_seq = get_rollout(train_state, config)
-    # viz = OvercookedVisualizer()
-    # # agent_view_size is hardcoded as it determines the padding around the layout.
-    # viz.animate(state_seq, agent_view_size=5, filename=f"{filename}.gif")
-
-    print("Done")
-
-
-#     # make sure that the code is running on the GPU
-#     print(jax.devices())
-#     jax.config.update("jax_platform_name", "gpu")
-    
-#     # set the config to global 
-#     global config
-
-#     # convert the config to a dictionary
-#     config = OmegaConf.to_container(cfg)
-
-#     # Initialize wandb
-#     wandb.init(
-#         project=config["PROJECT"], 
-#         config=config, 
-#         mode=config["WANDB_MODE"],
-#         name=f'ippo_{config["ENV_KWARGS"][0]}'  # Start with the first map name for naming
-#     )
-    
-#     # create a list of all maps to train on 
-#     maps = [env_kwargs["layout"] for env_kwargs in config["ENV_KWARGS"]]
-#     print(f"Training on maps: {maps}")
-
-#     # # Create the training function
-#     # with jax.disable_jit(False):    
-
-#     # Set upt the initial random number generator
-#     rng = jax.random.PRNGKey(config["SEED"]) 
-#     rngs = jax.random.split(rng, config["NUM_SEEDS"]) 
-
-#     # Set up the training parameters
-#     num_steps = config["TOTAL_TIMESTEPS"]
-#     steps_per_map = num_steps // len(maps)
-#     evaluation_interval = config["EVALUATION"]["evaluation_interval"]
-
-#     for layout_config in config["ENV_KWARGS"]:
-#         # Extract the layout name
-#         layout_name = layout_config["layout"]
-#         print(f"Training on layout: {layout_name}")
-        
-#         # Set the layout in the config
-#         layout_config["layout"] = overcooked_layouts[layout_name]
-
-#     env = jax_marl.make(config["ENV_NAME"], **(config["ENV_KWARGS"][0]))  # Start with the first map
-#     network = ActorCritic(env.action_space().n, activation=config["ACTIVATION"])
-
-#     # Initialize the network parameters
-#     params = network.init(rngs[0], jnp.zeros(env.observation_space().shape).flatten())
-
-#     for map_idx, map_name in enumerate(maps):
-#         print(f"Training on map: {map_name}")
-#         env_args = config["ENV_KWARGS"][map_idx]
-#         env = jax_marl.make(config["ENV_NAME"], **env_args)
-
-#         # create the training function
-#         train_fn = make_train(config, env, network, params, steps_per_map, evaluation_interval)
-#         train_jit = jax.jit(train_fn)
-#         output = jax.vmap(train_jit, in_axes=(0, None, None))(rngs, env, network)
-
-#         # Optional: Evaluate the model after training on each map
-#         train_state = jax.tree_util.tree_map(lambda x: x[0], output["runner_state"][0])
-#         state_seq = get_rollout(train_state, config)
-#         viz = OvercookedVisualizer()
-#         viz.animate(state_seq, agent_view_size=5, filename=f"{config['ENV_NAME']}_{map_name}.gif")
-
-        
-     
-
-    # filename = f'{config["ENV_NAME"]}_{maps[0]}'
-    # train_state = jax.tree_util.tree_map(lambda x: x[0], out["runner_state"][0])
     # state_seq = get_rollout(train_state, config)
     # viz = OvercookedVisualizer()
     # # agent_view_size is hardcoded as it determines the padding around the layout.
