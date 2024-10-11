@@ -66,6 +66,16 @@ W     AW
 WWWOOWWW
 """
 
+square_arena = """
+WWWWWWW
+W  P  W
+W A A W
+WO   BW
+W  X  W
+WWWWWWW
+"""
+
+
 def layout_grid_to_dict(grid):
     """Assumes `grid` is string representation of the layout, with 1 line per row, and the following symbols:
     W: wall
@@ -122,5 +132,6 @@ overcooked_layouts = {
     "asymm_advantages" : FrozenDict(asymm_advantages),
     "coord_ring" : FrozenDict(coord_ring),
     "forced_coord" : FrozenDict(forced_coord),
-    "counter_circuit" : layout_grid_to_dict(counter_circuit_grid)
+    "counter_circuit" : layout_grid_to_dict(counter_circuit_grid),
+    "square_arena" : layout_grid_to_dict(square_arena)
 }

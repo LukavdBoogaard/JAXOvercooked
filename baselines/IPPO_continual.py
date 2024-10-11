@@ -13,6 +13,7 @@ from gymnax.wrappers.purerl import LogWrapper, FlattenObservationWrapper
 import jax_marl
 from jax_marl.wrappers.baselines import LogWrapper
 from jax_marl.environments.overcooked_environment import overcooked_layouts
+from jax_marl.environments.env_selection import generate_sequence
 from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
 from jax_marl.environments.overcooked_environment.layouts import counter_circuit_grid
 import hydra
@@ -891,6 +892,11 @@ def main(cfg):
 
     # convert the config to a dictionary
     config = OmegaConf.to_container(cfg)
+
+    # create the environments
+    seq_length = config["SEQ_LENGTH"]
+    strategy = config["STRATEGY"]
+    config["ENV_KWARGS"], config["LAYOUT_NAME"] = generate_sequence(sequence_length=seq_length, strategy=strategy, layouts=None)
 
     # set the layout of the environment
     for layout_config in config["ENV_KWARGS"]:
