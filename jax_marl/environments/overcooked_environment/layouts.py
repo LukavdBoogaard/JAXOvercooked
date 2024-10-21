@@ -75,7 +75,6 @@ W  X  W
 WWWWWWW
 """
 
-
 def layout_grid_to_dict(grid):
     """Assumes `grid` is string representation of the layout, with 1 line per row, and the following symbols:
     W: wall
@@ -135,3 +134,156 @@ overcooked_layouts = {
     "counter_circuit" : layout_grid_to_dict(counter_circuit_grid),
     "square_arena" : layout_grid_to_dict(square_arena)
 }
+
+
+
+def evaluate_grid(grid):
+    '''
+    Evaluate the validity of a grid layout based on a list of conditions
+    '''
+
+    valid = True
+
+    # Check if the grid's rows are of equal length
+    rows = grid.strip().split('\n')
+    width = len(rows[0])
+    for row in rows:
+        if len(row) != width:
+            valid = False
+    
+    # check if the grid has at least one of each required symbol
+    required_symbols = ['W', 'X', 'O', 'B', 'P', 'A']
+    for symbol in required_symbols:
+        if symbol not in grid:
+            valid = False
+    
+    if grid.count('A') != 2:
+        valid = False
+    
+    # check if the grid is completely enclosed by walls
+    valid_walls = ['W', 'X', 'B', 'O', 'P']
+
+    for idx, row in enumerate(rows):
+        if idx == 0 or idx == len(rows) -1:
+            for char in row:
+                if char not in valid_walls:
+                    valid = False
+        if row[0] not in valid_walls or row[-1] not in valid_walls:
+            valid = False
+    
+
+    # transform the grid into a matrix
+    grid_matrix = [list(row) for row in rows]
+
+    elements = ['A', 'X', 'O', 'B', 'P']
+    positions = []
+    for i, row in enumerate(grid_matrix):
+        for j, char in enumerate(row):
+            if char in elements:
+                positions.append((i, j, char))
+
+    # check if no elements are enclosed
+    for i, j, char in positions:
+        directions = [(0, 1), (0, -1), (1, 0), (-1, 0)]
+        reachable = False
+        for dx, dy in directions:
+            x, y = i + dx, j + dy
+            if 0 <= x < len(grid_matrix) and 0 <= y < len(grid_matrix[0]):
+                neighbor = grid_matrix[x][y]
+                if neighbor == ' ' or neighbor == 'A':
+                    reachable = True
+                    break  # No need to check other directions
+        if not reachable:
+            valid = False
+
+    # Check the reachability of the agents
+
+    # Step 1: find the location of the agents
+    agent_positions = []
+    for i, row in enumerate(grid_matrix):
+        for j, char in enumerate(row):
+            if char == 'A':
+                agent_positions.append((i, j))
+    
+    # Step 2: determine the reachability of the agents
+    # For Agent 1
+    visited1 = [[False for _ in range(len(grid_matrix[0]))] for _ in range(len(grid_matrix))]
+    reachable_agent_1 = []
+    dfs(agent_positions[0][0], agent_positions[0][1], grid_matrix, visited1, reachable_agent_1)
+
+    # For Agent 2
+    visited2 = [[False for _ in range(len(grid_matrix[0]))] for _ in range(len(grid_matrix))]
+    reachable_agent_2 = []
+    dfs(agent_positions[1][0], agent_positions[1][1], grid_matrix, visited2, reachable_agent_2)
+
+    # Step 3: check if all elements are reachable
+    elements_to_check = ['X', 'O', 'B', 'P']
+
+    # For Agent 1
+    agent1_reachable = {element: False for element in elements_to_check}
+    for x, y, char in reachable_agent_1:
+        if char in elements_to_check:
+            agent1_reachable[char] = True
+
+    # For Agent 2
+    agent2_reachable = {element: False for element in elements_to_check}
+    for x, y, char in reachable_agent_2:
+        if char in elements_to_check:
+            agent2_reachable[char] = True
+
+    # Check if both agents can reach all elements
+    if all(agent1_reachable.values()) and all(agent2_reachable.values()):
+        pass  # Both agents can reach all elements
+    else:
+        # Check if collectively they can reach all elements
+        elements_reachable = {element: agent1_reachable[element] or agent2_reachable[element] for element in elements_to_check}
+        if all(elements_reachable.values()):
+            # Now check for a shared wall
+            positions_agent1 = set((x, y) for x, y, char in reachable_agent_1)
+            positions_agent2 = set((x, y) for x, y, char in reachable_agent_2)
+
+            wall_positions = set()
+            for i in range(len(grid_matrix)):
+                for j in range(len(grid_matrix[0])):
+                    if grid_matrix[i][j] == 'W':
+                        wall_positions.add((i, j))
+
+            shared_wall = False
+            for i, j in wall_positions:
+                neighbors_agent1 = False
+                neighbors_agent2 = False
+                directions = [(0, 1), (0, -1), (1, 0), (-1, 0)]
+                for dx, dy in directions:
+                    x1, y1 = i + dx, j + dy
+                    if (x1, y1) in positions_agent1:
+                        neighbors_agent1 = True
+                    if (x1, y1) in positions_agent2:
+                        neighbors_agent2 = True
+                if neighbors_agent1 and neighbors_agent2:
+                    shared_wall = True
+                    break
+
+            if not shared_wall:
+                valid = False
+        else:
+            valid = False
+
+    return valid
+
+def dfs(i, j, grid_matrix, visited, reachable):
+    '''
+    Depth-first search algorithm to check the reachability of the agents
+    '''
+    if i < 0 or i >= len(grid_matrix) or j < 0 or j >= len(grid_matrix[0]):
+        return
+    if visited[i][j]:
+        return
+    visited[i][j] = True
+    element = grid_matrix[i][j]
+    reachable.append((i, j, element))
+    walkable = [' ', 'A']
+    if element not in walkable:
+        return
+    directions = [(0, 1), (0, -1), (1, 0), (-1, 0)]
+    for dx, dy in directions:
+        dfs(i + dx, j + dy, grid_matrix, visited, reachable)  
