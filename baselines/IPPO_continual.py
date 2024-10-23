@@ -24,6 +24,8 @@ import wandb
 import os
 os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
 import gc
+import tracemalloc
+from jax import clear_caches
 
 from functools import partial
 
@@ -816,7 +818,7 @@ def make_train(config):
                 def false_fun(metric):
                     return metric
                 
-                metric = jax.lax.cond((update_step % 100) == 0, true_fun, false_fun, metric)
+                metric = jax.lax.cond((update_step % 200) == 0, true_fun, false_fun, metric)
 
                 def callback(metric):
                     wandb.log(
@@ -855,6 +857,8 @@ def make_train(config):
         rng = rngs[0]
         env_rngs = rngs[1:]
 
+        tracemalloc.start()
+
         def loop_over_envs(rng, train_state, envs):
             '''
             Loops over the environments and trains the network
@@ -866,10 +870,20 @@ def make_train(config):
             metrics = []
             for env_rng, env in zip(env_rngs, envs):
                 runner_state, metric = train_on_environment(env_rng, train_state, env)
+                clear_caches()
                 print('done with env')
                 gc.collect()
+
+                # Memory allocation snapshot after each environment
+                current, peak = tracemalloc.get_traced_memory()
+                print(f"Current memory usage: {current / 10**6} MB; Peak: {peak / 10**6} MB")
+
                 metrics.append(metric)
+            
+            tracemalloc.stop()
             return runner_state, metrics
+        
+
         
         # apply the loop_over_envs function to the environments
         runner_state, metrics = loop_over_envs(rng, train_state, envs)
