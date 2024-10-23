@@ -1,4 +1,5 @@
 from jax_marl.environments.overcooked_environment.layouts import evaluate_grid
+from jax_marl.environments.overcooked_environment import overcooked_layouts
 
 def test_grid_not_enough_elements():
     grid = """
@@ -65,5 +66,3 @@ def test_valid_grid():
     WWWWWWW
     """
     assert evaluate_grid(grid) == True
-
-

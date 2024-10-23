@@ -126,17 +126,6 @@ def layout_grid_to_dict(grid):
     return FrozenDict(layout_dict)
 
 
-overcooked_layouts = {
-    "cramped_room" : FrozenDict(cramped_room),
-    "asymm_advantages" : FrozenDict(asymm_advantages),
-    "coord_ring" : FrozenDict(coord_ring),
-    "forced_coord" : FrozenDict(forced_coord),
-    "counter_circuit" : layout_grid_to_dict(counter_circuit_grid),
-    "square_arena" : layout_grid_to_dict(square_arena)
-}
-
-
-
 def evaluate_grid(grid):
     '''
     Evaluate the validity of a grid layout based on a list of conditions
@@ -287,3 +276,112 @@ def dfs(i, j, grid_matrix, visited, reachable):
     directions = [(0, 1), (0, -1), (1, 0), (-1, 0)]
     for dx, dy in directions:
         dfs(i + dx, j + dy, grid_matrix, visited, reachable)  
+
+
+# Create new environments
+split_kitchen = """
+WWPWWWW
+W A   W
+W  W  W
+WWWWXWW
+W  W  W
+W   A W
+WWBOOWW
+"""
+
+
+basic_kitchen_large = """
+WWWWWWW
+P     O 
+W     W
+W  A  W
+W  A  W
+X     W
+WWBWWWW
+"""
+
+basic_kitchen_small = """
+WWWW
+P  O
+W  W
+WAAW
+X  B
+WWWW
+"""
+
+shared_wall = """
+WWWWWWWW
+W  A   W
+W      W
+W      W
+WPOBXWWW
+W      W
+W A    W
+W      W
+WWWWWWWW
+"""
+
+smallest_kitchen = """
+WXWW
+B AW
+OA P
+WWWW
+"""
+
+easy_layout = """
+WWWWWW
+O  A W
+P  A W
+B    W
+W  X W
+WWWWWW
+"""
+
+big_kitchen = """
+WWWWWWWWWW
+W        W
+W  A  A  W
+W        W
+W  P  B  W
+W        W
+W  X  O  W
+W        W
+WWWWWWWWWW
+"""
+
+no_cooperation = """
+WWWWWW
+W  A W
+WXBOPW
+W  A W
+WWWWWW
+"""
+
+foorced_coord_2 = """
+WWWWWWWWW
+W A W  AW
+O   W   X
+B   W   P
+W   W   W
+WWWWWWWWW
+"""
+
+
+
+overcooked_layouts = {
+    "cramped_room" : FrozenDict(cramped_room),
+    "asymm_advantages" : FrozenDict(asymm_advantages),
+    "coord_ring" : FrozenDict(coord_ring),
+    "forced_coord" : FrozenDict(forced_coord),
+    "counter_circuit" : layout_grid_to_dict(counter_circuit_grid),
+    "square_arena" : layout_grid_to_dict(square_arena),
+    "split_kitchen" : layout_grid_to_dict(split_kitchen),
+    "basic_kitchen_large" : layout_grid_to_dict(basic_kitchen_large),
+    "basic_kitchen_small" : layout_grid_to_dict(basic_kitchen_small),
+    "shared_wall" : layout_grid_to_dict(shared_wall),
+    "smallest_kitchen" : layout_grid_to_dict(smallest_kitchen), 
+    "easy_layout" : layout_grid_to_dict(easy_layout),
+    "big_kitchen" : layout_grid_to_dict(big_kitchen),
+    "no_cooperation" : layout_grid_to_dict(no_cooperation),
+    "forced_coord_2" : layout_grid_to_dict(foorced_coord_2)
+}

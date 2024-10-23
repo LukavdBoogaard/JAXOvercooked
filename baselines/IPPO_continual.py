@@ -23,6 +23,7 @@ import matplotlib.pyplot as plt
 import wandb
 import os
 os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
+import gc
 
 from functools import partial
 
@@ -181,7 +182,6 @@ def evaluate_model(train_state, network, key):
     all_avg_rewards = []
 
     envs = pad_observation_space(config)
-    print("number of envs:", len(envs))
 
     for env in envs:
         env = jax_marl.make(config["ENV_NAME"], layout=env)  # Create the environment
@@ -530,7 +530,7 @@ def make_train(config):
 
                     # prepare the observations for the network
                     obs_batch = batchify(last_obs, env.agents, config["NUM_ACTORS"])
-                    print("obs_shape", obs_batch.shape)
+                    # print("obs_shape", obs_batch.shape)
                     
                     # apply the policy network to the observations to get the suggested actions and their values
                     pi, value = network.apply(train_state.params, obs_batch)
@@ -865,8 +865,9 @@ def make_train(config):
             '''
             metrics = []
             for env_rng, env in zip(env_rngs, envs):
-                print(env_rng)
                 runner_state, metric = train_on_environment(env_rng, train_state, env)
+                print('done with env')
+                gc.collect()
                 metrics.append(metric)
             return runner_state, metrics
         
@@ -919,8 +920,9 @@ def main(cfg):
         # visualize_environments(config) 
         rng = jax.random.PRNGKey(config["SEED"]) # create a pseudo-random key 
         rngs = jax.random.split(rng, config["NUM_SEEDS"]) # split the random key into num_seeds keys
-        train_jit = jax.jit(make_train(config)) # JIT compile the training function for faster execution
-        out = jax.vmap(train_jit)(rngs) # Vectorize the training function and run it num_seeds times
+        # train_jit = jax.jit(make_train(config)) # JIT compile the training function for faster execution
+
+        out = jax.vmap(make_train(config))(rngs) # Vectorize the training function and run it num_seeds times
 
 
     filename = f'{config["ENV_NAME"]}_continual'

@@ -13,14 +13,9 @@ MAX_GRAD_NORM: 0.5
 REWARD_SHAPING_HORIZON: 2.5e6
 ACTIVATION: "tanh"
 ENV_NAME: "overcooked"
-SEQ_LENGTH: 3
-STRATEGY: 'random'
 
-# ENV_KWARGS: 
-#   - {"layout": "asymm_advantages"}
-#   - {"layout": "forced_coord"}
-#   - {"layout": "cramped_room"}
-# LAYOUT_NAME: ["forced_coord", "asymm_advantages", "cramped_room"]
+SEQ_LENGTH: 15
+STRATEGY: 'random'
 
 ANNEAL_LR: False
 SEED: 30
