@@ -19,3 +19,4 @@ tmp/
 wandb/
 outputs/
 models/
+*.dat
