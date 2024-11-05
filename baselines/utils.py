@@ -53,6 +53,9 @@ def pad_observation_space(config):
     @param envs: the environment
     returns the padded observation space
     '''
+
+    print('in pad_observation_space')
+
     envs = []
     for env_args in config["ENV_KWARGS"]:
             # Create the environment
@@ -142,7 +145,7 @@ def pad_observation_space(config):
         env["width"] = max_width
 
         padded_envs.append(freeze(env)) # Freeze the environment to prevent further modifications
-
+        
     return padded_envs
 
 def sample_discrete_action(key, action_space):
