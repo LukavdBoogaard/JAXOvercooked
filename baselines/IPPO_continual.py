@@ -107,7 +107,22 @@ class Transition(NamedTuple):
 ##### HELPER FUNCTIONS #####
 ############################
 
-@partial(jax.jit, static_argnums=(1))
+@jax.jit
+def select_action(train_state, rng, obs):
+    '''
+    Selects an action based on the policy network
+    @param params: the parameters of the network
+    @param rng: random number generator
+    @param obs: the observation
+    returns the action
+    '''
+    network_apply = train_state.apply_fn
+    params = train_state.params
+    pi, value = network_apply(params, obs)
+    return pi.sample(seed=rng), value
+    
+
+# @partial(jax.jit, static_argnums=(1))
 def evaluate_model(train_state, network, key):
     '''
     Evaluates the model by running 10 episodes on all environments and returns the average reward
@@ -149,13 +164,13 @@ def evaluate_model(train_state, network, key):
             flat_obs = {k: v.flatten() for k, v in obs.items()}
 
             # Get action distributions
-            pi_0, _ = network.apply(network_params, flat_obs["agent_0"])
-            pi_1, _ = network.apply(network_params, flat_obs["agent_1"])
+            action_a1, _ = select_action(train_state, key_a0, flat_obs["agent_0"])
+            action_a2, _ = select_action(train_state, key_a1, flat_obs["agent_1"])
 
             # Sample actions
             actions = {
-                "agent_0": pi_0.sample(seed=key_a0),
-                "agent_1": pi_1.sample(seed=key_a1)
+                "agent_0": action_a1,
+                "agent_1": action_a2
             }
 
             # Environment step
