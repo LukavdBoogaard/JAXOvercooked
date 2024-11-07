@@ -961,8 +961,8 @@ def main(cfg):
     out = jax.vmap(make_train(config))(rngs) # Vectorize the training function and run it num_seeds times
 
 
-    filename = f'{config["ENV_NAME"]}_continual'
-    train_state = jax.tree_util.tree_map(lambda x: x[0], out["runner_state"][0])
+    # filename = f'{config["ENV_NAME"]}_continual'
+    # train_state = jax.tree_util.tree_map(lambda x: x[0], out["runner_state"][0])
     # state_seq = get_rollout(train_state, config)
     # viz = OvercookedVisualizer()
     # # agent_view_size is hardcoded as it determines the padding around the layout.
