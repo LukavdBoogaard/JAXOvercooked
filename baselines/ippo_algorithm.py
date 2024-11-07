@@ -19,6 +19,7 @@ from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
 import hydra
 from omegaconf import OmegaConf
 from flax.core.frozen_dict import FrozenDict, freeze, unfreeze
+from torch.utils.tensorboard import SummaryWriter
 
 import matplotlib.pyplot as plt
 import wandb

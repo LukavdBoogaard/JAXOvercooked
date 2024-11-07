@@ -28,6 +28,7 @@ import tracemalloc
 from jax import clear_caches
 
 from functools import partial
+from memory_profiler import profile
 
 class ActorCritic(nn.Module):
     '''
@@ -507,7 +508,7 @@ def make_train(config):
             # create and reset the environment
             obsv, env_state = jax.vmap(env.reset, in_axes=(0,))(reset_rng) 
             
-            # TRAIN LOOP
+            # TRAIN 
             def _update_step(runner_state, unused):
                 '''
                 perform a single update step in the training loop
@@ -516,6 +517,7 @@ def make_train(config):
                 '''
 
                 # COLLECT TRAJECTORIES
+                # @profile
                 def _env_step(runner_state, unused):
                     '''
                     selects an action based on the policy, calculates the log probability of the action, 
@@ -594,7 +596,8 @@ def make_train(config):
                 # apply the network to the batch of observations to get the value of the last state
                 _, last_val = network.apply(train_state.params, last_obs_batch)
                 # this returns the value network for the last observation batch
-
+                
+                # @profile
                 def _calculate_gae(traj_batch, last_val):
                     '''
                     calculates the generalized advantage estimate (GAE) for the trajectory batch
@@ -637,6 +640,7 @@ def make_train(config):
                 advantages, targets = _calculate_gae(traj_batch, last_val)
 
                 # UPDATE NETWORK
+                # @profile
                 def _update_epoch(update_state, unused):
                     '''
                     performs a single update epoch in the training loop
@@ -653,7 +657,8 @@ def make_train(config):
                         '''
                         # unpack the batch information
                         traj_batch, advantages, targets = batch_info
-
+                        
+                        # @profile
                         def _loss_fn(params, traj_batch, gae, targets):
                             '''
                             calculates the loss of the network
@@ -857,7 +862,7 @@ def make_train(config):
         rng = rngs[0]
         env_rngs = rngs[1:]
 
-        tracemalloc.start()
+        # tracemalloc.start()
 
         def loop_over_envs(rng, train_state, envs):
             '''
@@ -874,14 +879,16 @@ def make_train(config):
                 print('done with env')
                 gc.collect()
 
-                # Memory allocation snapshot after each environment
-                current, peak = tracemalloc.get_traced_memory()
-                print(f"Current memory usage: {current / 10**6} MB; Peak: {peak / 10**6} MB")
+                # # Memory allocation snapshot after each environment
+                # current, peak = tracemalloc.get_traced_memory()
+                # print(f"Current memory usage: {current / 10**6} MB; Peak: {peak / 10**6} MB")
 
                 metrics.append(metric)
+
+                train_state = runner_state[0]
             
-            tracemalloc.stop()
-            return runner_state, metrics
+            # tracemalloc.stop()
+            return train_state, metrics
         
 
         
@@ -930,13 +937,13 @@ def main(cfg):
     )
 
     # Create the training function
-    with jax.disable_jit(False):   
-        # visualize_environments(config) 
-        rng = jax.random.PRNGKey(config["SEED"]) # create a pseudo-random key 
-        rngs = jax.random.split(rng, config["NUM_SEEDS"]) # split the random key into num_seeds keys
-        # train_jit = jax.jit(make_train(config)) # JIT compile the training function for faster execution
+     
+    # visualize_environments(config) 
+    rng = jax.random.PRNGKey(config["SEED"]) # create a pseudo-random key 
+    rngs = jax.random.split(rng, config["NUM_SEEDS"]) # split the random key into num_seeds keys
+    # train_jit = jax.jit(make_train(config)) # JIT compile the training function for faster execution
 
-        out = jax.vmap(make_train(config))(rngs) # Vectorize the training function and run it num_seeds times
+    out = jax.vmap(make_train(config))(rngs) # Vectorize the training function and run it num_seeds times
 
 
     filename = f'{config["ENV_NAME"]}_continual'

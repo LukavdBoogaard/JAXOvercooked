@@ -23,9 +23,11 @@ from jax_marl.environments.overcooked_environment import overcooked_layouts
 from baselines.utils import Transition, batchify, unbatchify, pad_observation_space, sample_discrete_action, get_rollout_for_visualization, visualize_environments
 from jax_marl.wrappers.baselines import LogWrapper
 from flax.training.train_state import TrainState
+from torch.utils.tensorboard import SummaryWriter
 
 from baselines.ippo_algorithm import ippo_train
 from baselines.algorithms import ActorCritic
+
 
 
 
@@ -92,6 +94,7 @@ def make_train_fn(config):
     @param config: the configuration dictionary
     """
 
+    @partial(jax.jit, static_argnums=(0,))
     def train_sequence(rng):
         '''
         Train on a sequence of tasks.
@@ -198,6 +201,7 @@ def main(config):
     wandb.init(
         project='Continual_IPPO', 
         config=config,
+        sync_tensorboard=True,
         mode=config["WANDB_MODE"],
         name=f'{config["LAYOUT_NAME"]}_{config["SEQ_LENGTH"]}_{config["STRATEGY"]}'
     )
