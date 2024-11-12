@@ -20,9 +20,6 @@ from flax.linen.initializers import constant, orthogonal
 
 import matplotlib.pyplot as plt
 import wandb
-import os
-os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
-import gc
 import tracemalloc
 from jax import clear_caches
 
@@ -337,19 +334,16 @@ def make_train(config):
 
             return runner_state, metrics
 
-        tracemalloc.start()
+        
 
         def loop_over_envs(rng, train_state, envs):
             metrics = []
             for env_rng, env in zip(jax.random.split(rng, len(envs)+1)[1:], envs):
                 runner_state, metric = train_on_environment(env_rng, train_state, env)
-                clear_caches()
-                gc.collect()
-                current, peak = tracemalloc.get_traced_memory()
-                print(f"Current memory usage: {current / 10**6} MB; Peak: {peak / 10**6} MB")
+                # clear_caches()
+                
                 metrics.append(metric)
             
-            tracemalloc.stop()
             return runner_state, metrics
 
         runner_state, metrics = loop_over_envs(rng, None, envs)
