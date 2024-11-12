@@ -25,7 +25,7 @@ from jax_marl.wrappers.baselines import LogWrapper
 from flax.training.train_state import TrainState
 from torch.utils.tensorboard import SummaryWriter
 
-from baselines.ippo_algorithm import ippo_train
+from baselines.ippo_algorithm import Config, ippo_train
 from baselines.algorithms import ActorCritic
 
 
@@ -157,11 +157,10 @@ def make_train_fn(config):
 
                 if config["ALG_NAME"] == "ippo":
                     runner_state, metric = ippo_train(network, train_state, env, env_rng, config)
-                    print(f"Finished training on environment")
-                    clear_caches()
-                    gc.collect()
-
                     metrics.append(metric)
+                    train_state = runner_state[0]
+
+                    print(f"Finished training on environment")
                 else:
                     raise ValueError("Algorithm not recognized")
 

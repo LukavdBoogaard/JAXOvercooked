@@ -8,7 +8,7 @@ import flax.linen as nn
 import numpy as np
 import optax
 from flax.linen.initializers import constant, orthogonal
-from typing import Sequence, NamedTuple, Any
+from typing import Sequence, NamedTuple, Any, Optional
 from flax.training.train_state import TrainState
 import distrax
 from gymnax.wrappers.purerl import LogWrapper, FlattenObservationWrapper
@@ -27,9 +27,13 @@ import wandb
 from baselines.utils import Transition, batchify, unbatchify, pad_observation_space
 from baselines.evaluation import evaluate_model
 from functools import partial
+from dataclasses import dataclass
 
-# # Set the global config variable
-# config = None
+
+############################
+##### HELPER CLASSES   #####
+############################
+
 
 class ActorCritic(nn.Module):
     '''
@@ -92,11 +96,47 @@ class ActorCritic(nn.Module):
         return pi, value #squeezed to remove any unnecessary dimensions
     
 
-############################
-##### HELPER FUNCTIONS #####
-############################
+@dataclass
+class Config:
+    lr: float = 1e-4
+    num_envs: int = 16
+    num_steps: int = 128
+    total_timesteps: float = 5e6
+    update_epochs: int = 4
+    num_minibatches: int = 4
+    gamma: float = 0.99
+    gae_lambda: float = 0.95
+    clip_eps: float = 0.2
+    ent_coef: float = 0.01
+    vf_coef: float = 0.5
+    max_grad_norm: float = 0.5
+    reward_shaping_horizon: float = 2.5e6
+    activation: str = "tanh"
+    env_name: str = "overcooked"
+    alg_name: str = "ippo"
+    
+    seq_length: int = 5
+    strategy: str = "random"
+    
+    anneal_lr: bool = False
+    seed: int = 30
+    num_seeds: int = 1
+    
+    # Wandb settings
+    wandb_mode: str = "online"
+    entity: Optional[str] = ""
+    project: str = "ippo_continual"
 
+    def compute_num_actors(self, num_agents: int) -> int:
+        return num_agents * self.num_envs
 
+    @property
+    def compute_num_updates(self) -> int:
+        return self.total_timesteps // self.num_steps // self.num_envs
+
+    @property
+    def compute_minibatch_size(self) -> int:
+        return (self.num_envs * self.num_steps) // self.num_minibatches
 
 
 

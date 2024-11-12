@@ -146,67 +146,6 @@ def visualize_environments(config):
     return None
 
 
-class ActorCritic(nn.Module):
-    '''
-    Class to define the actor-critic networks used in IPPO. Each agent has its own actor-critic network
-    '''
-    action_dim: Sequence[int]
-    activation: str = "tanh"
-
-    @nn.compact
-    def __call__(self, x):
-        if self.activation == "relu":
-            activation = nn.relu
-        else:
-            activation = nn.tanh
-
-        # ACTOR  
-        actor_mean = nn.Dense(
-            64, # number of neurons
-            kernel_init=orthogonal(np.sqrt(2)), 
-            bias_init=constant(0.0) # sets the bias initialization to a constant value of 0
-        )(x) # applies a dense layer to the input x
-
-        actor_mean = activation(actor_mean) # applies the activation function to the output of the dense layer
-
-        actor_mean = nn.Dense(
-            64, 
-            kernel_init=orthogonal(np.sqrt(2)), 
-            bias_init=constant(0.0)
-        )(actor_mean)
-
-        actor_mean = activation(actor_mean)
-
-        actor_mean = nn.Dense(
-            self.action_dim, 
-            kernel_init=orthogonal(0.01), 
-            bias_init=constant(0.0)
-        )(actor_mean)
-
-        pi = distrax.Categorical(logits=actor_mean) # creates a categorical distribution over all actions (the logits are the output of the actor network)
-
-        # CRITIC
-        critic = nn.Dense(
-            64, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
-        )(x)
-
-        critic = activation(critic)
-
-        critic = nn.Dense(
-            64, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
-        )(critic)
-
-        critic = activation(critic)
-
-        critic = nn.Dense(1, kernel_init=orthogonal(1.0), bias_init=constant(0.0))(
-            critic
-        )
-        
-        # returns the policy (actor) and state-value (critic) networks
-        value = jnp.squeeze(critic, axis=-1)
-        return pi, value #squeezed to remove any unnecessary dimensions
-    
-
 ##########################################################
 ##########################################################
 #######            TRAINING FUNCTION               #######
@@ -235,53 +174,8 @@ def make_train(config):
         config["NUM_UPDATES"] = (config["TOTAL_TIMESTEPS"] // config["NUM_STEPS"] // config["NUM_ENVS"])
         config["MINIBATCH_SIZE"] = (config["NUM_ACTORS"] * config["NUM_STEPS"] // config["NUM_MINIBATCHES"])
 
-        def linear_schedule(count):
-            '''
-            Linearly decays the learning rate depending on the number of minibatches and number of epochs
-            returns the learning rate
-            '''
-            frac = 1.0 - ((count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])) / config["NUM_UPDATES"])
-            return config["LR"] * frac
-        
-
-        # REWARD SHAPING IN NEW VERSION
-        rew_shaping_anneal = optax.linear_schedule(
-            init_value=1.,
-            end_value=0.,
-            transition_steps=config["REWARD_SHAPING_HORIZON"]
-        )
-
-        # step 2: initialize the network using the first environment
-        network = ActorCritic(temp_env.action_space().n, activation=config["ACTIVATION"])
-
-        # step 3: initialize the network parameters
-        rng, network_rng = jax.random.split(rng)
-        init_x = jnp.zeros(env.observation_space().shape).flatten()
-        network_params = network.init(network_rng, init_x)
-
-        # step 4: initialize the optimizer
-        if config["ANNEAL_LR"]: 
-            # anneals the learning rate
-            tx = optax.chain(
-                optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-                optax.adam(learning_rate=linear_schedule, eps=1e-5),
-            )
-        else:
-            # uses the default learning rate
-            tx = optax.chain(
-                optax.clip_by_global_norm(config["MAX_GRAD_NORM"]), 
-                optax.adam(config["LR"], eps=1e-5)
-            )
-
-        # step 5: Initialize the training state      
-        train_state = TrainState.create(
-            apply_fn=network.apply,
-            params=network_params,
-            tx=tx,
-        )
-
-        @partial(jax.jit, static_argnums=(2))
-        def train_on_environment(rng, train_state, env):
+        @partial(jax.jit, static_argnums=(1))
+        def train_on_environment(rng, env):
             '''
             Executes random actions in the environment instead of training.
             @param rng: random number generator 
@@ -300,7 +194,7 @@ def make_train(config):
                     '''
                     Selects random actions and performs a step in the environment.
                     '''
-                    train_state, env_state, last_obs, update_step, rng = runner_state
+                    env_state, last_obs, update_step, rng = runner_state
                     rng, key_a0, key_a1, key_s = jax.random.split(rng, 4)
                     action_0 = jnp.broadcast_to(sample_discrete_action(key_a0, env.action_space()), (config["NUM_ENVS"],))
                     action_1 = jnp.broadcast_to(sample_discrete_action(key_a1, env.action_space()), (config["NUM_ENVS"],))
@@ -309,7 +203,7 @@ def make_train(config):
                     obsv, env_state, reward, done, info = jax.vmap(env.step, in_axes=(0, 0, 0))(
                         jax.random.split(key_s, config["NUM_ENVS"]), env_state, actions
                     )
-                    runner_state = (train_state, env_state, obsv, update_step, rng)
+                    runner_state = (env_state, obsv, update_step, rng)
                     metrics = {"reward": reward["agent_0"], "done": done["__all__"]}
                     return runner_state, metrics
 
@@ -323,7 +217,7 @@ def make_train(config):
                 return runner_state, metrics
 
             rng, train_rng = jax.random.split(rng)
-            runner_state = (train_state, env_state, obsv, update_step, train_rng)
+            runner_state = (env_state, obsv, update_step, train_rng)
             
             runner_state, metrics = jax.lax.scan(
                 f=_update_step,
@@ -334,19 +228,17 @@ def make_train(config):
 
             return runner_state, metrics
 
-        
-
-        def loop_over_envs(rng, train_state, envs):
+        def loop_over_envs(rng, envs):
             metrics = []
             for env_rng, env in zip(jax.random.split(rng, len(envs)+1)[1:], envs):
-                runner_state, metric = train_on_environment(env_rng, train_state, env)
+                runner_state, metric = train_on_environment(env_rng, env)
                 # clear_caches()
                 
                 metrics.append(metric)
             
             return runner_state, metrics
 
-        runner_state, metrics = loop_over_envs(rng, None, envs)
+        runner_state, metrics = loop_over_envs(rng, envs)
         return {"runner_state": runner_state, "metrics": metrics}
 
     return train
@@ -372,13 +264,16 @@ def main(cfg):
         project="ippo-overcooked", 
         config=config, 
         mode=config["WANDB_MODE"],
-        name="ippo_continual_random_actions"
+        name="random_actions"
     )
 
     with jax.disable_jit(False):   
         rng = jax.random.PRNGKey(config["SEED"])  
         rngs = jax.random.split(rng, config["NUM_SEEDS"])
-        out = jax.vmap(make_train(config))(rngs)  
+        jitted_train = jax.jit(make_train(config))
+        out = jax.vmap(jitted_train)(rngs)  
+        # out = jax.vmap(make_train(config))(rngs)  
+
 
     print("Done")
 

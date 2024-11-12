@@ -21,14 +21,8 @@ from omegaconf import OmegaConf
 
 import matplotlib.pyplot as plt
 import wandb
-import os
-os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
-import gc
-import tracemalloc
-from jax import clear_caches
 
 from functools import partial
-from memory_profiler import profile
 
 class ActorCritic(nn.Module):
     '''
@@ -120,9 +114,8 @@ def select_action(train_state, rng, obs):
     params = train_state.params
     pi, value = network_apply(params, obs)
     return pi.sample(seed=rng), value
-    
 
-# @partial(jax.jit, static_argnums=(1))
+@partial(jax.jit, static_argnums=(1))
 def evaluate_model(train_state, network, key):
     '''
     Evaluates the model by running 10 episodes on all environments and returns the average reward
@@ -203,10 +196,6 @@ def evaluate_model(train_state, network, key):
 
     for env in envs:
         env = jax_marl.make(config["ENV_NAME"], layout=env)  # Create the environment
-
-        # Initialize the network
-        # key, key_a = jax.random.split(key)
-        # init_x = jnp.zeros(env.observation_space().shape).flatten()  # initializes and flattens observation space
 
         # network.init(key_a, init_x)  # initializes the network with the observation space
         network_params = train_state.params
@@ -424,7 +413,6 @@ def make_train(config):
     returns the training function
     '''
     def train(rng):
-
         # step 1: make sure all envs are the same size and create the environments
         padded_envs = pad_observation_space(config)
         envs = []
@@ -485,20 +473,12 @@ def make_train(config):
             tx=tx,
         )
 
-        @partial(jax.jit, static_argnums=(2))
         def train_on_environment(rng, train_state, env):
             '''
             Trains the network using IPPO
             @param rng: random number generator 
             returns the runner state and the metrics
             '''
-
-            # network = ActorCritic(env.action_space().n, activation=config["ACTIVATION"])
-            # # step 3: initialize the network parameters
-            # rng, network_creation_rng = jax.random.split(rng)
-            # init_x = jnp.zeros(env.observation_space().shape).flatten()
-            # network_params = network.init(network_creation_rng, init_x)
-
 
             # reset the learning rate and the optimizer
             if config["ANNEAL_LR"]:
@@ -511,16 +491,11 @@ def make_train(config):
                     optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
                     optax.adam(config["LR"], eps=1e-5)
                 )
-            
             train_state = train_state.replace(tx=tx)
             
-            # Initialize environment 
+            # Initialize and reset the environment 
             rng, env_rng = jax.random.split(rng) 
-
-            # create config["NUM_ENVS"] seeds for each environment 
             reset_rng = jax.random.split(env_rng, config["NUM_ENVS"]) 
-
-            # create and reset the environment
             obsv, env_state = jax.vmap(env.reset, in_axes=(0,))(reset_rng) 
             
             # TRAIN 
@@ -868,16 +843,8 @@ def make_train(config):
             # Return the runner state after the training loop, and the metric arrays
             return runner_state, metric
 
-        
-        # step 7: loop over the environments and train the network
-
         # split the random number generator for training on the environments
-        num_envs = len(envs)+1
-        rngs = jax.random.split(rng, num_envs)
-        rng = rngs[0]
-        env_rngs = rngs[1:]
-
-        # tracemalloc.start()
+        rng, *env_rngs = jax.random.split(rng, len(envs)+1)
 
         def loop_over_envs(rng, train_state, envs):
             '''
@@ -890,28 +857,16 @@ def make_train(config):
             metrics = []
             for env_rng, env in zip(env_rngs, envs):
                 runner_state, metric = train_on_environment(env_rng, train_state, env)
-                clear_caches()
                 print('done with env')
-                gc.collect()
-
-                # # Memory allocation snapshot after each environment
-                # current, peak = tracemalloc.get_traced_memory()
-                # print(f"Current memory usage: {current / 10**6} MB; Peak: {peak / 10**6} MB")
 
                 metrics.append(metric)
-
                 train_state = runner_state[0]
-            
-            # tracemalloc.stop()
             return train_state, metrics
         
-
-        
         # apply the loop_over_envs function to the environments
-        runner_state, metrics = loop_over_envs(rng, train_state, envs)
-        
+        train_state, metrics = loop_over_envs(rng, train_state, envs)
 
-        return {"runner_state": runner_state, "metrics": metrics}
+        return {"runner_state": train_state, "metrics": metrics}
     return train
 
 
@@ -954,20 +909,20 @@ def main(cfg):
     # Create the training function
      
     # visualize_environments(config) 
-    rng = jax.random.PRNGKey(config["SEED"]) # create a pseudo-random key 
-    rngs = jax.random.split(rng, config["NUM_SEEDS"]) # split the random key into num_seeds keys
-    # train_jit = jax.jit(make_train(config)) # JIT compile the training function for faster execution
+    # rng = jax.random.PRNGKey(config["SEED"]) # create a pseudo-random key 
+    # rngs = jax.random.split(rng, config["NUM_SEEDS"]) # split the random key into num_seeds keys
+    # # train_jit = jax.jit(make_train(config)) # JIT compile the training function for faster execution
+    # out = jax.vmap(make_train(config))(rngs) # Vectorize the training function and run it num_seeds times
 
-    out = jax.vmap(make_train(config))(rngs) # Vectorize the training function and run it num_seeds times
+    with jax.disable_jit(False):
+        rng = jax.random.PRNGKey(config["SEED"]) 
+        rngs = jax.random.split(rng, config["NUM_SEEDS"])
+        train_jit = jax.jit(make_train(config))
+        out = jax.vmap(train_jit)(rngs)
+        # out = jax.vmap(make_train(config))(rngs)
 
-
-    # filename = f'{config["ENV_NAME"]}_continual'
-    # train_state = jax.tree_util.tree_map(lambda x: x[0], out["runner_state"][0])
-    # state_seq = get_rollout(train_state, config)
-    # viz = OvercookedVisualizer()
-    # # agent_view_size is hardcoded as it determines the padding around the layout.
-    # viz.animate(state_seq, agent_view_size=5, filename=f"{filename}.gif")
-
+  
+  
     print("Done")
     
 
