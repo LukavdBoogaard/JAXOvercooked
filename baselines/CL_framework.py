@@ -43,10 +43,10 @@ def initialize_networks(config, env, rng):
     print("In initializing networks")
 
     # get the algorithm
-    algorithm = config["ALG_NAME"]
+    algorithm = config.alg_name
      
     if algorithm == "ippo":
-        network = ActorCritic(env.action_space().n, activation=config["ACTIVATION"])
+        network = ActorCritic(env.action_space().n, activation=config.activation)
         rng, network_rng = jax.random.split(rng)
         init_x = jnp.zeros(env.observation_space().shape).flatten()
         network_params = network.init(network_rng, init_x)
@@ -56,20 +56,20 @@ def initialize_networks(config, env, rng):
             Linearly decays the learning rate depending on the number of minibatches and number of epochs
             returns the learning rate
             '''
-            frac = 1.0 - ((count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])) / config["NUM_UPDATES"])
-            return config["LR"] * frac
+            frac = 1.0 - ((count // (config.num_minibatches * config.update_epochs)) / config.num_updates)
+            return config.lr * frac
         
-        if config["ANNEAL_LR"]: 
+        if config.anneal_lr: 
             # anneals the learning rate
             tx = optax.chain(
-                optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
+                optax.clip_by_global_norm(config.max_grad_norm),
                 optax.adam(learning_rate=linear_schedule, eps=1e-5),
             )
         else:
             # uses the default learning rate
             tx = optax.chain(
-                optax.clip_by_global_norm(config["MAX_GRAD_NORM"]), 
-                optax.adam(config["LR"], eps=1e-5)
+                optax.clip_by_global_norm(config.max_grad_norm), 
+                optax.adam(config.lr, eps=1e-5)
             )
 
             train_state = TrainState.create(
