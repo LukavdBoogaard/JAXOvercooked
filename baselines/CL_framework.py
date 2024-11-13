@@ -23,11 +23,12 @@ from jax_marl.environments.overcooked_environment import overcooked_layouts
 from baselines.utils import Transition, batchify, unbatchify, pad_observation_space, sample_discrete_action, get_rollout_for_visualization, visualize_environments
 from jax_marl.wrappers.baselines import LogWrapper
 from flax.training.train_state import TrainState
-from torch.utils.tensorboard import SummaryWriter
+# from torch.utils.tensorboard import SummaryWriter
 
 from baselines.ippo_algorithm import Config, ippo_train
 from baselines.algorithms import ActorCritic
 
+import tyro
 
 
 
@@ -88,7 +89,7 @@ def initialize_networks(config, env, rng):
 ########################################################################################
 ########################################################################################
 
-def make_train_fn(config):
+def make_train_fn(config: Config):
     """
     Create the training function for the continual learning experiment.
     @param config: the configuration dictionary
@@ -110,7 +111,7 @@ def make_train_fn(config):
         envs = []
         for env_layout in padded_envs:
             # Create the environment object
-            env = jax_marl.make(config["ENV_NAME"], layout=env_layout)
+            env = jax_marl.make(config.env_name, layout=env_layout)
             env = LogWrapper(env, replace_info=False)
             envs.append(env)
         
@@ -118,19 +119,19 @@ def make_train_fn(config):
         
         # add configuration items
         temp_env = envs[0]
-        config["NUM_ACTORS"] = temp_env.num_agents * config["NUM_ENVS"]
-        config["NUM_UPDATES"] = (config["TOTAL_TIMESTEPS"] // config["NUM_STEPS"] // config["NUM_ENVS"])
-        config["MINIBATCH_SIZE"] = (config["NUM_ACTORS"] * config["NUM_STEPS"] // config["NUM_MINIBATCHES"])
+        config.num_actors = env.num_agents * config.num_envs
+        config.num_updates = config.total_timesteps // config.num_steps // config.num_envs
+        config.num_minibatches = (config.num_envs * config.num_steps) // config.num_minibatches
 
 
-        freeze(config)
-        print("Config is frozen")
+        # freeze(config)
+        # print("Config is frozen")
 
         # REWARD SHAPING IN NEW VERSION
         rew_shaping_anneal = optax.linear_schedule(
             init_value=1.,
             end_value=0.,
-            transition_steps=config["REWARD_SHAPING_HORIZON"]
+            transition_steps=config.reward_shaping_horizon
         )
 
         # Initialize the network
@@ -155,7 +156,7 @@ def make_train_fn(config):
             for env, env_rng in zip(envs, env_rngs):
                 print(f"Training on environment {env}")
 
-                if config["ALG_NAME"] == "ippo":
+                if config.alg_name == "ippo":
                     runner_state, metric = ippo_train(network, train_state, env, env_rng, config)
                     metrics.append(metric)
                     train_state = runner_state[0]
@@ -181,15 +182,18 @@ def main(config):
     # set the device to GPU
     jax.config.update("jax_platform_name", "gpu")
 
-    config = OmegaConf.to_container(config)
+    # config = OmegaConf.to_container(config)
+
+    config = tyro.cli(Config)
 
     # generate a sequence of tasks
-    seq_length = config["SEQ_LENGTH"]
-    strategy = config["STRATEGY"]
-    config["ENV_KWARGS"], config["LAYOUT_NAME"] = generate_sequence(seq_length, strategy, layouts=None)
+    seq_length = config.seq_length
+    strategy = config.strategy
+    layouts = config.layouts
+    config.env_kwargs, config.layout_name = generate_sequence(seq_length, strategy, layouts=layouts)
 
 
-    for layout_config in config["ENV_KWARGS"]:
+    for layout_config in config.env_kwargs:
         # Extract the layout name
         layout_name = layout_config["layout"]
 
@@ -201,16 +205,16 @@ def main(config):
         project='Continual_IPPO', 
         config=config,
         sync_tensorboard=True,
-        mode=config["WANDB_MODE"],
-        name=f'{config["LAYOUT_NAME"]}_{config["SEQ_LENGTH"]}_{config["STRATEGY"]}'
+        mode=config.wandb_mode,
+        name=f'{config.alg_name}_{config.seq_length}_{config.strategy}'
     )
     
     freeze(config)
 
     # Create the training loop
     with jax.disable_jit():
-        rng = jax.random.PRNGKey(config["SEED"])
-        rngs = jax.random.split(rng, config["NUM_SEEDS"])
+        rng = jax.random.PRNGKey(config.seed)
+        rngs = jax.random.split(rng, config.num_seeds)
         train_jit = jax.jit(make_train_fn(config))
         output = jax.vmap(train_jit)(rngs)
     
