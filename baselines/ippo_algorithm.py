@@ -4,12 +4,14 @@ Based on PureJaxRL Implementation of PPO
 
 import jax
 import jax.numpy as jnp
+import flax
 import flax.linen as nn
 import numpy as np
 import optax
 from flax.linen.initializers import constant, orthogonal
 from typing import Sequence, NamedTuple, Any, Optional
 from flax.training.train_state import TrainState
+# from flax.struct import dataclass
 import distrax
 from gymnax.wrappers.purerl import LogWrapper, FlattenObservationWrapper
 import jax_marl
@@ -20,6 +22,7 @@ import hydra
 from omegaconf import OmegaConf
 from flax.core.frozen_dict import FrozenDict, freeze, unfreeze
 from torch.utils.tensorboard import SummaryWriter
+
 
 import matplotlib.pyplot as plt
 import wandb
@@ -117,6 +120,9 @@ class Config:
     
     seq_length: int = 5
     strategy: str = "random"
+    layouts: Optional[Sequence[str]] = None
+    env_kwargs: Optional[Sequence[dict]] = None
+    layout_name: Optional[Sequence[str]] = None
     
     anneal_lr: bool = False
     seed: int = 30
@@ -127,18 +133,18 @@ class Config:
     entity: Optional[str] = ""
     project: str = "ippo_continual"
 
-    def compute_num_actors(self, num_agents: int) -> int:
-        return num_agents * self.num_envs
-
-    @property
-    def compute_num_updates(self) -> int:
-        return self.total_timesteps // self.num_steps // self.num_envs
-
-    @property
-    def compute_minibatch_size(self) -> int:
-        return (self.num_envs * self.num_steps) // self.num_minibatches
+    # to be computed during runtime
+    num_actors: int = 0
+    num_updates: int = 0
+    minibatch_size: int = 0
 
 
+@flax.struct.dataclass
+class EpisodeStatistics:
+    episode_returns: jnp.ndarray
+    episode_lengths: jnp.ndarray
+    returned_episode_returns: jnp.ndarray
+    returned_episode_lengths: jnp.ndarray
 
 
 ##########################################################
@@ -151,7 +157,11 @@ class Config:
 
 
 @partial(jax.jit, static_argnums=(0, 2, 3, 4))
-def ippo_train(network, train_state, env, rng, config):
+def ippo_train(network: ActorCritic, 
+               train_state: TrainState, 
+               env: str, 
+               rng: int, 
+               config: Config):
     '''
     Trains the network using IPPO
     @param rng: random number generator 
@@ -163,47 +173,34 @@ def ippo_train(network, train_state, env, rng, config):
         Linearly decays the learning rate depending on the number of minibatches and number of epochs
         returns the learning rate
         '''
-        frac = 1.0 - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])) / config["NUM_UPDATES"]
-        return config["LR"] * frac
+        frac = 1.0 - (count // (config.num_minibatches * config.update_epochs)) / config.num_updates
+        return config.lr * frac
 
     # REWARD SHAPING IN NEW VERSION
     rew_shaping_anneal = optax.linear_schedule(
         init_value=1.,
         end_value=0.,
-        transition_steps=config["REWARD_SHAPING_HORIZON"]
+        transition_steps=config.reward_shaping_horizon
     )
 
-    if config["ANNEAL_LR"]:
-        tx = optax.chain(
-            optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-            optax.adam(learning_rate=linear_schedule, eps=1e-5),
-        )
-    else:
-        tx = optax.chain(
-            optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-            optax.adam(config["LR"], eps=1e-5)
-        )
-    
+    tx = optax.chain(
+        optax.clip_by_global_norm(config.max_grad_norm),
+        optax.adam(learning_rate=linear_schedule if config.anneal_lr else config.lr, eps=1e-5)
+    )
     train_state = train_state.replace(tx=tx)
     
-    # Initialize environment 
-    rng, env_rng = jax.random.split(rng) # env_rng shape is (1, 2)
-
-    # create config["NUM_ENVS"] seeds for each environment 
-    reset_rng = jax.random.split(env_rng, config["NUM_ENVS"]) # reset_rng shape is ('num_envs', 2)
-
-    # create and reset the environment
-    obsv, env_state = jax.vmap(env.reset, in_axes=(0,))(reset_rng) # Creates all environments in parallel
+    # Initialize and reset the environments
+    rng, env_rng = jax.random.split(rng)
+    reset_rng = jax.random.split(env_rng, config.num_envs) 
+    obsv, env_state = jax.vmap(env.reset, in_axes=(0,))(reset_rng) 
     
-    # TRAIN LOOP
+    
     def _update_step(runner_state, unused):
         '''
         perform a single update step in the training loop
         @param runner_state: the carry state that contains all important training information
         returns the updated runner state and the metrics 
         '''
-
-        jax.debug.print("in update step")
 
         # COLLECT TRAJECTORIES
         def _env_step(runner_state, unused):
@@ -220,7 +217,7 @@ def ippo_train(network, train_state, env, rng, config):
             rng, sample_rng = jax.random.split(rng)
 
             # prepare the observations for the network
-            obs_batch = batchify(last_obs, env.agents, config["NUM_ACTORS"])
+            obs_batch = batchify(last_obs, env.agents, config.num_actors)
             
             # apply the policy network to the observations to get the suggested actions and their values
             pi, value = network.apply(train_state.params, obs_batch)
@@ -230,13 +227,13 @@ def ippo_train(network, train_state, env, rng, config):
             log_prob = pi.log_prob(action)
 
             # format the actions to be compatible with the environment
-            env_act = unbatchify(action, env.agents, config["NUM_ENVS"], env.num_agents)
+            env_act = unbatchify(action, env.agents, config.num_envs, env.num_agents)
             env_act = {k:v.flatten() for k,v in env_act.items()}
             
             # STEP ENV
             # split the random number generator for stepping the environment
             rng, _rng = jax.random.split(rng)
-            rng_step = jax.random.split(_rng, config["NUM_ENVS"])
+            rng_step = jax.random.split(_rng, config.num_envs)
             
             # simultaniously step all environments with the selected actions (parallelized over the number of environments with vmap)
             obsv, env_state, reward, done, info = jax.vmap(env.step, in_axes=(0,0,0))(
@@ -245,17 +242,17 @@ def ippo_train(network, train_state, env, rng, config):
 
             # REWARD SHAPING IN NEW VERSION
             info["reward"] = reward["agent_0"]
-            current_timestep = update_step * config["NUM_STEPS"] * config["NUM_ENVS"]
+            current_timestep = update_step * config.num_steps * config.num_envs
             reward = jax.tree_util.tree_map(lambda x,y: x+y * rew_shaping_anneal(current_timestep), reward, info["shaped_reward"])
 
             # format the outputs of the environment to a 'transition' structure that can be used for analysis
             # info = jax.tree_map(lambda x: x.reshape((config["NUM_ACTORS"])), info) # this is gone in the new version
 
             transition = Transition(
-                batchify(done, env.agents, config["NUM_ACTORS"]).squeeze(), 
+                batchify(done, env.agents, config.num_actors).squeeze(), 
                 action,
                 value,
-                batchify(reward, env.agents, config["NUM_ACTORS"]).squeeze(),
+                batchify(reward, env.agents, config.num_actors).squeeze(),
                 log_prob,
                 obs_batch
             )
@@ -268,14 +265,14 @@ def ippo_train(network, train_state, env, rng, config):
             f=_env_step, 
             init=runner_state, 
             xs=None, 
-            length=config["NUM_STEPS"]
+            length=config.num_steps
         )  
 
         # unpack the runner state that is returned after the scan function
         train_state, env_state, last_obs, update_step, rng = runner_state
 
         # reshape the last observation to be compatible with the network
-        last_obs_batch = batchify(last_obs, env.agents, config["NUM_ACTORS"])
+        last_obs_batch = batchify(last_obs, env.agents, config.num_actors)
 
         # apply the network to the batch of observations to get the value of the last state
         _, last_val = network.apply(train_state.params, last_obs_batch)
@@ -301,10 +298,10 @@ def ippo_train(network, train_state, env, rng, config):
                     transition.value,
                     transition.reward,
                 )
-                delta = reward + config["GAMMA"] * next_value * (1 - done) - value # calculate the temporal difference
+                delta = reward + config.gamma * next_value * (1 - done) - value # calculate the temporal difference
                 gae = (
                     delta
-                    + config["GAMMA"] * config["GAE_LAMBDA"] * (1 - done) * gae
+                    + config.gamma * config.gae_lambda * (1 - done) * gae
                 ) # calculate the GAE (used instead of the standard advantage estimate in PPO)
                 
                 return (gae, value), gae
@@ -355,7 +352,7 @@ def ippo_train(network, train_state, env, rng, config):
                     log_prob = pi.log_prob(traj_batch.action)
 
                     # calculate critic loss 
-                    value_pred_clipped = traj_batch.value + (value - traj_batch.value).clip(-config["CLIP_EPS"], config["CLIP_EPS"]) 
+                    value_pred_clipped = traj_batch.value + (value - traj_batch.value).clip(-config.clip_eps, config.clip_eps) 
                     value_losses = jnp.square(value - targets) 
                     value_losses_clipped = jnp.square(value_pred_clipped - targets) 
                     value_loss = (0.5 * jnp.maximum(value_losses, value_losses_clipped).mean()) 
@@ -367,8 +364,8 @@ def ippo_train(network, train_state, env, rng, config):
                     loss_actor_clipped = (
                         jnp.clip(
                             ratio,
-                            1.0 - config["CLIP_EPS"],
-                            1.0 + config["CLIP_EPS"],
+                            1.0 - config.clip_eps,
+                            1.0 + config.clip_eps,
                         )
                         * gae
                     ) 
@@ -379,8 +376,8 @@ def ippo_train(network, train_state, env, rng, config):
 
                     total_loss = (
                         loss_actor
-                        + config["VF_COEF"] * value_loss
-                        - config["ENT_COEF"] * entropy
+                        + config.vf_coef * value_loss
+                        - config.ent_coef * entropy
                     )
 
                     return total_loss, (value_loss, loss_actor, entropy)
@@ -401,9 +398,9 @@ def ippo_train(network, train_state, env, rng, config):
             train_state, traj_batch, advantages, targets, rng = update_state
             
             # set the batch size and check if it is correct
-            batch_size = config["MINIBATCH_SIZE"] * config["NUM_MINIBATCHES"]
+            batch_size = config.minibatch_size * config.num_minibatches
             assert (
-                batch_size == config["NUM_STEPS"] * config["NUM_ACTORS"]
+                batch_size == config.num_steps * config.num_actors
             ), "batch size must be equal to number of steps * number of actors"
             
             # create a batch of the trajectory, advantages, and targets
@@ -425,7 +422,7 @@ def ippo_train(network, train_state, env, rng, config):
             ) # outputs a tuple of the batch, advantages, and targets shuffled 
 
             minibatches = jax.tree_util.tree_map(
-                f=(lambda x: jnp.reshape(x, [config["NUM_MINIBATCHES"], -1] + list(x.shape[1:]))), tree=shuffled_batch,
+                f=(lambda x: jnp.reshape(x, [config.num_minibatches, -1] + list(x.shape[1:]))), tree=shuffled_batch,
             )
 
             # jax.debug.print(f"network: {network}")
@@ -445,7 +442,7 @@ def ippo_train(network, train_state, env, rng, config):
             f=_update_epoch, 
             init=update_state, 
             xs=None, 
-            length=config["UPDATE_EPOCHS"]
+            length=config.update_epochs
         )
 
         train_state = update_state[0]
@@ -453,7 +450,7 @@ def ippo_train(network, train_state, env, rng, config):
 
         # calculate the current timestep
 
-        current_timestep = update_step*config["NUM_STEPS"]*config["NUM_ENVS"]
+        current_timestep = update_step * config.num_steps * config.num_envs
 
         # add the shaped rewards to the metric
         metric["shaped_reward"] = metric["shaped_reward"]["agent_0"]
@@ -464,12 +461,12 @@ def ippo_train(network, train_state, env, rng, config):
         # update the metric with the current timestep
         metric = jax.tree_util.tree_map(lambda x: x.mean(), metric)
         metric["update_step"] = update_step
-        metric["env_step"] = update_step*config["NUM_STEPS"]*config["NUM_ENVS"]
+        metric["env_step"] = update_step * config.num_steps * config.num_envs
 
         # General section
         metric["General/update_step"] = update_step
-        metric["General/env_step"] = update_step * config["NUM_STEPS"] * config["NUM_ENVS"]
-        metric["General/lr"] = linear_schedule(update_step * config["UPDATE_EPOCHS"] * config["NUM_MINIBATCHES"])
+        metric["General/env_step"] = update_step * config.num_steps * config.num_envs
+        metric["General/lr"] = linear_schedule(update_step * config.update_epochs * config.num_minibatches)
 
         # Losses section
         total_loss, (value_loss, loss_actor, entropy) = loss_info
@@ -492,12 +489,12 @@ def ippo_train(network, train_state, env, rng, config):
         metric["Advantage_Targets/targets"] = targets.mean()
 
         # Evaluation section
-        for i in range(len(config["LAYOUT_NAME"])):
-            metric[f"Evaluation/{config['LAYOUT_NAME'][i]}"] = jnp.nan
+        for i in range(len(config.layout_name)):
+            metric[f"Evaluation/{config.layout_name[i]}"] = jnp.nan
         
 
         def true_fun(metric):
-            freeze(config)
+            # freeze(config)
 
             # If update step is a multiple of 20, run the evaluation function
             rng, eval_rng = jax.random.split(rng)
@@ -506,7 +503,7 @@ def ippo_train(network, train_state, env, rng, config):
 
             evaluations = evaluate_model(train_state_eval, network, config, eval_rng)
             for i, evaluation in enumerate(evaluations):
-                metric[f"Evaluation/{config['LAYOUT_NAME'][i]}"] = evaluation
+                metric[f"Evaluation/{config.layout_name[i]}"] = evaluation
             return metric
         
         def false_fun(metric):
@@ -536,7 +533,7 @@ def ippo_train(network, train_state, env, rng, config):
         f=_update_step, 
         init=runner_state, 
         xs=None, 
-        length=config["NUM_UPDATES"]
+        length=config.num_updates
     )
 
     # Return the runner state after the training loop, and the metric arrays

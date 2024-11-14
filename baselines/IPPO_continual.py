@@ -23,6 +23,7 @@ import matplotlib.pyplot as plt
 import wandb
 
 from functools import partial
+from memory_profiler import profile
 
 class ActorCritic(nn.Module):
     '''
@@ -101,19 +102,7 @@ class Transition(NamedTuple):
 ##### HELPER FUNCTIONS #####
 ############################
 
-@jax.jit
-def select_action(train_state, rng, obs):
-    '''
-    Selects an action based on the policy network
-    @param params: the parameters of the network
-    @param rng: random number generator
-    @param obs: the observation
-    returns the action
-    '''
-    network_apply = train_state.apply_fn
-    params = train_state.params
-    pi, value = network_apply(params, obs)
-    return pi.sample(seed=rng), value
+
 
 @partial(jax.jit, static_argnums=(1))
 def evaluate_model(train_state, network, key):
@@ -155,6 +144,20 @@ def evaluate_model(train_state, network, key):
 
             # Flatten observations
             flat_obs = {k: v.flatten() for k, v in obs.items()}
+
+            def select_action(train_state, rng, obs):
+                '''
+                Selects an action based on the policy network
+                @param params: the parameters of the network
+                @param rng: random number generator
+                @param obs: the observation
+                returns the action
+                '''
+                network_apply = train_state.apply_fn
+                params = train_state.params
+                pi, value = network_apply(params, obs)
+                return pi.sample(seed=rng), value
+
 
             # Get action distributions
             action_a1, _ = select_action(train_state, key_a0, flat_obs["agent_0"])
@@ -499,6 +502,7 @@ def make_train(config):
             obsv, env_state = jax.vmap(env.reset, in_axes=(0,))(reset_rng) 
             
             # TRAIN 
+            @profile
             def _update_step(runner_state, unused):
                 '''
                 perform a single update step in the training loop
@@ -859,6 +863,10 @@ def make_train(config):
                 runner_state, metric = train_on_environment(env_rng, train_state, env)
                 print('done with env')
 
+                abc = train_on_environment
+                runner, metric = abc(env_rng, train_state, env)
+                del abc
+
                 metrics.append(metric)
                 train_state = runner_state[0]
             return train_state, metrics
@@ -921,8 +929,9 @@ def main(cfg):
         out = jax.vmap(train_jit)(rngs)
         # out = jax.vmap(make_train(config))(rngs)
 
-  
-  
+    
+    
+    jax.debug.print("cache_size = {}", train_jit._cache_size())
     print("Done")
     
 

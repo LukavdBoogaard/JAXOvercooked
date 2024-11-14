@@ -23,7 +23,7 @@ from jax_marl.environments.overcooked_environment import overcooked_layouts
 from baselines.utils import Transition, batchify, unbatchify, pad_observation_space, sample_discrete_action, get_rollout_for_visualization, visualize_environments
 from jax_marl.wrappers.baselines import LogWrapper
 from flax.training.train_state import TrainState
-# from torch.utils.tensorboard import SummaryWriter
+from torch.utils.tensorboard import SummaryWriter
 
 from baselines.ippo_algorithm import Config, ippo_train
 from baselines.algorithms import ActorCritic
@@ -47,10 +47,6 @@ def initialize_networks(config, env, rng):
     algorithm = config.alg_name
      
     if algorithm == "ippo":
-        network = ActorCritic(env.action_space().n, activation=config.activation)
-        rng, network_rng = jax.random.split(rng)
-        init_x = jnp.zeros(env.observation_space().shape).flatten()
-        network_params = network.init(network_rng, init_x)
 
         def linear_schedule(count):
             '''
@@ -60,24 +56,26 @@ def initialize_networks(config, env, rng):
             frac = 1.0 - ((count // (config.num_minibatches * config.update_epochs)) / config.num_updates)
             return config.lr * frac
         
-        if config.anneal_lr: 
-            # anneals the learning rate
-            tx = optax.chain(
-                optax.clip_by_global_norm(config.max_grad_norm),
-                optax.adam(learning_rate=linear_schedule, eps=1e-5),
-            )
-        else:
-            # uses the default learning rate
-            tx = optax.chain(
-                optax.clip_by_global_norm(config.max_grad_norm), 
-                optax.adam(config.lr, eps=1e-5)
-            )
+        # create the actor-critic network
+        network = ActorCritic(env.action_space().n, activation=config.activation)
 
-            train_state = TrainState.create(
-                apply_fn=network.apply,
-                params=network_params,
-                tx=tx,
-            )
+        # initialize the network
+        rng, network_rng = jax.random.split(rng)
+        init_x = jnp.zeros(env.observation_space().shape).flatten()
+        network_params = network.init(network_rng, init_x)
+        
+        # Initialize the optimizer
+        tx = optax.chain(
+            optax.clip_by_global_norm(config.max_grad_norm), 
+            optax.adam(learning_rate=linear_schedule if config.anneal_lr else config.lr, eps=1e-5)
+        )
+
+        # Create the TrainState object
+        train_state = TrainState.create(
+        apply_fn=jax.jit(network.apply),   #CHECK IF THIS IS POSSIBLE 
+            params=network_params,
+            tx=tx,
+        )
 
         return network, train_state, rng
     else:
@@ -103,8 +101,8 @@ def make_train_fn(config: Config):
         @return: the training output
         '''
         
-        unfreeze(config)
-        print(config)
+        # unfreeze(config)
+        # print(config)
 
         # Pad the environments to get a uniform shape
         padded_envs = pad_observation_space(config)
@@ -121,7 +119,7 @@ def make_train_fn(config: Config):
         temp_env = envs[0]
         config.num_actors = env.num_agents * config.num_envs
         config.num_updates = config.total_timesteps // config.num_steps // config.num_envs
-        config.num_minibatches = (config.num_envs * config.num_steps) // config.num_minibatches
+        config.minibatch_size = (config.num_envs * config.num_steps) // config.num_minibatches
 
 
         # freeze(config)
@@ -209,7 +207,14 @@ def main(config):
         name=f'{config.alg_name}_{config.seq_length}_{config.strategy}'
     )
     
-    freeze(config)
+    # freeze(config)
+    
+    # intialize the summary writer
+    writer = SummaryWriter(f"runs/{config.alg_name}_{config.seq_length}_{config.strategy}")
+    writer.add_text(
+        "hyperparameters",
+        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(config).items()])),
+    )
 
     # Create the training loop
     with jax.disable_jit():
