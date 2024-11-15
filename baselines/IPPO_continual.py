@@ -476,6 +476,7 @@ def make_train(config):
             tx=tx,
         )
 
+        @partial(jax.jit, static_argnums=(2))
         def train_on_environment(rng, train_state, env):
             '''
             Trains the network using IPPO
@@ -502,7 +503,7 @@ def make_train(config):
             obsv, env_state = jax.vmap(env.reset, in_axes=(0,))(reset_rng) 
             
             # TRAIN 
-            @profile
+            # @profile
             def _update_step(runner_state, unused):
                 '''
                 perform a single update step in the training loop
@@ -860,15 +861,17 @@ def make_train(config):
             '''
             metrics = []
             for env_rng, env in zip(env_rngs, envs):
-                runner_state, metric = train_on_environment(env_rng, train_state, env)
-                print('done with env')
+                # runner_state, metric = train_on_environment(env_rng, train_state, env)
+                # print('done with env')
 
-                abc = train_on_environment
-                runner, metric = abc(env_rng, train_state, env)
-                del abc
+                train_func = train_on_environment
+                runner_state, metric = train_func(env_rng, train_state, env)
+                del train_func
 
                 metrics.append(metric)
                 train_state = runner_state[0]
+
+                print("done with env")
             return train_state, metrics
         
         # apply the loop_over_envs function to the environments
@@ -925,13 +928,13 @@ def main(cfg):
     with jax.disable_jit(False):
         rng = jax.random.PRNGKey(config["SEED"]) 
         rngs = jax.random.split(rng, config["NUM_SEEDS"])
-        train_jit = jax.jit(make_train(config))
-        out = jax.vmap(train_jit)(rngs)
-        # out = jax.vmap(make_train(config))(rngs)
+        # train_jit = jax.jit(make_train(config))
+        # out = jax.vmap(train_jit)(rngs)
+        out = jax.vmap(make_train(config))(rngs)
 
     
     
-    jax.debug.print("cache_size = {}", train_jit._cache_size())
+    # jax.debug.print("cache_size = {}", train_jit._cache_size())
     print("Done")
     
 

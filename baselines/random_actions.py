@@ -22,6 +22,7 @@ import matplotlib.pyplot as plt
 import wandb
 import tracemalloc
 from jax import clear_caches
+import gc
 
 from functools import partial
 
@@ -231,8 +232,16 @@ def make_train(config):
         def loop_over_envs(rng, envs):
             metrics = []
             for env_rng, env in zip(jax.random.split(rng, len(envs)+1)[1:], envs):
-                runner_state, metric = train_on_environment(env_rng, env)
-                # clear_caches()
+                # runner_state, metric = train_on_environment(env_rng, env)
+
+                object = train_on_environment
+                runner_state, metric = object(env_rng, env)
+
+                # check if the train_on_environment function is in cache
+                jax.debug.print("cache size: {}", object._cache_size())
+
+                del object
+                gc.collect()
                 
                 metrics.append(metric)
             
@@ -270,9 +279,9 @@ def main(cfg):
     with jax.disable_jit(False):   
         rng = jax.random.PRNGKey(config["SEED"])  
         rngs = jax.random.split(rng, config["NUM_SEEDS"])
-        jitted_train = jax.jit(make_train(config))
-        out = jax.vmap(jitted_train)(rngs)  
-        # out = jax.vmap(make_train(config))(rngs)  
+        # jitted_train = jax.jit(make_train(config))
+        # out = jax.vmap(jitted_train)(rngs)  
+        out = jax.vmap(make_train(config))(rngs)  
 
 
     print("Done")
