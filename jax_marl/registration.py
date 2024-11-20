@@ -1,4 +1,4 @@
-from .environments import Overcooked
+from jax_marl.environments import Overcooked
 
 
 
