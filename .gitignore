@@ -20,3 +20,6 @@ wandb/
 outputs/
 models/
 *.dat
+
+.idea
+*.iml
