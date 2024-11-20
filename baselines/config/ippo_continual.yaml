@@ -15,7 +15,7 @@ ACTIVATION: "tanh"
 ENV_NAME: "overcooked"
 ALG_NAME: "ippo"
 
-SEQ_LENGTH: 15
+SEQ_LENGTH: 3
 STRATEGY: 'random'
 
 ANNEAL_LR: False

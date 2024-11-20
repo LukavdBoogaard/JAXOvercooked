@@ -521,7 +521,7 @@ def ippo_train(network: ActorCritic,
         rng = update_state[-1]
         runner_state = (train_state, env_state, last_obs, update_step, rng)
 
-        return runner_state, metric
+        return runner_state, _
 
     rng, train_rng = jax.random.split(rng)
 
@@ -529,13 +529,13 @@ def ippo_train(network: ActorCritic,
     runner_state = (train_state, env_state, obsv, 0, train_rng)
     
     # apply the _update_step function a series of times, while keeping track of the state 
-    runner_state, metric = jax.lax.scan(
+    runner_state, _ = jax.lax.scan(
         f=_update_step, 
         init=runner_state, 
         xs=None, 
-        length=config.num_updates
+        length=config.num_update
     )
 
     # Return the runner state after the training loop, and the metric arrays
-    return {"runner_state": runner_state, "metrics": metric}
+    return {"runner_state": runner_state}
 

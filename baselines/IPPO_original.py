@@ -354,6 +354,8 @@ def make_train(config):
                 length=config["NUM_STEPS"]
             )  
 
+            jax.debug.print(f"info: {info}")
+
             # unpack the runner state that is returned after the scan function
             train_state, env_state, last_obs, update_step, rng = runner_state
 

@@ -117,7 +117,7 @@ def make_train_fn(config: Config):
         
         # add configuration items
         temp_env = envs[0]
-        config.num_actors = env.num_agents * config.num_envs
+        config.num_actors = temp_env.num_agents * config.num_envs
         config.num_updates = config.total_timesteps // config.num_steps // config.num_envs
         config.minibatch_size = (config.num_envs * config.num_steps) // config.num_minibatches
 
@@ -150,25 +150,23 @@ def make_train_fn(config: Config):
             '''
             print("In loop over envs")
 
-            metrics = []
             for env, env_rng in zip(envs, env_rngs):
                 print(f"Training on environment {env}")
 
                 if config.alg_name == "ippo":
-                    runner_state, metric = ippo_train(network, train_state, env, env_rng, config)
-                    metrics.append(metric)
+                    runner_state = ippo_train(network, train_state, env, env_rng, config)
                     train_state = runner_state[0]
 
                     print(f"Finished training on environment")
                 else:
                     raise ValueError("Algorithm not recognized")
 
-            return runner_state, metrics
+            return runner_state
         
         # apply the loop_over_envs function to the environments
-        runner_state, metrics = loop_over_envs(rng, network, train_state, envs, config)
+        runner_state = loop_over_envs(rng, network, train_state, envs, config)
 
-        return runner_state, metrics
+        return runner_state
 
     return train_sequence
 

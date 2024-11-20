@@ -478,13 +478,14 @@ def make_train(config):
             tx=tx,
         )
 
-        # @partial(jax.jit, static_argnums=(2))
         def train_on_environment(rng, train_state, env):
             '''
             Trains the network using IPPO
             @param rng: random number generator 
             returns the runner state and the metrics
             '''
+
+            print("Training on environment")
 
             # reset the learning rate and the optimizer
             if config["ANNEAL_LR"]:
@@ -828,11 +829,12 @@ def make_train(config):
                     )
                 
                 jax.debug.callback(callback, metric)
+
                 
                 rng = update_state[-1]
                 runner_state = (train_state, env_state, last_obs, update_step, rng)
  
-                return runner_state, metric
+                return runner_state, _
 
             rng, train_rng = jax.random.split(rng)
 
@@ -840,7 +842,7 @@ def make_train(config):
             runner_state = (train_state, env_state, obsv, 0, train_rng)
             
             # apply the _update_step function a series of times, while keeping track of the state 
-            runner_state, metric = jax.lax.scan(
+            runner_state, _ = jax.lax.scan(
                 f=_update_step, 
                 init=runner_state, 
                 xs=None, 
@@ -848,7 +850,7 @@ def make_train(config):
             )
 
             # Return the runner state after the training loop, and the metric arrays
-            return runner_state, metric
+            return runner_state
 
         # split the random number generator for training on the environments
         rng, *env_rngs = jax.random.split(rng, len(envs)+1)
@@ -861,25 +863,25 @@ def make_train(config):
             @param envs: the environments
             returns the runner state and the metrics
             '''
-            metrics = []
+            # metrics = []
             for env_rng, env in zip(env_rngs, envs):
-                # runner_state, metric = train_on_environment(env_rng, train_state, env)
+                runner_state = train_on_environment(env_rng, train_state, env)
                 # print('done with env')
 
-                train_func = train_on_environment
-                runner_state, metric = train_func(env_rng, train_state, env)
-                del train_func
+                # train_func = train_on_environment
+                # runner_state = train_func(env_rng, train_state, env)
+                # del train_func
 
-                metrics.append(metric)
+                # metrics.append(metric)
                 train_state = runner_state[0]
 
                 print("done with env")
-            return train_state, metrics
+            return runner_state
         
         # apply the loop_over_envs function to the environments
-        train_state, metrics = loop_over_envs(rng, train_state, envs)
+        runner_state = loop_over_envs(rng, train_state, envs)
 
-        return {"runner_state": train_state, "metrics": metrics}
+        return {"runner_state": runner_state}
     return train
 
 
@@ -919,24 +921,14 @@ def main(cfg):
         name = f'ippo_continual'
     )
 
-    # Create the training function
-     
-    # visualize_environments(config) 
-    # rng = jax.random.PRNGKey(config["SEED"]) # create a pseudo-random key 
-    # rngs = jax.random.split(rng, config["NUM_SEEDS"]) # split the random key into num_seeds keys
-    # # train_jit = jax.jit(make_train(config)) # JIT compile the training function for faster execution
-    # out = jax.vmap(make_train(config))(rngs) # Vectorize the training function and run it num_seeds times
-
     with jax.disable_jit(False):
         rng = jax.random.PRNGKey(config["SEED"]) 
         rngs = jax.random.split(rng, config["NUM_SEEDS"])
         train_jit = jax.jit(make_train(config))
-        out = jax.vmap(train_jit)(rngs)
+        out = train_jit(rngs[1])
+        # out = jax.vmap(train_jit)(rngs)
         # out = jax.vmap(make_train(config))(rngs)
 
-    
-    
-    # jax.debug.print("cache_size = {}", train_jit._cache_size())
     print("Done")
     
 
