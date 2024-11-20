@@ -1,3 +1,5 @@
+import os
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 import jax
 import jax.numpy as jnp
@@ -104,7 +106,7 @@ class Transition(NamedTuple):
 
 
 
-@partial(jax.jit, static_argnums=(1))
+# @partial(jax.jit, static_argnums=(1))
 def evaluate_model(train_state, network, key):
     '''
     Evaluates the model by running 10 episodes on all environments and returns the average reward
@@ -476,7 +478,7 @@ def make_train(config):
             tx=tx,
         )
 
-        @partial(jax.jit, static_argnums=(2))
+        # @partial(jax.jit, static_argnums=(2))
         def train_on_environment(rng, train_state, env):
             '''
             Trains the network using IPPO
@@ -571,7 +573,7 @@ def make_train(config):
                         obs_batch
                     )
 
-                    runner_state = (train_state, env_state, obsv, update_step, rng)
+                    # runner_state = (train_state, env_state, obsv, update_step, rng)
                     return runner_state, (transition, info)
                 
                 # Apply the _env_step function a series of times, while keeping track of the runner state
@@ -928,9 +930,9 @@ def main(cfg):
     with jax.disable_jit(False):
         rng = jax.random.PRNGKey(config["SEED"]) 
         rngs = jax.random.split(rng, config["NUM_SEEDS"])
-        # train_jit = jax.jit(make_train(config))
-        # out = jax.vmap(train_jit)(rngs)
-        out = jax.vmap(make_train(config))(rngs)
+        train_jit = jax.jit(make_train(config))
+        out = jax.vmap(train_jit)(rngs)
+        # out = jax.vmap(make_train(config))(rngs)
 
     
     

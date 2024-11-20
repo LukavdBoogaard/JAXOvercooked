@@ -1,0 +1,26 @@
+Timer unit: 1e-09 s
+
+Total time: 0.612102 s
+File: /home/luka/repo/JAXOvercooked/baselines/test.py
+Function: _env_step at line 122
+
+Line #      Hits         Time  Per Hit   % Time  Line Contents
+==============================================================
+   122                                                           @line_profiler.profile
+   123                                                           def _env_step(runner_state, _):
+   124         1        719.0    719.0      0.0                      env_state, last_obs, update_step, rng = runner_state
+   125         1     773896.0 773896.0      0.1                      rng, key_a0, key_a1, key_s = jax.random.split(rng, 4)
+   126         1     601775.0 601775.0      0.1                      action_0 = jnp.broadcast_to(sample_discrete_action(key_a0, env.action_space()), (config["NUM_ENVS"],))
+   127         1     486738.0 486738.0      0.1                      action_1 = jnp.broadcast_to(sample_discrete_action(key_a1, env.action_space()), (config["NUM_ENVS"],))
+   128         1        360.0    360.0      0.0                      actions = {"agent_0": action_0, "agent_1": action_1}
+   129                                           
+   130         2  609701331.0    3e+08     99.6                      obsv, env_state, reward, done, info = jax.vmap(env.step, in_axes=(0, 0, 0))(
+   131         1     535446.0 535446.0      0.1                          jax.random.split(key_s, config["NUM_ENVS"]), env_state, actions
+   132                                                               )
+   133                                           
+   134         1        563.0    563.0      0.0                      runner_state = (env_state, obsv, update_step, rng)
+   135         1        787.0    787.0      0.0                      metrics = {"reward": reward["agent_0"], "done": done["__all__"]}
+   136                                           
+   137         1        165.0    165.0      0.0                      return runner_state, metrics
+
+  0.61 seconds - /home/luka/repo/JAXOvercooked/baselines/test.py:122 - _env_step
