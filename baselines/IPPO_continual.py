@@ -27,6 +27,9 @@ import wandb
 from functools import partial
 from memory_profiler import profile
 
+# Enable compile logging
+jax.log_compiles(True)
+
 class ActorCritic(nn.Module):
     '''
     Class to define the actor-critic networks used in IPPO. Each agent has its own actor-critic network
@@ -478,6 +481,7 @@ def make_train(config):
             tx=tx,
         )
 
+        @partial(jax.jit, static_argnums=(2,))
         def train_on_environment(rng, train_state, env):
             '''
             Trains the network using IPPO
@@ -866,15 +870,10 @@ def make_train(config):
             # metrics = []
             for env_rng, env in zip(env_rngs, envs):
                 runner_state = train_on_environment(env_rng, train_state, env)
-                # print('done with env')
-
-                # train_func = train_on_environment
-                # runner_state = train_func(env_rng, train_state, env)
-                # del train_func
-
+                
                 # metrics.append(metric)
                 train_state = runner_state[0]
-
+                # jax.clear_caches()
                 print("done with env")
             return runner_state
         
@@ -926,6 +925,7 @@ def main(cfg):
         rngs = jax.random.split(rng, config["NUM_SEEDS"])
         train_jit = jax.jit(make_train(config))
         out = train_jit(rngs[1])
+        # out = make_train(config)(rngs[1])
         # out = jax.vmap(train_jit)(rngs)
         # out = jax.vmap(make_train(config))(rngs)
 

@@ -354,8 +354,6 @@ def make_train(config):
                 length=config["NUM_STEPS"]
             )  
 
-            jax.debug.print(f"info: {info}")
-
             # unpack the runner state that is returned after the scan function
             train_state, env_state, last_obs, update_step, rng = runner_state
 
@@ -640,6 +638,8 @@ def main(cfg):
         rngs = jax.random.split(rng, config["NUM_SEEDS"]) # split the random key into num_seeds keys
         train_jit = jax.jit(make_train(config)) # JIT compile the training function for faster execution
         out = jax.vmap(train_jit)(rngs) # Vectorize the training function and run it num_seeds times
+
+        jax.debug.print("cache_size: {cache}", cache=train_jit._cache_size())
 
 
     filename = f'{config["ENV_NAME"]}_{layout}'
