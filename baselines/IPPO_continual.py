@@ -18,6 +18,9 @@ from jax_marl.environments.overcooked_environment import overcooked_layouts
 from jax_marl.environments.env_selection import generate_sequence
 from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
 from jax_marl.environments.overcooked_environment.layouts import counter_circuit_grid
+
+from dotenv import load_dotenv
+
 import hydra
 from omegaconf import OmegaConf
 
@@ -913,9 +916,13 @@ def main(cfg):
         # Set the layout in the config
         layout_config["layout"] = overcooked_layouts[layout_name]
 
+    # log in to wandb 
+    load_dotenv()
+    wandb.login(key=os.environ.get("WANDB_API_KEY"))
     # Initialize wandb
     wandb.init(
-        project="ippo-overcooked", 
+        entity=config["ENTITY"],
+        project=config["PROJECT"], 
         config=config, 
         mode = config["WANDB_MODE"],
         name = f'ippo_continual'

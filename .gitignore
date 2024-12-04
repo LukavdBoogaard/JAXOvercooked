@@ -20,3 +20,4 @@ wandb/
 outputs/
 models/
 *.dat
+.env
