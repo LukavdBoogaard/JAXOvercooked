@@ -11,7 +11,6 @@ from typing import Tuple, Dict
 import chex
 from flax import struct
 from flax.core.frozen_dict import FrozenDict
-import line_profiler
 
 from jax_marl.environments.overcooked_environment.common import (
     OBJECT_TO_INDEX,
@@ -99,7 +98,6 @@ class Overcooked(MultiAgentEnv):
         self.random_reset = random_reset
         self.max_steps = max_steps
 
-    @line_profiler.profile
     def step_env(
             self,
             key: chex.PRNGKey,
@@ -359,7 +357,6 @@ class Overcooked(MultiAgentEnv):
 
         return {"agent_0" : alice_obs, "agent_1" : bob_obs}
 
-    @line_profiler.profile
     def step_agents(
             self, key: chex.PRNGKey, state: State, action: chex.Array,
     ) -> Tuple[State, float]:

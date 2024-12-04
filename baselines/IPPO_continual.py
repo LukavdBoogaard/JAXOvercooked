@@ -25,7 +25,6 @@ import matplotlib.pyplot as plt
 import wandb
 
 from functools import partial
-from memory_profiler import profile
 
 # Enable compile logging
 jax.log_compiles(True)
@@ -109,7 +108,7 @@ class Transition(NamedTuple):
 
 
 
-# @partial(jax.jit, static_argnums=(1))
+@partial(jax.jit, static_argnums=(1))
 def evaluate_model(train_state, network, key):
     '''
     Evaluates the model by running 10 episodes on all environments and returns the average reward
@@ -870,6 +869,8 @@ def make_train(config):
             # metrics = []
             for env_rng, env in zip(env_rngs, envs):
                 runner_state = train_on_environment(env_rng, train_state, env)
+
+                jax.debug.print("cache size of train_on_env: {cache_size}", cache_size=train_on_environment._cache_size())
                 
                 # metrics.append(metric)
                 train_state = runner_state[0]
