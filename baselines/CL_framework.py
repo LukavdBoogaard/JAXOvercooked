@@ -119,7 +119,7 @@ def make_train_fn(config: Config):
         temp_env = envs[0]
         config.num_actors = temp_env.num_agents * config.num_envs
         config.num_updates = config.total_timesteps // config.num_steps // config.num_envs
-        config.minibatch_size = (config.num_envs * config.num_steps) // config.num_minibatches
+        config.minibatch_size = (config.num_actors * config.num_steps) // config.num_minibatches
 
 
         # freeze(config)
@@ -173,8 +173,8 @@ def make_train_fn(config: Config):
 
 config_name = "ippo_continual" # REPLACE WITH YOUR CONFIG NAME
 
-@hydra.main(version_base=None, config_path="config", config_name=config_name)
-def main(config):
+# @hydra.main(version_base=None, config_path="config", config_name=config_name)
+def main():
     # set the device to GPU
     jax.config.update("jax_platform_name", "gpu")
 

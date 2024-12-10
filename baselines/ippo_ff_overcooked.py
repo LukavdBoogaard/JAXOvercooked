@@ -542,7 +542,7 @@ def main(cfg):
     num_seeds = 1
 
     # run the training loop
-    with jax.disable_jit(True):
+    with jax.disable_jit(False):
         # vectorize the training function
         train_jit = jax.jit(jax.vmap(make_train(config))) 
         # split the rng into num_seed seeds

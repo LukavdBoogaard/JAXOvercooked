@@ -17,6 +17,7 @@ from gymnax.wrappers.purerl import LogWrapper, FlattenObservationWrapper
 import jax_marl
 from jax_marl.wrappers.baselines import LogWrapper
 from jax_marl.environments.overcooked_environment import overcooked_layouts
+from jax_marl.environments.overcooked_environment import Overcooked
 from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
 import hydra
 from omegaconf import OmegaConf
@@ -159,7 +160,7 @@ class EpisodeStatistics:
 @partial(jax.jit, static_argnums=(0, 2, 3, 4))
 def ippo_train(network: ActorCritic, 
                train_state: TrainState, 
-               env: str, 
+               env: Overcooked, 
                rng: int, 
                config: Config):
     '''
@@ -533,7 +534,7 @@ def ippo_train(network: ActorCritic,
         f=_update_step, 
         init=runner_state, 
         xs=None, 
-        length=config.num_update
+        length=config.num_updates
     )
 
     # Return the runner state after the training loop, and the metric arrays

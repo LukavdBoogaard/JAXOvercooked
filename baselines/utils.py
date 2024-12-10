@@ -57,9 +57,9 @@ def pad_observation_space(config):
     print('in pad_observation_space')
 
     envs = []
-    for env_args in config["ENV_KWARGS"]:
+    for env_args in config.env_kwargs:
             # Create the environment
-            env = jax_marl.make(config["ENV_NAME"], **env_args)
+            env = jax_marl.make(config.env_name, **env_args)
             envs.append(env)
 
     # find the environment with the largest observation space
@@ -166,7 +166,7 @@ def get_rollout_for_visualization(config):
 
     state_sequences = []
     for env_layout in envs:
-        env = jax_marl.make(config["ENV_NAME"], layout=env_layout)
+        env = jax_marl.make(config.env_name, layout=env_layout)
 
         key = jax.random.PRNGKey(0)
         key, key_r, key_a = jax.random.split(key, 3)
