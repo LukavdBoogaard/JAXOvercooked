@@ -639,6 +639,8 @@ def main(cfg):
         train_jit = jax.jit(make_train(config)) # JIT compile the training function for faster execution
         out = jax.vmap(train_jit)(rngs) # Vectorize the training function and run it num_seeds times
 
+        jax.debug.print("cache_size: {cache}", cache=train_jit._cache_size())
+
 
     filename = f'{config["ENV_NAME"]}_{layout}'
     train_state = jax.tree_util.tree_map(lambda x: x[0], out["runner_state"][0])
