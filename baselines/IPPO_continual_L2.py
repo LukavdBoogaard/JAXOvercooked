@@ -34,7 +34,7 @@ from functools import partial
 import copy
 
 class L2Regularizer:
-    def __init__(self, cl_reg_coef=1.0, regularize_critic=False):
+    def __init__(self, cl_reg_coef=100000.0, regularize_critic=False):
         self.cl_reg_coef = cl_reg_coef
         self.regularize_critic = regularize_critic
         self.old_params = None
