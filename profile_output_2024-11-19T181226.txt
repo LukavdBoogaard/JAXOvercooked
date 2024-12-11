@@ -1,0 +1,222 @@
+Timer unit: 1e-09 s
+
+Total time: 0.604721 s
+File: /home/luka/repo/JAXOvercooked/baselines/test.py
+Function: _env_step at line 122
+
+Line #      Hits         Time  Per Hit   % Time  Line Contents
+==============================================================
+   122                                                           @line_profiler.profile
+   123                                                           def _env_step(runner_state, _):
+   124         1        510.0    510.0      0.0                      env_state, last_obs, update_step, rng = runner_state
+   125         1     723409.0 723409.0      0.1                      rng, key_a0, key_a1, key_s = jax.random.split(rng, 4)
+   126         1     621709.0 621709.0      0.1                      action_0 = jnp.broadcast_to(sample_discrete_action(key_a0, env.action_space()), (config["NUM_ENVS"],))
+   127         1     457999.0 457999.0      0.1                      action_1 = jnp.broadcast_to(sample_discrete_action(key_a1, env.action_space()), (config["NUM_ENVS"],))
+   128         1        334.0    334.0      0.0                      actions = {"agent_0": action_0, "agent_1": action_1}
+   129                                           
+   130         2  602398822.0    3e+08     99.6                      obsv, env_state, reward, done, info = jax.vmap(env.step, in_axes=(0, 0, 0))(
+   131         1     516995.0 516995.0      0.1                          jax.random.split(key_s, config["NUM_ENVS"]), env_state, actions
+   132                                                               )
+   133                                           
+   134         1        393.0    393.0      0.0                      runner_state = (env_state, obsv, update_step, rng)
+   135         1        638.0    638.0      0.0                      metrics = {"reward": reward["agent_0"], "done": done["__all__"]}
+   136                                           
+   137         1        176.0    176.0      0.0                      return runner_state, metrics
+
+Total time: 2.13015 s
+File: /home/luka/repo/JAXOvercooked/jax_marl/environments/overcooked_environment/overcooked.py
+Function: step_agents at line 362
+
+Line #      Hits         Time  Per Hit   % Time  Line Contents
+==============================================================
+   362                                               @line_profiler.profile
+   363                                               def step_agents(
+   364                                                       self, key: chex.PRNGKey, state: State, action: chex.Array,
+   365                                               ) -> Tuple[State, float]:
+   366                                           
+   367                                                   # Update agent position (forward action)
+   368        15   11516897.0 767793.1      0.5          is_move_action = jnp.logical_and(action != Actions.stay, action != Actions.interact)
+   369        15    3518559.0 234570.6      0.2          is_move_action_transposed = jnp.expand_dims(is_move_action, 0).transpose()  # Necessary to broadcast correctly
+   370                                           
+   371        30    4563337.0 152111.2      0.2          fwd_pos = jnp.minimum(
+   372        45   44042309.0 978718.0      2.1              jnp.maximum(state.agent_pos + is_move_action_transposed * DIR_TO_VEC[jnp.minimum(action, 3)] \
+   373        30    5742546.0 191418.2      0.3                          + ~is_move_action_transposed * state.agent_dir, 0),
+   374        15    2834124.0 188941.6      0.1              jnp.array((self.width - 1, self.height - 1), dtype=jnp.uint32)
+   375                                                   )
+   376                                           
+   377                                                   # Can't go past wall or goal
+   378        15      11884.0    792.3      0.0          def _wall_or_goal(fwd_position, wall_map, goal_pos):
+   379                                                       fwd_wall = wall_map.at[fwd_position[1], fwd_position[0]].get()
+   380                                                       goal_collision = lambda pos, goal : jnp.logical_and(pos[0] == goal[0], pos[1] == goal[1])
+   381                                                       fwd_goal = jax.vmap(goal_collision, in_axes=(None, 0))(fwd_position, goal_pos)
+   382                                                       # fwd_goal = jnp.logical_and(fwd_position[0] == goal_pos[0], fwd_position[1] == goal_pos[1])
+   383                                                       fwd_goal = jnp.any(fwd_goal)
+   384                                                       return fwd_wall, fwd_goal
+   385                                           
+   386        15  248041515.0    2e+07     11.6          fwd_pos_has_wall, fwd_pos_has_goal = jax.vmap(_wall_or_goal, in_axes=(0, None, None))(fwd_pos, state.wall_map, state.goal_pos)
+   387                                           
+   388        15    5065930.0 337728.7      0.2          fwd_pos_blocked = jnp.logical_or(fwd_pos_has_wall, fwd_pos_has_goal).reshape((self.num_agents, 1))
+   389                                           
+   390        15    6013256.0 400883.7      0.3          bounced = jnp.logical_or(fwd_pos_blocked, ~is_move_action_transposed)
+   391                                           
+   392                                                   # Agents can't overlap
+   393                                                   # Hardcoded for 2 agents (call them Alice and Bob)
+   394        15    2301206.0 153413.7      0.1          agent_pos_prev = jnp.array(state.agent_pos)
+   395        15   16517021.0    1e+06      0.8          fwd_pos = (bounced * state.agent_pos + (~bounced) * fwd_pos).astype(jnp.uint32)
+   396        15   14752840.0 983522.7      0.7          collision = jnp.all(fwd_pos[0] == fwd_pos[1])
+   397                                           
+   398                                                   # No collision = No movement. This matches original Overcooked env.
+   399        30    3456757.0 115225.2      0.2          alice_pos = jnp.where(
+   400        15       2069.0    137.9      0.0              collision,
+   401        15    2921597.0 194773.1      0.1              state.agent_pos[0],                     # collision and Bob bounced
+   402        15    3020845.0 201389.7      0.1              fwd_pos[0],
+   403                                                   )
+   404        30    2584639.0  86154.6      0.1          bob_pos = jnp.where(
+   405        15       2303.0    153.5      0.0              collision,
+   406        15    3088447.0 205896.5      0.1              state.agent_pos[1],                     # collision and Alice bounced
+   407        15    2754964.0 183664.3      0.1              fwd_pos[1],
+   408                                                   )
+   409                                           
+   410                                                   # Prevent swapping places (i.e. passing through each other)
+   411        30    2543534.0  84784.5      0.1          swap_places = jnp.logical_and(
+   412        15   11286565.0 752437.7      0.5              jnp.all(fwd_pos[0] == state.agent_pos[1]),
+   413        15   12037217.0 802481.1      0.6              jnp.all(fwd_pos[1] == state.agent_pos[0]),
+   414                                                   )
+   415        30    2532667.0  84422.2      0.1          alice_pos = jnp.where(
+   416        15    5893036.0 392869.1      0.3              ~collision * swap_places,
+   417        15    3252219.0 216814.6      0.2              state.agent_pos[0],
+   418        15       3947.0    263.1      0.0              alice_pos
+   419                                                   )
+   420        30    2805453.0  93515.1      0.1          bob_pos = jnp.where(
+   421        15    5238858.0 349257.2      0.2              ~collision * swap_places,
+   422        15    3203639.0 213575.9      0.2              state.agent_pos[1],
+   423        15       3992.0    266.1      0.0              bob_pos
+   424                                                   )
+   425                                           
+   426        15   18595453.0    1e+06      0.9          fwd_pos = fwd_pos.at[0].set(alice_pos)
+   427        15   17161482.0    1e+06      0.8          fwd_pos = fwd_pos.at[1].set(bob_pos)
+   428        15    2111716.0 140781.1      0.1          agent_pos = fwd_pos.astype(jnp.uint32)
+   429                                           
+   430                                                   # Update agent direction
+   431        15   12444181.0 829612.1      0.6          agent_dir_idx = ~is_move_action * state.agent_dir_idx + is_move_action * action
+   432        15   20633216.0    1e+06      1.0          agent_dir = DIR_TO_VEC[agent_dir_idx]
+   433                                           
+   434                                                   # Handle interacts. Agent 1 first, agent 2 second, no collision handling.
+   435                                                   # This matches the original Overcooked
+   436        15    3974982.0 264998.8      0.2          fwd_pos = state.agent_pos + state.agent_dir
+   437        15      22372.0   1491.5      0.0          maze_map = state.maze_map
+   438        15    4877444.0 325162.9      0.2          is_interact_action = (action == Actions.interact)
+   439                                           
+   440                                                   # Compute the effect of interact first, then apply it if needed
+   441        15  645425396.0    4e+07     30.3          candidate_maze_map, alice_inv, alice_reward, alice_shaped_reward = self.process_interact(maze_map, state.wall_map, fwd_pos, state.agent_inv, 0)
+   442        15    3826081.0 255072.1      0.2          alice_interact = is_interact_action[0]
+   443        15    3012263.0 200817.5      0.1          bob_interact = is_interact_action[1]
+   444                                           
+   445        30    1327552.0  44251.7      0.1          maze_map = jax.lax.select(alice_interact,
+   446        15       2242.0    149.5      0.0                                candidate_maze_map,
+   447        15       2058.0    137.2      0.0                                maze_map)
+   448        30    1204816.0  40160.5      0.1          alice_inv = jax.lax.select(alice_interact,
+   449        15       2609.0    173.9      0.0                                alice_inv,
+   450        15    3089422.0 205961.5      0.1                                state.agent_inv[0])
+   451        15    1203055.0  80203.7      0.1          alice_reward = jax.lax.select(alice_interact, alice_reward, 0.)
+   452        15    1143697.0  76246.5      0.1          alice_shaped_reward = jax.lax.select(alice_interact, alice_shaped_reward, 0.)
+   453                                           
+   454        15  620819893.0    4e+07     29.1          candidate_maze_map, bob_inv, bob_reward, bob_shaped_reward = self.process_interact(maze_map, state.wall_map, fwd_pos, state.agent_inv, 1)
+   455        30    1495634.0  49854.5      0.1          maze_map = jax.lax.select(bob_interact,
+   456        15       2284.0    152.3      0.0                                candidate_maze_map,
+   457        15       1965.0    131.0      0.0                                maze_map)
+   458        30    1182477.0  39415.9      0.1          bob_inv = jax.lax.select(bob_interact,
+   459        15       2937.0    195.8      0.0                                bob_inv,
+   460        15    3206839.0 213789.3      0.2                                state.agent_inv[1])
+   461        15    1223492.0  81566.1      0.1          bob_reward = jax.lax.select(bob_interact, bob_reward, 0.)
+   462        15    1242651.0  82843.4      0.1          bob_shaped_reward = jax.lax.select(bob_interact, bob_shaped_reward, 0.)
+   463                                           
+   464                                           
+   465        15    9630549.0 642036.6      0.5          agent_inv = jnp.array([alice_inv, bob_inv])
+   466                                           
+   467                                                   # Update agent component in maze_map
+   468        15      12052.0    803.5      0.0          def _get_agent_updates(agent_dir_idx, agent_pos, agent_pos_prev, agent_idx):
+   469                                                       agent = jnp.array([OBJECT_TO_INDEX['agent'], COLOR_TO_INDEX['red']+agent_idx*2, agent_dir_idx], dtype=jnp.uint8)
+   470                                                       agent_x_prev, agent_y_prev = agent_pos_prev
+   471                                                       agent_x, agent_y = agent_pos
+   472                                                       return agent_x, agent_y, agent_x_prev, agent_y_prev, agent
+   473                                           
+   474        15     770018.0  51334.5      0.0          vec_update = jax.vmap(_get_agent_updates, in_axes=(0, 0, 0, 0))
+   475        15   68705424.0    5e+06      3.2          agent_x, agent_y, agent_x_prev, agent_y_prev, agent_vec = vec_update(agent_dir_idx, agent_pos, agent_pos_prev, jnp.arange(self.num_agents))
+   476        15    2400095.0 160006.3      0.1          empty = jnp.array([OBJECT_TO_INDEX['empty'], 0, 0], dtype=jnp.uint8)
+   477                                           
+   478                                                   # Compute padding, added automatically by map maker function
+   479        15      21638.0   1442.5      0.0          height = self.obs_shape[1]
+   480        15      27359.0   1823.9      0.0          padding = (state.maze_map.shape[0] - height) // 2
+   481                                           
+   482        15   34371724.0    2e+06      1.6          maze_map = maze_map.at[padding + agent_y_prev, padding + agent_x_prev, :].set(empty)
+   483        15   32778252.0    2e+06      1.5          maze_map = maze_map.at[padding + agent_y, padding + agent_x, :].set(agent_vec)
+   484                                           
+   485                                                   # Update pot cooking status
+   486        15      11849.0    789.9      0.0          def _cook_pots(pot):
+   487                                                       pot_status = pot[-1]
+   488                                                       is_cooking = jnp.array(pot_status <= POT_FULL_STATUS)
+   489                                                       not_done = jnp.array(pot_status > POT_READY_STATUS)
+   490                                                       pot_status = is_cooking * not_done * (pot_status-1) + (~is_cooking) * pot_status # defaults to zero if done
+   491                                                       return pot.at[-1].set(pot_status)
+   492                                           
+   493        15    4002253.0 266816.9      0.2          pot_x = state.pot_pos[:, 0]
+   494        15    4527327.0 301821.8      0.2          pot_y = state.pot_pos[:, 1]
+   495        15   27150868.0    2e+06      1.3          pots = maze_map.at[padding + pot_y, padding + pot_x].get()
+   496        15  108147960.0    7e+06      5.1          pots = jax.vmap(_cook_pots, in_axes=0)(pots)
+   497        15   32712299.0    2e+06      1.5          maze_map = maze_map.at[padding + pot_y, padding + pot_x, :].set(pots)
+   498                                           
+   499        15    3687801.0 245853.4      0.2          reward = alice_reward + bob_reward
+   500                                           
+   501        15       2398.0    159.9      0.0          return (
+   502        30     373281.0  12442.7      0.0              state.replace(
+   503        15       3309.0    220.6      0.0                  agent_pos=agent_pos,
+   504        15       2436.0    162.4      0.0                  agent_dir_idx=agent_dir_idx,
+   505        15       3181.0    212.1      0.0                  agent_dir=agent_dir,
+   506        15       2847.0    189.8      0.0                  agent_inv=agent_inv,
+   507        15       2003.0    133.5      0.0                  maze_map=maze_map,
+   508        15       2657.0    177.1      0.0                  terminal=False),
+   509        15       2807.0    187.1      0.0              reward,
+   510        15       4178.0    278.5      0.0              (alice_shaped_reward, bob_shaped_reward)
+   511                                                   )
+
+Total time: 2.70638 s
+File: /home/luka/repo/JAXOvercooked/jax_marl/environments/overcooked_environment/overcooked.py
+Function: step_env at line 102
+
+Line #      Hits         Time  Per Hit   % Time  Line Contents
+==============================================================
+   102                                               @line_profiler.profile
+   103                                               def step_env(
+   104                                                       self,
+   105                                                       key: chex.PRNGKey,
+   106                                                       state: State,
+   107                                                       actions: Dict[str, chex.Array],
+   108                                               ) -> Tuple[Dict[str, chex.Array], State, Dict[str, float], Dict[str, bool], Dict]:
+   109                                                   """Perform single timestep state transition."""
+   110                                           
+   111        15   20254149.0    1e+06      0.7          acts = self.action_set.take(indices=jnp.array([actions["agent_0"], actions["agent_1"]]))
+   112                                           
+   113        15 2131838326.0    1e+08     78.8          state, reward, shaped_rewards = self.step_agents(key, state, acts)
+   114                                           
+   115        15    3756750.0 250450.0      0.1          state = state.replace(time=state.time + 1)
+   116                                           
+   117        15   10441925.0 696128.3      0.4          done = self.is_terminal(state)
+   118        15     267679.0  17845.3      0.0          state = state.replace(terminal=done)
+   119                                           
+   120        15  536553957.0    4e+07     19.8          obs = self.get_obs(state)
+   121        15       8458.0    563.9      0.0          rewards = {"agent_0": reward, "agent_1": reward}
+   122        15      16084.0   1072.3      0.0          shaped_rewards = {"agent_0": shaped_rewards[0], "agent_1": shaped_rewards[1]}
+   123        15       6124.0    408.3      0.0          dones = {"agent_0": done, "agent_1": done, "__all__": done}
+   124                                           
+   125        15       2983.0    198.9      0.0          return (
+   126        15     638936.0  42595.7      0.0              lax.stop_gradient(obs),
+   127        15    2582968.0 172197.9      0.1              lax.stop_gradient(state),
+   128        15       3532.0    235.5      0.0              rewards,
+   129        15       1956.0    130.4      0.0              dones,
+   130        15       5857.0    390.5      0.0              {'shaped_reward': shaped_rewards},
+   131                                                   )
+
+  0.60 seconds - /home/luka/repo/JAXOvercooked/baselines/test.py:122 - _env_step
+  2.13 seconds - /home/luka/repo/JAXOvercooked/jax_marl/environments/overcooked_environment/overcooked.py:362 - step_agents
+  2.71 seconds - /home/luka/repo/JAXOvercooked/jax_marl/environments/overcooked_environment/overcooked.py:102 - step_env

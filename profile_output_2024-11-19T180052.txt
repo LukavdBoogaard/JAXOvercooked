@@ -1,0 +1,64 @@
+Timer unit: 1e-09 s
+
+Total time: 0.606831 s
+File: /home/luka/repo/JAXOvercooked/baselines/test.py
+Function: _env_step at line 122
+
+Line #      Hits         Time  Per Hit   % Time  Line Contents
+==============================================================
+   122                                                           @line_profiler.profile
+   123                                                           def _env_step(runner_state, _):
+   124         1        661.0    661.0      0.0                      env_state, last_obs, update_step, rng = runner_state
+   125         1     797075.0 797075.0      0.1                      rng, key_a0, key_a1, key_s = jax.random.split(rng, 4)
+   126         1     576946.0 576946.0      0.1                      action_0 = jnp.broadcast_to(sample_discrete_action(key_a0, env.action_space()), (config["NUM_ENVS"],))
+   127         1     490072.0 490072.0      0.1                      action_1 = jnp.broadcast_to(sample_discrete_action(key_a1, env.action_space()), (config["NUM_ENVS"],))
+   128         1        350.0    350.0      0.0                      actions = {"agent_0": action_0, "agent_1": action_1}
+   129                                           
+   130         2  604455963.0    3e+08     99.6                      obsv, env_state, reward, done, info = jax.vmap(env.step, in_axes=(0, 0, 0))(
+   131         1     508554.0 508554.0      0.1                          jax.random.split(key_s, config["NUM_ENVS"]), env_state, actions
+   132                                                               )
+   133                                           
+   134         1        466.0    466.0      0.0                      runner_state = (env_state, obsv, update_step, rng)
+   135         1        689.0    689.0      0.0                      metrics = {"reward": reward["agent_0"], "done": done["__all__"]}
+   136                                           
+   137         1        155.0    155.0      0.0                      return runner_state, metrics
+
+Total time: 2.3768 s
+File: /home/luka/repo/JAXOvercooked/jax_marl/environments/overcooked_environment/overcooked.py
+Function: step_env at line 102
+
+Line #      Hits         Time  Per Hit   % Time  Line Contents
+==============================================================
+   102                                               @line_profiler.profile
+   103                                               def step_env(
+   104                                                       self,
+   105                                                       key: chex.PRNGKey,
+   106                                                       state: State,
+   107                                                       actions: Dict[str, chex.Array],
+   108                                               ) -> Tuple[Dict[str, chex.Array], State, Dict[str, float], Dict[str, bool], Dict]:
+   109                                                   """Perform single timestep state transition."""
+   110                                           
+   111        15   16762571.0    1e+06      0.7          acts = self.action_set.take(indices=jnp.array([actions["agent_0"], actions["agent_1"]]))
+   112                                           
+   113        15 1855986230.0    1e+08     78.1          state, reward, shaped_rewards = self.step_agents(key, state, acts)
+   114                                           
+   115        15    3477508.0 231833.9      0.1          state = state.replace(time=state.time + 1)
+   116                                           
+   117        15    8173016.0 544867.7      0.3          done = self.is_terminal(state)
+   118        15     229583.0  15305.5      0.0          state = state.replace(terminal=done)
+   119                                           
+   120        15  489357914.0    3e+07     20.6          obs = self.get_obs(state)
+   121        15       7400.0    493.3      0.0          rewards = {"agent_0": reward, "agent_1": reward}
+   122        15      13969.0    931.3      0.0          shaped_rewards = {"agent_0": shaped_rewards[0], "agent_1": shaped_rewards[1]}
+   123        15       6705.0    447.0      0.0          dones = {"agent_0": done, "agent_1": done, "__all__": done}
+   124                                           
+   125        15       2868.0    191.2      0.0          return (
+   126        15     610839.0  40722.6      0.0              lax.stop_gradient(obs),
+   127        15    2156877.0 143791.8      0.1              lax.stop_gradient(state),
+   128        15       2755.0    183.7      0.0              rewards,
+   129        15       2058.0    137.2      0.0              dones,
+   130        15       5971.0    398.1      0.0              {'shaped_reward': shaped_rewards},
+   131                                                   )
+
+  0.61 seconds - /home/luka/repo/JAXOvercooked/baselines/test.py:122 - _env_step
+  2.38 seconds - /home/luka/repo/JAXOvercooked/jax_marl/environments/overcooked_environment/overcooked.py:102 - step_env
