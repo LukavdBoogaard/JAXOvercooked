@@ -23,7 +23,7 @@ from jax_marl.environments.overcooked_environment import overcooked_layouts
 from baselines.utils import Transition, batchify, unbatchify, pad_observation_space, sample_discrete_action, get_rollout_for_visualization, visualize_environments
 from jax_marl.wrappers.baselines import LogWrapper
 from flax.training.train_state import TrainState
-from torch.utils.tensorboard import SummaryWriter
+from tensorboardX import SummaryWriter
 
 from baselines.ippo_algorithm import Config, ippo_train
 from baselines.algorithms import ActorCritic
