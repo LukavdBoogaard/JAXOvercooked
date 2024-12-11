@@ -1,2 +1,2 @@
-from .layouts import overcooked_layouts, layout_grid_to_dict
-from .overcooked import Overcooked
+from jax_marl.environments.overcooked_environment.layouts import overcooked_layouts, layout_grid_to_dict
+from jax_marl.environments.overcooked_environment.overcooked import Overcooked

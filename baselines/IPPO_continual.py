@@ -12,7 +12,8 @@ from typing import Sequence, NamedTuple, Any
 from flax.training.train_state import TrainState
 import distrax
 from gymnax.wrappers.purerl import LogWrapper, FlattenObservationWrapper
-import jax_marl
+
+from jax_marl.registration import make
 from jax_marl.wrappers.baselines import LogWrapper
 from jax_marl.environments.overcooked_environment import overcooked_layouts
 from jax_marl.environments.env_selection import generate_sequence
@@ -205,7 +206,7 @@ def evaluate_model(train_state, network, key):
     envs = pad_observation_space(config)
 
     for env in envs:
-        env = jax_marl.make(config["ENV_NAME"], layout=env)  # Create the environment
+        env = make(config["ENV_NAME"], layout=env)  # Create the environment
 
         # network.init(key_a, init_x)  # initializes the network with the observation space
         network_params = train_state.params
@@ -252,7 +253,7 @@ def pad_observation_space(config):
     envs = []
     for env_args in config["ENV_KWARGS"]:
             # Create the environment
-            env = jax_marl.make(config["ENV_NAME"], **env_args)
+            env = make(config["ENV_NAME"], **env_args)
             envs.append(env)
 
     # find the environment with the largest observation space
@@ -359,7 +360,7 @@ def get_rollout_for_visualization(config):
 
     state_sequences = []
     for env_layout in envs:
-        env = jax_marl.make(config["ENV_NAME"], layout=env_layout)
+        env = make(config["ENV_NAME"], layout=env_layout)
 
         key = jax.random.PRNGKey(0)
         key, key_r, key_a = jax.random.split(key, 3)
@@ -427,7 +428,7 @@ def make_train(config):
         padded_envs = pad_observation_space(config)
         envs = []
         for env_layout in padded_envs:
-            env = jax_marl.make(config["ENV_NAME"], layout=env_layout)
+            env = make(config["ENV_NAME"], layout=env_layout)
             env = LogWrapper(env, replace_info=False)
             envs.append(env)
 
