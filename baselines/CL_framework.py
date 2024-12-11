@@ -29,6 +29,7 @@ from baselines.ippo_algorithm import Config, ippo_train
 from baselines.algorithms import ActorCritic
 
 import tyro
+from dotenv import load_dotenv
 
 
 
@@ -197,6 +198,8 @@ def main():
         layout_config["layout"] = overcooked_layouts[layout_name]
     
     # Initialize WandB
+    load_dotenv()
+    wandb.login(key=os.environ.get("WANDB_API_KEY"))
     wandb.init(
         project='Continual_IPPO', 
         config=config,
