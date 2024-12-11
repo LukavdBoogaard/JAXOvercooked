@@ -248,8 +248,8 @@ def evaluate_model(train_state, network, key):
 
     envs = pad_observation_space(config)
 
-    for env in envs:
-        env = make(config["ENV_NAME"], layout=env)  # Create the environment
+    for i, env_layout in enumerate(envs):
+        env = make(config["ENV_NAME"], layout=env_layout, task_id=i)
 
         # Initialize the network
         # key, key_a = jax.random.split(key)
