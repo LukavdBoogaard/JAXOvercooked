@@ -53,6 +53,7 @@ class State:
     maze_map: chex.Array
     time: int
     terminal: bool
+    task_id: int
 
 
 # Pot status indicated by an integer, which ranges from 23 to 0
@@ -72,6 +73,7 @@ class Overcooked(MultiAgentEnv):
             layout = FrozenDict(layouts["cramped_room"]),
             random_reset: bool = False,
             max_steps: int = 400,
+            task_id: int = 0,
     ):
         # Sets self.num_agents to 2
         super().__init__(num_agents=2)
@@ -97,6 +99,7 @@ class Overcooked(MultiAgentEnv):
 
         self.random_reset = random_reset
         self.max_steps = max_steps
+        self.task_id = task_id
 
     def step_env(
             self,
@@ -235,6 +238,7 @@ class Overcooked(MultiAgentEnv):
             maze_map=maze_map,
             time=0,
             terminal=False,
+            task_id=self.task_id
         )
 
         obs = self.get_obs(state)
