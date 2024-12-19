@@ -94,16 +94,13 @@ def make_train_fn(config: Config):
     @param config: the configuration dictionary
     """
 
-    @partial(jax.jit, static_argnums=(0,))
+    # @partial(jax.jit, static_argnums=(0,))
     def train_sequence(rng):
         '''
         Train on a sequence of tasks.
         @param rng: the random key for the experiment
         @return: the training output
         '''
-        
-        # unfreeze(config)
-        # print(config)
 
         # Pad the environments to get a uniform shape
         padded_envs = pad_observation_space(config)
@@ -172,7 +169,6 @@ def make_train_fn(config: Config):
     return train_sequence
 
 
-config_name = "ippo_continual" # REPLACE WITH YOUR CONFIG NAME
 
 # @hydra.main(version_base=None, config_path="config", config_name=config_name)
 def main():
@@ -218,7 +214,7 @@ def main():
     )
 
     # Create the training loop
-    with jax.disable_jit():
+    with jax.disable_jit(False):
         rng = jax.random.PRNGKey(config.seed)
         rngs = jax.random.split(rng, config.num_seeds)
         train_jit = jax.jit(make_train_fn(config))
