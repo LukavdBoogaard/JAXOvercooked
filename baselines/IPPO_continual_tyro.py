@@ -19,22 +19,18 @@ from jax_marl.environments.overcooked_environment import overcooked_layouts
 from jax_marl.environments.env_selection import generate_sequence
 from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
 from jax_marl.environments.overcooked_environment.layouts import counter_circuit_grid
-
 from dotenv import load_dotenv
-
 import hydra
 from omegaconf import OmegaConf
-
 import matplotlib.pyplot as plt
 import wandb
-
 from functools import partial
 from dataclasses import dataclass
 import tyro
 from tensorboardX import SummaryWriter
 
 # Enable compile logging
-jax.log_compiles(True)
+# jax.log_compiles(True)
 
 class ActorCritic(nn.Module):
     '''
@@ -469,6 +465,7 @@ def make_train(config):
     def train(rng):
         # step 1: make sure all envs are the same size and create the environments
         padded_envs = pad_observation_space(config)
+        
         envs = []
         for env_layout in padded_envs:
             env = make(config.env_name, layout=env_layout)
@@ -919,15 +916,16 @@ def make_train(config):
                 jax.debug.print("cache size of train_on_env: {cache_size}", cache_size=train_on_environment._cache_size())
                 
                 # metrics.append(metric)
-                train_state = runner_state[0]
+                # train_state = runner_state[0]
                 # jax.clear_caches()
                 print("done with env")
             return runner_state
         
         # apply the loop_over_envs function to the environments
         runner_state = loop_over_envs(rng, train_state, envs)
+ 
 
-        return {"runner_state": runner_state}
+        return runner_state
     return train
 
 
