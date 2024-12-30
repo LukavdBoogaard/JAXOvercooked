@@ -110,7 +110,7 @@ class Config:
     lr: float = 1e-4
     num_envs: int = 16
     num_steps: int = 128
-    total_timesteps: float = 5e6
+    total_timesteps: float = 5e4
     update_epochs: int = 4
     num_minibatches: int = 4
     gamma: float = 0.99
@@ -124,7 +124,7 @@ class Config:
     env_name: str = "overcooked"
     alg_name: str = "ippo"
     
-    seq_length: int = 5
+    seq_length: int = 2
     strategy: str = "random"
     layouts: Optional[Sequence[str]] = None
     env_kwargs: Optional[Sequence[dict]] = None
@@ -819,8 +819,7 @@ def make_train(config):
                 metric = info
                 current_timestep = update_step*config.num_steps * config.num_envs
 
-                # Update the step counter
-                update_step = update_step + 1
+                
                 # update the metric with the current timestep
                 metric = jax.tree_util.tree_map(lambda x: x.mean(), metric)
 
@@ -871,8 +870,12 @@ def make_train(config):
 
                 def callback(metric):
                     wandb.log(
-                        metric
+                        metric,
+                        step=update_step
                     )
+                
+                # Update the step counter
+                update_step = update_step + 1
                 
                 jax.debug.callback(callback, metric)
 

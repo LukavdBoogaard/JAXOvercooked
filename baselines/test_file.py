@@ -10,7 +10,7 @@ from functools import partial
 
 
 # test freezing the dataclass
-@dataclass(frozen=True)
+@dataclass(unsafe_hash=True)
 class Config:
     a : int = 1
     b : int = 2
@@ -25,6 +25,7 @@ def func(config):
 
 def main():
     config = Config()
+    config.a = 3
     func(config)
 
 main()
