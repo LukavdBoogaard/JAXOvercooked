@@ -100,7 +100,7 @@ class ActorCritic(nn.Module):
         return pi, value #squeezed to remove any unnecessary dimensions
     
 
-@dataclass
+@dataclass(unsafe_hash=True)
 class Config:
     lr: float = 1e-4
     num_envs: int = 16
@@ -157,7 +157,7 @@ class EpisodeStatistics:
 
 
 
-@partial(jax.jit, static_argnums=(0, 2, 3, 4))
+@partial(jax.jit, static_argnums=(0, 2, 3))
 def ippo_train(network: ActorCritic, 
                train_state: TrainState, 
                env: Overcooked, 

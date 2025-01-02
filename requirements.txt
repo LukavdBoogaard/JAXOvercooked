@@ -1,6 +1,7 @@
 # requirements are alligned with nvcr.io/nvidia/jax:23.10-py3 image
-# jax[cuda11] -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
-# jaxlib==0.4.25+cuda11.cudnn86 -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+# jax[cuda12] -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+# jaxlib==0.4.25+cuda12.cudnn89 -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+jax[cuda12]
 flax
 chex==0.1.84
 optax==0.1.7
