@@ -23,4 +23,5 @@ models/
 
 .idea
 *.iml
+events.out*
 
