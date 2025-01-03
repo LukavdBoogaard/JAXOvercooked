@@ -110,7 +110,7 @@ class Config:
     lr: float = 1e-4
     num_envs: int = 16
     num_steps: int = 128
-    total_timesteps: float = 5e4
+    total_timesteps: float = 5e6
     update_epochs: int = 4
     num_minibatches: int = 4
     gamma: float = 0.99
@@ -124,7 +124,7 @@ class Config:
     env_name: str = "overcooked"
     alg_name: str = "ippo"
     
-    seq_length: int = 2
+    seq_length: int = 7
     strategy: str = "random"
     layouts: Optional[Sequence[str]] = None
     env_kwargs: Optional[Sequence[dict]] = None
