@@ -1,5 +1,5 @@
-import os
-os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+# import os
+# os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 import jax
 import jax.numpy as jnp
@@ -21,6 +21,9 @@ from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
 from jax_marl.environments.overcooked_environment.layouts import counter_circuit_grid
 from dotenv import load_dotenv
 import hydra
+import os
+os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
+
 from omegaconf import OmegaConf
 import matplotlib.pyplot as plt
 import wandb
@@ -578,7 +581,7 @@ def main():
                             obs_batch
                         )
 
-                        # runner_state = (train_state, env_state, obsv, update_step, rng)
+                        runner_state = (train_state, env_state, obsv, update_step, rng)
                         return runner_state, (transition, info)
                     
                     # Apply the _env_step function a series of times, while keeping track of the runner state
@@ -829,14 +832,13 @@ def main():
                     
                     metric = jax.lax.cond((update_step % 200) == 0, true_fun, false_fun, metric)
 
-                    def callback(metric):
+                    def callback(metric, update_step):
+                        # print(update_step, metric)
                         wandb.log(
                             metric
                         )
                     
-
-                    
-                    jax.debug.callback(callback, metric)
+                    jax.debug.callback(callback, metric, update_step)
 
                     
                     rng = update_state[-1]
