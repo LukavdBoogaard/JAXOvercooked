@@ -305,6 +305,7 @@ def main():
 
         return padded_envs
     
+    @partial(jax.jit, static_argnums=(1))
     def evaluate_model(train_state, network, key):
         '''
         Evaluates the model by running 10 episodes on all environments and returns the average reward
@@ -480,6 +481,7 @@ def main():
                 tx=tx,
             )
 
+            @partial(jax.jit, static_argnums=(2))
             def train_on_environment(rng, train_state, env):
                 '''
                 Trains the network using IPPO
@@ -780,6 +782,9 @@ def main():
                     metric = jax.tree_util.tree_map(lambda x: x.mean(), metric)
 
                     # General section
+                    # Update the step counter
+                    update_step = update_step + 1
+
                     metric["General/update_step"] = update_step
                     metric["General/env_step"] = update_step * config.num_steps * config.num_envs
                     metric["General/learning_rate"] = linear_schedule(update_step * config.num_minibatches * config.update_epochs)
@@ -829,8 +834,7 @@ def main():
                             metric
                         )
                     
-                    # Update the step counter
-                    update_step = update_step + 1
+
                     
                     jax.debug.callback(callback, metric)
 
@@ -838,7 +842,7 @@ def main():
                     rng = update_state[-1]
                     runner_state = (train_state, env_state, last_obs, update_step, rng)
     
-                    return runner_state, _
+                    return runner_state, metric
 
                 rng, train_rng = jax.random.split(rng)
 
@@ -846,7 +850,7 @@ def main():
                 runner_state = (train_state, env_state, obsv, 0, train_rng)
                 
                 # apply the _update_step function a series of times, while keeping track of the state 
-                runner_state, _ = jax.lax.scan(
+                runner_state, metric = jax.lax.scan(
                     f=_update_step, 
                     init=runner_state, 
                     xs=None, 
@@ -886,8 +890,9 @@ def main():
     
     # create the seed 
     rng = jax.random.PRNGKey(config.seed)
-    train_jit = jax.jit(make_train())
-    out = jax.vmap(train_jit)(jax.random.split(rng, config.num_seeds))
+    # train_jit = jax.jit(make_train())
+    # out = jax.vmap(train_jit)(jax.random.split(rng, config.num_seeds))
+    out = jax.vmap(make_train())(jax.random.split(rng, config.num_seeds))
     print("done")
 
 
