@@ -8,7 +8,7 @@ import numpy as np
 import optax
 from flax.linen.initializers import constant, orthogonal
 from flax.core.frozen_dict import FrozenDict, freeze, unfreeze
-from typing import Sequence, NamedTuple, Any, Optional
+from typing import Sequence, NamedTuple, Any, Optional, List
 from flax.training.train_state import TrainState
 import distrax
 from gymnax.wrappers.purerl import LogWrapper, FlattenObservationWrapper
@@ -28,7 +28,7 @@ from omegaconf import OmegaConf
 import matplotlib.pyplot as plt
 import wandb
 from functools import partial
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import tyro
 from tensorboardX import SummaryWriter
 
@@ -127,9 +127,9 @@ class Config:
     env_name: str = "overcooked"
     alg_name: str = "ippo"
     
-    seq_length: int = 7
+    seq_length: int = 6
     strategy: str = "random"
-    layouts: Optional[Sequence[str]] = None
+    layouts: Optional[Sequence[str]] = field(default_factory=lambda: ["asymm_advantages", "smallest_kitchen", "cramped_room", "easy_layout", "square_arena", "no_cooperation"])
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
     
@@ -191,7 +191,7 @@ def main():
     seq_length = config.seq_length
     strategy = config.strategy
     layouts = config.layouts
-    config.env_kwargs, config.layout_name = generate_sequence(seq_length, strategy, layouts=layouts)
+    config.env_kwargs, config.layout_name = generate_sequence(seq_length, strategy, layout_names=layouts, seed=config.seed)
 
 
     for layout_config in config.env_kwargs:
@@ -416,6 +416,73 @@ def main():
             all_avg_rewards.append(avg_reward)
 
         return all_avg_rewards
+    
+    def get_rollout_for_visualization():
+        '''
+        Simulates the environment using the network
+        @param train_state: the current state of the training
+        @param config: the configuration of the training
+        returns the state sequence
+        '''
+
+        # Add the padding
+        envs = pad_observation_space()
+
+        state_sequences = []
+        for env_layout in envs:
+            env = make(config.env_name, layout=env_layout)
+
+            key = jax.random.PRNGKey(0)
+            key, key_r, key_a = jax.random.split(key, 3)
+
+            done = False
+
+            obs, state = env.reset(key_r)
+            state_seq = [state]
+            rewards = []
+            shaped_rewards = []
+            while not done:
+                key, key_a0, key_a1, key_s = jax.random.split(key, 4)
+
+                # Get the action space for each agent (assuming it's uniform and doesn't depend on the agent_id)
+                action_space_0 = env.action_space()  # Assuming the method needs to be called
+                action_space_1 = env.action_space()  # Same as above since action_space is uniform
+
+                # Sample actions for each agent
+                action_0 = sample_discrete_action(key_a0, action_space_0).item()  # Ensure it's a Python scalar
+                action_1 = sample_discrete_action(key_a1, action_space_1).item()
+
+                actions = {
+                    "agent_0": action_0,
+                    "agent_1": action_1
+                }
+
+                # STEP ENV
+                obs, state, reward, done, info = env.step(key_s, state, actions)
+                done = done["__all__"]
+                rewards.append(reward["agent_0"])
+                shaped_rewards.append(info["shaped_reward"]["agent_0"])
+
+                state_seq.append(state)
+            state_sequences.append(state_seq)
+
+        return state_sequences
+        
+    def visualize_environments():
+        '''
+        Visualizes the environments using the OvercookedVisualizer
+        @param config: the configuration of the training
+        returns None
+        '''
+        state_sequences = get_rollout_for_visualization()
+        visualizer = OvercookedVisualizer()
+        # animate all environments in the sequence
+        for i, env in enumerate(state_sequences):
+            visualizer.animate(state_seq=env, agent_view_size=5, filename=f"~/JAXOvercooked/environment_layouts/env_{config.layouts[i]}.gif")
+
+        return None
+    
+    # visualize_environments()
 
     def make_train():
         '''
