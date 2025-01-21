@@ -942,19 +942,15 @@ def main():
                 '''
                 # metrics = []
                 for env_rng, env in zip(env_rngs, envs):
-                    runner_state = train_on_environment(env_rng, train_state, env)
+                    train_state, *rest = train_on_environment(env_rng, train_state, env)
                     
-                    # metrics.append(metric)
-                    # train_state = runner_state[0]
-                    # jax.clear_caches()
-                    print("done with env")
-                return runner_state
+                return train_state
             
             # apply the loop_over_envs function to the environments
-            runner_state = loop_over_envs(rng, train_state, envs)
+            train_state = loop_over_envs(rng, train_state, envs)
     
 
-            return runner_state
+            return train_state
         return train 
     
     # create the seed 
