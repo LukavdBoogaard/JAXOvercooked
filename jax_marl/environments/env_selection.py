@@ -6,7 +6,7 @@ from jax_marl.environments.overcooked_environment import overcooked_layouts
 # Define global layouts
 AVAIL_LAYOUTS = overcooked_layouts
 
-def generate_sequence(sequence_length=2, strategy='random', layout_names=None, seed=None):
+def generate_sequence(sequence_length=2, strategy='random', layouts=None, seed=None):
     """
     Generate a sequence of layouts for the agents to play on. 
     """ 
