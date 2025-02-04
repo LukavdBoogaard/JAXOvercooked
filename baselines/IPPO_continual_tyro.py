@@ -2,6 +2,7 @@
 # os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 import jax
+import jax.experimental
 import jax.numpy as jnp
 import flax.linen as nn
 import numpy as np
@@ -113,9 +114,9 @@ class Config:
     lr: float = 3e-4
     num_envs: int = 16
     num_steps: int = 128
-    total_timesteps: float = 8e6
-    update_epochs: int = 8
-    num_minibatches: int = 8
+    total_timesteps: float = 4e6
+    update_epochs: int = 4
+    num_minibatches: int = 4
     gamma: float = 0.99
     gae_lambda: float = 0.95
     clip_eps: float = 0.2
@@ -214,19 +215,23 @@ def main():
 
     # Set up Tensorboard
     writer = SummaryWriter(f"runs/{config.alg_name}_{config.seq_length}_{config.strategy}")
-    # add all the configurations to the tensorboard
-    writer.add_text(
-        "hyperparameters",
-        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(config).items()])),
-    )
     
+    # add the hyperparameters to the tensorboard
+    rows = []
+    for key, value in vars(config).items():
+        value_str = str(value).replace("\n", "<br>")
+        value_str = value_str.replace("|", "\\|")  # escape pipe chars if needed
+        rows.append(f"|{key}|{value_str}|")
 
-    # pad the observation space
+    table_body = "\n".join(rows)
+    markdown = f"|param|value|\n|-|-|\n{table_body}"
+    writer.add_text("hyperparameters", markdown)
+        
     def pad_observation_space():
         '''
-        Pads the observation space of the environment to be compatible with the network
-        @param envs: the environment
-        returns the padded observation space
+        Function that pads the observation space of all environments to be the same size by adding extra walls to the outside.
+        This way, the observation space of all environments is the same, and compatible with the network
+        returns the padded environments
         '''
         envs = []
         for env_args in config.env_kwargs:
@@ -497,7 +502,7 @@ def main():
     # visualize_environments()
 
    
-    # step 1: make sure all envs are the same size and create the environments
+    # padd all environments
     padded_envs = pad_observation_space()
     
     envs = []
@@ -877,8 +882,9 @@ def main():
             # Evaluation section
             for i in range(len(config.layout_name)):
                 metric[f"Evaluation/{config.layout_name[i]}"] = jnp.nan
-            
 
+            
+            
             # If update step is a multiple of 20, run the evaluation function
             rng, eval_rng = jax.random.split(rng)
             train_state_eval = jax.tree_util.tree_map(lambda x: x.copy(), train_state)
@@ -894,13 +900,14 @@ def main():
             
             metric = jax.lax.cond((update_step % 200) == 0, true_fun, false_fun, metric)
 
-            def callback(metric, update_step):
+            def callback(metric):
                 # print(update_step, metric)
                 wandb.log(
                     metric
                 )
+
             
-            jax.debug.callback(callback, metric, update_step)
+            jax.experimental.io_callback(callback, None, metric)
 
             
             rng = update_state[-1]
@@ -922,7 +929,7 @@ def main():
         )
 
         # Return the runner state after the training loop, and the metric arrays
-        return runner_state
+        return runner_state, metric
 
 
     def loop_over_envs(rng, train_state, envs):
@@ -936,8 +943,24 @@ def main():
         # split the random number generator for training on the environments
         rng, *env_rngs = jax.random.split(rng, len(envs)+1)
 
+        global_update_step = 0
+
         for env_rng, env in zip(env_rngs, envs):
-            runner_state = train_on_environment(env_rng, train_state, env)
+            runner_state, metrics = train_on_environment(env_rng, train_state, env)
+            for i in range(int(config.num_updates)):
+                writer.add_scalar("learning rate", metrics["General/learning_rate"][i], global_update_step)
+                writer.add_scalar("total loss", metrics["Losses/total_loss"][i], global_update_step)
+                writer.add_scalar("value loss", metrics["Losses/value_loss"][i], global_update_step)
+                writer.add_scalar("actor loss", metrics["Losses/actor_loss"][i], global_update_step)
+                writer.add_scalar("entropy", metrics["Losses/entropy"][i], global_update_step)
+                writer.add_scalar("advantages", metrics["Advantage_Targets/advantages"][i], global_update_step)
+                writer.add_scalar("targets", metrics["Advantage_Targets/targets"][i], global_update_step)
+                writer.add_scalar("reward agent 0", metrics["General/shaped_reward_agent0"][i], global_update_step)
+                writer.add_scalar("reward agent 1", metrics["General/shaped_reward_agent1"][i], global_update_step)
+                writer.add_scalar("reward agent 0 annealed", metrics["General/shaped_reward_annealed_agent0"][i], global_update_step)
+                writer.add_scalar("reward agent 1 annealed", metrics["General/shaped_reward_annealed_agent1"][i], global_update_step)
+
+                global_update_step += 1
             train_state = runner_state[0]
 
         return runner_state
