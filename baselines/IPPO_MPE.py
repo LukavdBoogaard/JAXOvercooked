@@ -15,10 +15,10 @@ import distrax
 from gymnax.wrappers.purerl import LogWrapper, FlattenObservationWrapper
 
 from jax_marl.registration import make
-from jax_marl.wrappers.baselines import LogWrapper
-from jax_marl.environments.overcooked_environment import overcooked_layouts
+from jax_marl.wrappers.baselines import MPELogWrapper as LogWrapper
+# from jax_marl.environments.overcooked_environment import overcooked_layouts
 from jax_marl.environments.env_selection import generate_sequence
-from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
+# from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
 from jax_marl.environments.overcooked_environment.layouts import counter_circuit_grid
 from dotenv import load_dotenv
 import hydra
@@ -107,14 +107,14 @@ class Transition(NamedTuple):
     reward: jnp.ndarray # the reward received
     log_prob: jnp.ndarray # the log probability of the action
     obs: jnp.ndarray # the observation
-    # info: jnp.ndarray # additional information
+    info: jnp.ndarray # additional information
 
 @dataclass
 class Config:
     lr: float = 3e-4
     num_envs: int = 16
     num_steps: int = 128
-    total_timesteps: float = 4e6
+    total_timesteps: float = 1e7
     update_epochs: int = 4
     num_minibatches: int = 4
     gamma: float = 0.99
@@ -123,9 +123,9 @@ class Config:
     ent_coef: float = 0.01
     vf_coef: float = 0.5
     max_grad_norm: float = 0.5
-    reward_shaping_horizon: float = 2.5e6
+    # reward_shaping_horizon: float = 2.5e6
     activation: str = "tanh"
-    env_name: str = "overcooked"
+    env_name: str = "MPE_simple_spread_v3"
     alg_name: str = "ippo"
 
     seq_length: int = 3
@@ -134,14 +134,14 @@ class Config:
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
     
-    anneal_lr: bool = False
+    anneal_lr: bool = True
     seed: int = 30
-    num_seeds: int = 1
+    num_seeds: int = 10
     
     # Wandb settings
     wandb_mode: str = "online"
     entity: Optional[str] = ""
-    project: str = "ippo_continual"
+    project: str = "mpe"
 
     # to be computed during runtime
     num_actors: int = 0
@@ -154,25 +154,14 @@ class Config:
 ############################
 
 def batchify(x: dict, agent_list, num_actors):
-    '''
-    converts the observations of a batch of agents into an array of size (num_actors, -1) that can be used by the network
-    @param x: dictionary of observations
-    @param agent_list: list of agents
-    @param num_actors: number of actors
-    returns the batchified observations
-    '''
-    x = jnp.stack([x[a] for a in agent_list])
+    max_dim = max([x[a].shape[-1] for a in agent_list])
+    def pad(z, length):
+        return jnp.concatenate([z, jnp.zeros(z.shape[:-1] + [length - z.shape[-1]])], -1)
+
+    x = jnp.stack([x[a] if x[a].shape[-1] == max_dim else pad(x[a]) for a in agent_list])
     return x.reshape((num_actors, -1))
 
 def unbatchify(x: jnp.ndarray, agent_list, num_envs, num_actors):
-    '''
-    converts the array of size (num_actors, -1) into a dictionary of observations for all agents
-    @param x: array of observations
-    @param agent_list: list of agents
-    @param num_envs: number of environments
-    @param num_actors: number of actors
-    returns the unbatchified observations
-    '''
     x = x.reshape((num_actors, num_envs, -1))
     return {a: x[i] for i, a in enumerate(agent_list)}
 
@@ -192,17 +181,15 @@ def main():
     config = tyro.cli(Config)
 
     # generate a sequence of tasks
-    seq_length = config.seq_length
-    strategy = config.strategy
-    layouts = config.layouts
-    config.env_kwargs, config.layout_name = generate_sequence(seq_length, strategy, layout_names=layouts, seed=config.seed)
+    # seq_length = config.seq_length
+    # strategy = config.strategy
+    # layouts = config.layouts
+    # config.env_kwargs, config.layout_name = generate_sequence(seq_length, strategy, layout_names=layouts, seed=config.seed)
+    # for layout_config in config.env_kwargs:
+    #     layout_name = layout_config["layout"]
+    #     layout_config["layout"] = overcooked_layouts[layout_name]
 
-
-    for layout_config in config.env_kwargs:
-        layout_name = layout_config["layout"]
-        layout_config["layout"] = overcooked_layouts[layout_name]
     
-    run_name = f"{config.alg_name}_{config.seq_length}_{config.strategy}"
 
     # Initialize WandB
     load_dotenv()
@@ -212,11 +199,11 @@ def main():
         config=config,
         sync_tensorboard=True,
         mode=config.wandb_mode,
-        name=run_name
+        name=f'{config.alg_name}_{config.env_name}'
     )
 
     # Set up Tensorboard
-    writer = SummaryWriter(f"runs/{run_name}")
+    writer = SummaryWriter(f"runs/{config.alg_name}_{config.env_name}")
     
     # add the hyperparameters to the tensorboard
     rows = []
@@ -228,7 +215,7 @@ def main():
     table_body = "\n".join(rows)
     markdown = f"|param|value|\n|-|-|\n{table_body}"
     writer.add_text("hyperparameters", markdown)
-
+        
     def pad_observation_space():
         '''
         Function that pads the observation space of all environments to be the same size by adding extra walls to the outside.
@@ -487,19 +474,19 @@ def main():
 
         return state_sequences
         
-    def visualize_environments():
-        '''
-        Visualizes the environments using the OvercookedVisualizer
-        @param config: the configuration of the training
-        returns None
-        '''
-        state_sequences = get_rollout_for_visualization()
-        visualizer = OvercookedVisualizer()
-        # animate all environments in the sequence
-        for i, env in enumerate(state_sequences):
-            visualizer.animate(state_seq=env, agent_view_size=5, filename=f"~/JAXOvercooked/environment_layouts/env_{config.layouts[i]}.gif")
+    # def visualize_environments():
+    #     '''
+    #     Visualizes the environments using the OvercookedVisualizer
+    #     @param config: the configuration of the training
+    #     returns None
+    #     '''
+    #     # state_sequences = get_rollout_for_visualization()
+    #     # visualizer = OvercookedVisualizer()
+    #     # animate all environments in the sequence
+    #     for i, env in enumerate(state_sequences):
+    #         visualizer.animate(state_seq=env, agent_view_size=5, filename=f"~/JAXOvercooked/environment_layouts/env_{config.layouts[i]}.gif")
 
-        return None
+    #     return None
     
     # visualize_environments()
 

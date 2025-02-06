@@ -33,9 +33,6 @@ from dataclasses import dataclass, field
 import tyro
 from tensorboardX import SummaryWriter
 
-# Enable compile logging
-# jax.log_compiles(True)
-
 class ActorCritic(nn.Module):
     '''
     Class to define the actor-critic networks used in IPPO. Each agent has its own actor-critic network
