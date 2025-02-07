@@ -1,12 +1,14 @@
 # import os
 # os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
+import pickle
 import jax
 import jax.experimental
 import jax.numpy as jnp
 import flax.linen as nn
 import numpy as np
 import optax
+import orbax.checkpoint as ocp
 from flax.linen.initializers import constant, orthogonal
 from flax.core.frozen_dict import FrozenDict, freeze, unfreeze
 from typing import Sequence, NamedTuple, Any, Optional, List
@@ -32,6 +34,7 @@ from functools import partial
 from dataclasses import dataclass, field
 import tyro
 from tensorboardX import SummaryWriter
+from pathlib import Path
 
 # Enable compile logging
 # jax.log_compiles(True)
@@ -114,7 +117,7 @@ class Config:
     lr: float = 3e-4
     num_envs: int = 16
     num_steps: int = 128
-    total_timesteps: float = 4e6
+    total_timesteps: float = 5e6
     update_epochs: int = 4
     num_minibatches: int = 4
     gamma: float = 0.99
@@ -949,6 +952,8 @@ def main():
 
         for env_rng, env in zip(env_rngs, envs):
             runner_state, metrics = train_on_environment(env_rng, train_state, env)
+
+            # Log the metrics to tensorboard 
             for i in range(int(config.num_updates)):
                 writer.add_scalar("learning rate", metrics["General/learning_rate"][i], global_update_step)
                 writer.add_scalar("total loss", metrics["Losses/total_loss"][i], global_update_step)
@@ -963,11 +968,31 @@ def main():
                 writer.add_scalar("reward agent 1 annealed", metrics["General/shaped_reward_annealed_agent1"][i], global_update_step)
 
                 global_update_step += 1
+
+            # update the train state
             train_state = runner_state[0]
+
+            # save the model
+            path = f"checkpoints/overcooked/{run_name}/model{global_update_step}.pkl"
+            save_params(path, train_state)
 
         return runner_state
 
+    def save_params(path, train_state):
+        '''
+        Saves the parameters of the network
+        @param path: the path to save the parameters
+        @param train_state: the current state of the training
+        returns None
+        '''
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        params = jax.tree_util.tree_map(lambda x: jnp.array(x), train_state.params)
+        with open(path, "wb") as f:
+            pickle.dump(params, f)
+        
+        
     
+
     # Run the model
     rng, train_rng = jax.random.split(rng)
     # apply the loop_over_envs function to the environments
