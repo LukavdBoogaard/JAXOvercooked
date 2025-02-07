@@ -141,6 +141,7 @@ class Config:
     wandb_mode: str = "online"
     entity: Optional[str] = ""
     project: str = "ippo_continual"
+    tags: List[str] = None
 
     # to be computed during runtime
     num_actors: int = 0
@@ -203,12 +204,14 @@ def main():
 
     # Initialize WandB
     load_dotenv()
+    wandb_tags = config.tags if config.tags is not None else []
     wandb.login(key=os.environ.get("WANDB_API_KEY"))
     wandb.init(
         project='Continual_IPPO', 
         config=config,
         sync_tensorboard=True,
         mode=config.wandb_mode,
+        tags=wandb_tags,
         name=f'{config.alg_name}_{config.seq_length}_{config.strategy}'
     )
 
