@@ -108,10 +108,10 @@ class Transition(NamedTuple):
 
 @dataclass
 class Config:
-    lr: float = 3e-4
+    lr: float = 2.5e-4
     num_envs: int = 16
     num_steps: int = 128
-    total_timesteps: float = 4e6
+    total_timesteps: float = 5e6
     update_epochs: int = 4
     num_minibatches: int = 4
     gamma: float = 0.99
@@ -122,14 +122,14 @@ class Config:
     max_grad_norm: float = 0.5
     reward_shaping_horizon: float = 2.5e6
     activation: str = "tanh"
-    env_name: str = "overcooked"
+    env_name: str = "storm_2p"
     alg_name: str = "ippo"
 
-    seq_length: int = 3
-    strategy: str = "random"
-    layouts: Optional[Sequence[str]] = field(default_factory=lambda: ["asymm_advantages", "smallest_kitchen", "cramped_room", "easy_layout", "square_arena", "no_cooperation"])
-    env_kwargs: Optional[Sequence[dict]] = None
-    layout_name: Optional[Sequence[str]] = None
+    # seq_length: int = 3
+    # strategy: str = "random"
+    # layouts: Optional[Sequence[str]] = field(default_factory=lambda: ["asymm_advantages", "smallest_kitchen", "cramped_room", "easy_layout", "square_arena", "no_cooperation"])
+    # env_kwargs: Optional[Sequence[dict]] = None
+    # layout_name: Optional[Sequence[str]] = None
     
     anneal_lr: bool = False
     seed: int = 30
@@ -138,7 +138,7 @@ class Config:
     # Wandb settings
     wandb_mode: str = "online"
     entity: Optional[str] = ""
-    project: str = "ippo_continual"
+    project: str = "storm"
 
     # to be computed during runtime
     num_actors: int = 0

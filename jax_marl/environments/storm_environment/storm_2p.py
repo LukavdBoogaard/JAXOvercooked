@@ -22,20 +22,6 @@ from .rendering import (
     rotate_fn,
 )
 
-
-GRID_SIZE = 8
-OBS_SIZE = 5
-PADDING = OBS_SIZE - 1
-NUM_TYPES = 5  # empty (0), red (1), blue, red coin, blue coin, wall, interact
-NUM_COINS = 6  # per type
-NUM_COIN_TYPES = 2
-NUM_OBJECTS = (
-    2 + NUM_COIN_TYPES * NUM_COINS + 1
-)  # red, blue, 2 red coin, 2 blue coin
-
-INTERACT_THRESHOLD = 0
-
-
 @dataclass
 class State:
     red_pos: jnp.ndarray
@@ -95,92 +81,20 @@ STEP = jnp.array(
     dtype=jnp.int8,
 )
 
-GRID = jnp.zeros(
-    (GRID_SIZE + 2 * PADDING, GRID_SIZE + 2 * PADDING),
-    dtype=jnp.int8,
-)
-
-# First layer of Padding is Wall
-GRID = GRID.at[PADDING - 1, :].set(5)
-GRID = GRID.at[GRID_SIZE + PADDING, :].set(5)
-GRID = GRID.at[:, PADDING - 1].set(5)
-GRID = GRID.at[:, GRID_SIZE + PADDING].set(5)
-
-COIN_SPAWNS = [
-    [1, 1],
-    [1, 2],
-    [2, 1],
-    [1, GRID_SIZE - 2],
-    [2, GRID_SIZE - 2],
-    [1, GRID_SIZE - 3],
-    # [2, 2],
-    # [2, GRID_SIZE - 3],
-    [GRID_SIZE - 2, 2],
-    [GRID_SIZE - 3, 1],
-    [GRID_SIZE - 2, 1],
-    [GRID_SIZE - 2, GRID_SIZE - 2],
-    [GRID_SIZE - 2, GRID_SIZE - 3],
-    [GRID_SIZE - 3, GRID_SIZE - 2],
-    # [GRID_SIZE - 3, 2],
-    # [GRID_SIZE - 3, GRID_SIZE - 3],
-]
-
-COIN_SPAWNS = jnp.array(
-    COIN_SPAWNS,
-    dtype=jnp.int8,
-)
-
-RED_SPAWN = jnp.array(
-    COIN_SPAWNS[::2, :],
-    dtype=jnp.int8,
-)
-
-BLUE_SPAWN = jnp.array(
-    COIN_SPAWNS[1::2, :],
-    dtype=jnp.int8,
-)
-
-AGENT_SPAWNS = [
-    [0, 0],
-    [0, 1],
-    [0, 2],
-    [1, 0],
-    # [1, 1],
-    [1, 2],
-    [0, GRID_SIZE - 1],
-    [0, GRID_SIZE - 2],
-    [0, GRID_SIZE - 3],
-    [1, GRID_SIZE - 1],
-    # [1, GRID_SIZE - 2],
-    # [1, GRID_SIZE - 3],
-    [GRID_SIZE - 1, 0],
-    [GRID_SIZE - 1, 1],
-    [GRID_SIZE - 1, 2],
-    [GRID_SIZE - 2, 0],
-    # [GRID_SIZE - 2, 1],
-    # [GRID_SIZE - 2, 2],
-    [GRID_SIZE - 1, GRID_SIZE - 1],
-    [GRID_SIZE - 1, GRID_SIZE - 2],
-    [GRID_SIZE - 1, GRID_SIZE - 3],
-    [GRID_SIZE - 2, GRID_SIZE - 1],
-    # [GRID_SIZE - 2, GRID_SIZE - 2],
-    [GRID_SIZE - 2, GRID_SIZE - 3],
-]
-
-AGENT_SPAWNS = jnp.array(
-    [
-        [(j, i), (GRID_SIZE - 1 - j, GRID_SIZE - 1 - i)]
-        for (i, j) in AGENT_SPAWNS
-    ],
-    dtype=jnp.int8,
-).reshape(-1, 2, 2)
-
-
 PLAYER1_COLOUR = (255.0, 127.0, 14.0)
 PLAYER2_COLOUR = (31.0, 119.0, 180.0)
 GREEN_COLOUR = (44.0, 160.0, 44.0)
 RED_COLOUR = (214.0, 39.0, 40.0)
 
+
+NUM_TYPES = 5  # empty (0), red (1), blue, red coin, blue coin, wall, interact
+NUM_COINS = 6  # per type
+NUM_COIN_TYPES = 2
+NUM_OBJECTS = (
+    2 + NUM_COIN_TYPES * NUM_COINS + 1
+)  # red, blue, 2 red coin, 2 blue coin
+
+INTERACT_THRESHOLD = 0
 
 class InTheGrid_2p(MultiAgentEnv):
     """
@@ -192,33 +106,127 @@ class InTheGrid_2p(MultiAgentEnv):
 
     def __init__(
         self,
+        obs_size,
+        grid_size,
+        num_types=5,
+        num_coins=6,
+        num_coin_types=2,
         num_inner_steps=152,
         num_outer_steps=1,
         fixed_coin_location=True,
         num_agents=2,
         payoff_matrix=jnp.array([[[3, 0], [5, 1]], [[3, 5], [0, 1]]]),
         freeze_penalty=5
+
     ):
+        # Padding
+        self.obs_size = obs_size
+        self.padding = self.obs_size - 1
+        self.grid_size = grid_size
+        self.num_types = num_types
+        self.num_coins = num_coins
+        self.num_coin_types = num_coin_types
+        self.num_objects = 2 + self.num_coin_types * self.num_coins + 1
+
+        self.grid = jnp.zeros(
+            (self.grid_size + 2 * self.padding, self.grid_size + 2 * self.padding),
+            dtype=jnp.int8,
+        )
+
+        # First layer of Padding is Wall
+        self.grid = self.grid.at[self.padding - 1, :].set(5)
+        self.grid = self.grid.at[self.grid_size + self.padding, :].set(5)
+        self.grid = self.grid.at[:, self.padding - 1].set(5)
+        self.grid = self.grid.at[:, self.grid_size + self.padding].set(5)
+
+        self.agent_spawns = [
+            [0, 0],
+            [0, 1],
+            [0, 2],
+            [1, 0],
+            # [1, 1],
+            [1, 2],
+            [0, self.grid_size - 1],
+            [0, self.grid_size - 2],
+            [0, self.grid_size - 3],
+            [1, self.grid_size - 1],
+            # [1, self.grid_size - 2],
+            # [1, self.grid_size - 3],
+            [self.grid_size - 1, 0],
+            [self.grid_size - 1, 1],
+            [self.grid_size - 1, 2],
+            [self.grid_size - 2, 0],
+            # [self.grid_size - 2, 1],
+            # [self.grid_size - 2, 2],
+            [self.grid_size - 1, self.grid_size - 1],
+            [self.grid_size - 1, self.grid_size - 2],
+            [self.grid_size - 1, self.grid_size - 3],
+            [self.grid_size - 2, self.grid_size - 1],
+            # [self.grid_size - 2, self.grid_size - 2],
+            [self.grid_size - 2, self.grid_size - 3],
+        ]
+
+        self.agent_spawns = jnp.array(
+            [
+                [(j, i), (self.grid_size - 1 - j, self.grid_size - 1 - i)]
+                for (i, j) in self.agent_spawns
+            ],
+            dtype=jnp.int8,
+        ).reshape(-1, 2, 2)
+
+        COIN_SPAWNS = [
+            [1, 1],
+            [1, 2],
+            [2, 1],
+            [1, self.grid_size - 2],
+            [2, self.grid_size - 2],
+            [1, self.grid_size - 3],
+            # [2, 2],
+            # [2, self.grid_size - 3],
+            [self.grid_size - 2, 2],
+            [self.grid_size - 3, 1],
+            [self.grid_size - 2, 1],
+            [self.grid_size - 2, self.grid_size - 2],
+            [self.grid_size - 2, self.grid_size - 3],
+            [self.grid_size - 3, self.grid_size - 2],
+            # [self.grid_size - 3, 2],
+            # [self.grid_size - 3, self.grid_size - 3],
+        ]
+
+        COIN_SPAWNS = jnp.array(
+            COIN_SPAWNS,
+            dtype=jnp.int8,
+        )
+
+        RED_SPAWN = jnp.array(
+            COIN_SPAWNS[::2, :],
+            dtype=jnp.int8,
+        )
+
+        BLUE_SPAWN = jnp.array(
+            COIN_SPAWNS[1::2, :],
+            dtype=jnp.int8,
+        )
 
         super().__init__(num_agents=num_agents)
         self.agents = list(range(num_agents))
 
         def _get_obs_point(x: int, y: int, dir: int) -> jnp.ndarray:
-            x, y = x + PADDING, y + PADDING
-            x = jnp.where(dir == 0, x - (OBS_SIZE // 2), x)
-            x = jnp.where(dir == 2, x - (OBS_SIZE // 2), x)
-            x = jnp.where(dir == 3, x - (OBS_SIZE - 1), x)
+            x, y = x + self.padding, y + self.padding
+            x = jnp.where(dir == 0, x - (self.obs_size // 2), x)
+            x = jnp.where(dir == 2, x - (self.obs_size // 2), x)
+            x = jnp.where(dir == 3, x - (self.obs_size - 1), x)
 
-            y = jnp.where(dir == 1, y - (OBS_SIZE // 2), y)
-            y = jnp.where(dir == 2, y - (OBS_SIZE - 1), y)
-            y = jnp.where(dir == 3, y - (OBS_SIZE // 2), y)
+            y = jnp.where(dir == 1, y - (self.obs_size // 2), y)
+            y = jnp.where(dir == 2, y - (self.obs_size - 1), y)
+            y = jnp.where(dir == 3, y - (self.obs_size // 2), y)
             return x, y
 
         def _get_obs(state: State) -> jnp.ndarray:
             # create state
             grid = jnp.pad(
                 state.grid,
-                ((PADDING, PADDING), (PADDING, PADDING)),
+                ((self.padding, self.padding), (self.padding, self.padding)),
                 constant_values=Items.wall,
             )
             x, y = _get_obs_point(
@@ -227,7 +235,7 @@ class InTheGrid_2p(MultiAgentEnv):
             grid1 = jax.lax.dynamic_slice(
                 grid,
                 start_indices=(x, y),
-                slice_sizes=(OBS_SIZE, OBS_SIZE),
+                slice_sizes=(self.obs_size, self.obs_size),
             )
             # rotate
             grid1 = jnp.where(
@@ -265,7 +273,7 @@ class InTheGrid_2p(MultiAgentEnv):
             grid2 = jax.lax.dynamic_slice(
                 grid,
                 start_indices=(x, y),
-                slice_sizes=(OBS_SIZE, OBS_SIZE),
+                slice_sizes=(self.obs_size, self.obs_size),
             )
 
             grid2 = jnp.where(
@@ -359,10 +367,10 @@ class InTheGrid_2p(MultiAgentEnv):
 
             # check 1 ahead
             red_target = jnp.clip(
-                state.red_pos + STEP[state.red_pos[2]], 0, GRID_SIZE - 1
+                state.red_pos + STEP[state.red_pos[2]], 0, self.grid_size - 1
             )
             blue_target = jnp.clip(
-                state.blue_pos + STEP[state.blue_pos[2]], 0, GRID_SIZE - 1
+                state.blue_pos + STEP[state.blue_pos[2]], 0, self.grid_size - 1
             )
 
             red_interact = (
@@ -374,10 +382,10 @@ class InTheGrid_2p(MultiAgentEnv):
 
             # check 2 ahead
             red_target_ahead = jnp.clip(
-                state.red_pos + 2 * STEP[state.red_pos[2]], 0, GRID_SIZE - 1
+                state.red_pos + 2 * STEP[state.red_pos[2]], 0, self.grid_size - 1
             )
             blue_target_ahead = jnp.clip(
-                state.blue_pos + 2 * STEP[state.blue_pos[2]], 0, GRID_SIZE - 1
+                state.blue_pos + 2 * STEP[state.blue_pos[2]], 0, self.grid_size - 1
             )
 
             red_interact_ahead = (
@@ -396,7 +404,7 @@ class InTheGrid_2p(MultiAgentEnv):
                 + STEP[(state.red_pos[2] + 1) % 4]
             )
             oob_red = jnp.logical_or(
-                (red_target_right > GRID_SIZE - 1).any(),
+                (red_target_right > self.grid_size - 1).any(),
                 (red_target_right < 0).any(),
             )
             red_target_right = jnp.where(oob_red, red_target, red_target_right)
@@ -407,7 +415,7 @@ class InTheGrid_2p(MultiAgentEnv):
                 + STEP[(state.blue_pos[2] + 1) % 4]
             )
             oob_blue = jnp.logical_or(
-                (blue_target_right > GRID_SIZE - 1).any(),
+                (blue_target_right > self.grid_size - 1).any(),
                 (blue_target_right < 0).any(),
             )
             blue_target_right = jnp.where(
@@ -430,7 +438,7 @@ class InTheGrid_2p(MultiAgentEnv):
                 + STEP[(state.red_pos[2] - 1) % 4]
             )
             oob_red = jnp.logical_or(
-                (red_target_left > GRID_SIZE - 1).any(),
+                (red_target_left > self.grid_size - 1).any(),
                 (red_target_left < 0).any(),
             )
             red_target_left = jnp.where(oob_red, red_target, red_target_left)
@@ -441,7 +449,7 @@ class InTheGrid_2p(MultiAgentEnv):
                 + STEP[(state.blue_pos[2] - 1) % 4]
             )
             oob_blue = jnp.logical_or(
-                (blue_target_left > GRID_SIZE - 1).any(),
+                (blue_target_left > self.grid_size - 1).any(),
                 (blue_target_left < 0).any(),
             )
             blue_target_left = jnp.where(
@@ -586,7 +594,7 @@ class InTheGrid_2p(MultiAgentEnv):
             # turning red
             new_red_pos = jnp.int8(
                 (state.red_pos + ROTATIONS[action_0])
-                % jnp.array([GRID_SIZE + 1, GRID_SIZE + 1, 4])
+                % jnp.array([self.grid_size + 1, self.grid_size + 1, 4])
             )
 
             # moving red
@@ -598,7 +606,7 @@ class InTheGrid_2p(MultiAgentEnv):
                 new_red_pos,
                 a_min=jnp.array([0, 0, 0], dtype=jnp.int8),
                 a_max=jnp.array(
-                    [GRID_SIZE - 1, GRID_SIZE - 1, 3], dtype=jnp.int8
+                    [self.grid_size - 1, self.grid_size - 1, 3], dtype=jnp.int8
                 ),
             )
 
@@ -608,7 +616,7 @@ class InTheGrid_2p(MultiAgentEnv):
             # turning blue
             new_blue_pos = jnp.int8(
                 (state.blue_pos + ROTATIONS[action_1])
-                % jnp.array([GRID_SIZE + 1, GRID_SIZE + 1, 4], dtype=jnp.int8)
+                % jnp.array([self.grid_size + 1, self.grid_size + 1, 4], dtype=jnp.int8)
             )
 
             # moving blue
@@ -620,7 +628,7 @@ class InTheGrid_2p(MultiAgentEnv):
                 new_blue_pos,
                 a_min=jnp.array([0, 0, 0], dtype=jnp.int8),
                 a_max=jnp.array(
-                    [GRID_SIZE - 1, GRID_SIZE - 1, 3], dtype=jnp.int8
+                    [self.grid_size - 1, self.grid_size - 1, 3], dtype=jnp.int8
                 ),
             )
             blue_move = (new_blue_pos[:2] != state.blue_pos[:2]).any()
@@ -779,7 +787,7 @@ class InTheGrid_2p(MultiAgentEnv):
         def _soft_reset_state(key: jnp.ndarray, state: State) -> State:
             """Reset the grid to original state and"""
             # Find the free spaces in the grid
-            grid = jnp.zeros((GRID_SIZE, GRID_SIZE), jnp.int8)
+            grid = jnp.zeros((self.grid_size, self.grid_size), jnp.int8)
 
             # if coin location can change, then we need to reset the coins
             for i in range(NUM_COINS):
@@ -793,7 +801,7 @@ class InTheGrid_2p(MultiAgentEnv):
                 ].set(jnp.int8(Items.blue_coin))
 
             agent_pos = jax.random.choice(
-                key, AGENT_SPAWNS, shape=(), replace=False
+                key, self.agent_spawns, shape=(), replace=False
             )
 
             player_dir = jax.random.randint(
@@ -836,7 +844,7 @@ class InTheGrid_2p(MultiAgentEnv):
             # )
 
             agent_pos = jax.random.choice(
-                subkey, AGENT_SPAWNS, shape=(), replace=False
+                subkey, self.agent_spawns, shape=(), replace=False
             )
             player_dir = jax.random.randint(
                 subkey, shape=(2,), minval=0, maxval=3, dtype=jnp.int8
@@ -844,7 +852,7 @@ class InTheGrid_2p(MultiAgentEnv):
             player_pos = jnp.array(
                 [agent_pos[:2, 0], agent_pos[:2, 1], player_dir]
             ).T
-            grid = jnp.zeros((GRID_SIZE, GRID_SIZE), jnp.int8)
+            grid = jnp.zeros((self.grid_size, self.grid_size), jnp.int8)
             grid = grid.at[player_pos[0, 0], player_pos[0, 1]].set(
                 jnp.int8(Items.red_agent)
             )
@@ -908,6 +916,7 @@ class InTheGrid_2p(MultiAgentEnv):
         self.num_inner_steps = num_inner_steps
         self.num_outer_steps = num_outer_steps
 
+
     @property
     def name(self) -> str:
         """Environment name."""
@@ -927,9 +936,9 @@ class InTheGrid_2p(MultiAgentEnv):
     def observation_space(self) -> spaces.Dict:
         """Observation space of the environment."""
         _shape = (
-            (OBS_SIZE, OBS_SIZE, len(Items) - 1 + 4)
+            (self.obs_size, self.obs_size, len(Items) - 1 + 4)
             if self.cnn
-            else (OBS_SIZE**2 * (len(Items) - 1 + 4),)
+            else (self.obs_size**2 * (len(Items) - 1 + 4),)
         )
 
         return {
@@ -947,9 +956,9 @@ class InTheGrid_2p(MultiAgentEnv):
     def state_space(self) -> spaces.Dict:
         """State space of the environment."""
         _shape = (
-            (GRID_SIZE, GRID_SIZE, NUM_TYPES + 4)
+            (self.grid_size, self.grid_size, NUM_TYPES + 4)
             if self.cnn
-            else (GRID_SIZE**2 * (NUM_TYPES + 4),)
+            else (self.grid_size**2 * (NUM_TYPES + 4),)
         )
         return spaces.Box(low=0, high=1, shape=_shape, dtype=jnp.uint8)
 
@@ -1070,14 +1079,14 @@ class InTheGrid_2p(MultiAgentEnv):
         obs = self.get_obs(state)
 
         grid = onp.array(obs[agent]["observation"][:, :, :-4])
-        empty_space_channel = onp.zeros((OBS_SIZE, OBS_SIZE, 1))
+        empty_space_channel = onp.zeros((self.obs_size, self.obs_size, 1))
         grid = onp.concatenate((empty_space_channel, grid), axis=-1)
         grid = onp.argmax(grid.reshape(-1, grid.shape[-1]), axis=1)
-        grid = grid.reshape(OBS_SIZE, OBS_SIZE)
+        grid = grid.reshape(self.obs_size, self.obs_size)
 
         angles = onp.array(obs[agent]["observation"][:, :, -4:])
         angles = onp.argmax(angles.reshape(-1, angles.shape[-1]), axis=1)
-        angles = angles.reshape(OBS_SIZE, OBS_SIZE)
+        angles = angles.reshape(self.obs_size, self.obs_size)
 
         # Compute the total grid size
         width_px = grid.shape[0] * tile_size
@@ -1148,30 +1157,30 @@ class InTheGrid_2p(MultiAgentEnv):
         :param tile_size: tile size in pixels
         """
         tile_size = 32
-        highlight_mask = onp.zeros_like(onp.array(GRID))
+        highlight_mask = onp.zeros_like(onp.array(self.grid))
 
         # Compute the total grid size
-        width_px = GRID.shape[0] * tile_size
-        height_px = GRID.shape[0] * tile_size
+        width_px = self.grid.shape[0] * tile_size
+        height_px = self.grid.shape[0] * tile_size
 
         img = onp.zeros(shape=(height_px, width_px, 3), dtype=onp.uint8)
         grid = onp.array(state.grid)
         grid = onp.pad(
-            grid, ((PADDING, PADDING), (PADDING, PADDING)), constant_values=5
+            grid, ((self.padding, self.padding), (self.padding, self.padding)), constant_values=5
         )
 
         startx, starty = self.get_obs_point(
             state.red_pos[0], state.red_pos[1], state.red_pos[2]
         )
         highlight_mask[
-            startx : startx + OBS_SIZE, starty : starty + OBS_SIZE
+            startx : startx + self.obs_size, starty : starty + self.obs_size
         ] = True
 
         startx, starty = self.get_obs_point(
             state.blue_pos[0], state.blue_pos[1], state.blue_pos[2]
         )
         highlight_mask[
-            startx : startx + OBS_SIZE, starty : starty + OBS_SIZE
+            startx : startx + self.obs_size, starty : starty + self.obs_size
         ] = True
         if state.freeze > 0:
             # check which agent won
@@ -1278,8 +1287,8 @@ class InTheGrid_2p(MultiAgentEnv):
 
         img = onp.rot90(
             img[
-                (PADDING - 1) * tile_size : -(PADDING - 1) * tile_size,
-                (PADDING - 1) * tile_size : -(PADDING - 1) * tile_size,
+                (self.padding - 1) * tile_size : -(self.padding - 1) * tile_size,
+                (self.padding - 1) * tile_size : -(self.padding - 1) * tile_size,
                 :,
             ],
             2,

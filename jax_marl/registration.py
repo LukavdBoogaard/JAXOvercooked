@@ -1,4 +1,4 @@
-from jax_marl.environments import Overcooked, SimpleMPE, SimplePushMPE, SimpleSpreadMPE, InTheGrid, InTheGrid_2p, InTheMatrix
+from jax_marl.environments import Overcooked, SimpleMPE, SimplePushMPE, SimpleSpreadMPE, InTheGrid, InTheGrid_2p, InTheMatrix, LevelOne
 
 
 
@@ -18,13 +18,13 @@ def make(env_id: str, **env_kwargs):
     elif env_id == "overcooked":
         env = Overcooked(**env_kwargs)
     # Storm
-    elif env_id == "InTheGrid":
+    elif env_id == "storm":
         env = InTheGrid(**env_kwargs)
-    elif env_id == "InTheGrid_2p":
-        env = InTheGrid_2p(**env_kwargs)
-    elif env_id == "InTheMatrix":
+    elif env_id == "storm_2p":
+        env = LevelOne(**env_kwargs)
+    elif env_id == "storm_np":
         env = InTheMatrix(**env_kwargs)
 
     return env
 
-registered_envs = ["overcooked", "MPE_simple_v3", "MPE_simple_push_v3", "MPE_simple_spread_v3", "InTheGrid", "InTheGrid_2p", "InTheMatrix"]
+registered_envs = ["overcooked", "MPE_simple_v3", "MPE_simple_push_v3", "MPE_simple_spread_v3", "storm", "storm_2p", "storm_np"]

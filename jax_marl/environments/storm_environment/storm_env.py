@@ -214,6 +214,10 @@ class InTheGrid(MultiAgentEnv):
         self.agents = list(range(num_agents))
 
         def _get_obs_point(x: int, y: int, dir: int) -> jnp.ndarray:
+            '''
+            computes the pair of grid coordinates that represent the starting point of the observation window, 
+            based on the agent's position and direction
+            '''
             x, y = x + PADDING, y + PADDING
             x = jnp.where(dir == 0, x - (OBS_SIZE // 2), x)
             x = jnp.where(dir == 2, x - (OBS_SIZE // 2), x)
@@ -225,6 +229,11 @@ class InTheGrid(MultiAgentEnv):
             return x, y
 
         def _get_obs(state: State) -> jnp.ndarray:
+            '''
+            constructs the observation for each agent based on the current state of the environment. 
+            The observation consists of a local view of the agent, plus information about nearby agents and inventories.
+            the observation is a 3D tensor 
+            '''
             # create state
             grid = jnp.pad(
                 state.grid,
@@ -327,14 +336,21 @@ class InTheGrid(MultiAgentEnv):
             }
 
         def _get_reward(state, pair) -> jnp.ndarray:
+            '''
+            computes the reward for a pair of agents based on the composition of their inventories. 
+            The reward is computed using a payoff matrix that is provided as an argument to the environment.
+            '''
+            # Normalize the inventories 
             inv1 = state.agent_inventories[pair[0]] / state.agent_inventories[pair[0]].sum()
             inv2 = state.agent_inventories[pair[1]] / state.agent_inventories[pair[1]].sum()
+            # Compute the reward using the payoff matrix
             r1 = inv1 @ payoff_matrix[0] @ inv2.T
             r2 = inv1 @ payoff_matrix[1] @ inv2.T
             return jnp.array([r1, r2])
 
-
         def _interact(state: State, actions: jnp.array, rng_key: jnp.ndarray) -> Tuple[jnp.ndarray, State]:
+            '''
+            computes the interactions between agents based on their actions.'''
             interact_idx = jnp.int8(Items.interact)
 
             # Remove old interacts from the grid
@@ -573,7 +589,6 @@ class InTheGrid(MultiAgentEnv):
             # print(interacted_agents, 'interacted agents')
 
             return rewards, state, agent_interaction_mask
-
 
         def _step(
             key: chex.PRNGKey,
