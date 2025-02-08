@@ -70,7 +70,8 @@ class Overcooked(MultiAgentEnv):
     """Vanilla Overcooked"""
     def __init__(
             self,
-            layout = FrozenDict(layouts["cramped_room"]),
+            layout = None,
+            layout_name = "cramped_room",
             random_reset: bool = False,
             max_steps: int = 400,
             task_id: int = 0,
@@ -85,7 +86,8 @@ class Overcooked(MultiAgentEnv):
         self.obs_shape = (self.width, self.height, 26)
 
         self.agent_view_size = 5  # Hard coded. Only affects map padding -- not observations.
-        self.layout = layout
+        self.layout = layout if layout is not None else FrozenDict(layouts["cramped_room"])
+        self.layout_name = layout_name
         self.agents = ["agent_0", "agent_1"]
 
         self.action_set = jnp.array([
@@ -645,7 +647,7 @@ class Overcooked(MultiAgentEnv):
     @property
     def name(self) -> str:
         """Environment name."""
-        return "Overcooked"
+        return self.layout_name
 
     @property
     def num_actions(self) -> int:
