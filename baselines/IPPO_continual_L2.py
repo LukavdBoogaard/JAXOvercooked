@@ -210,6 +210,7 @@ class Config:
     vf_coef: float = 0.5
     max_grad_norm: float = 0.5
     reward_shaping_horizon: float = 2.5e6
+    explore_fraction = 0.05
     activation: str = "tanh"
     env_name: str = "overcooked"
     alg_name: str = "IPPO"
@@ -593,8 +594,8 @@ def main():
 
         env = envs[env_idx]
 
-        # How many steps to run purely random actions:
-        exploration_steps = int(0.05 * config.total_timesteps)
+        # How many steps to explore the environment with random actions
+        exploration_steps = int(config.explore_fraction * config.total_timesteps)
 
         # reset the learning rate and the optimizer
         tx = optax.chain(
@@ -643,10 +644,10 @@ def main():
                 # Decide whether to explore randomly or use the policy
                 policy_action = pi.sample(seed=_rng)
                 random_action = jax.random.randint(_rng, (config.num_actors,), 0, env.action_space().n)
-                do_random = (steps_for_env < exploration_steps)
+                explore = (steps_for_env < exploration_steps)
 
                 # Expand bool to match the shape of action arrays:
-                mask = jnp.repeat(jnp.array([do_random]), config.num_actors)
+                mask = jnp.repeat(jnp.array([explore]), config.num_actors)
                 action = jnp.where(mask, random_action, policy_action)
 
                 log_prob = pi.log_prob(action)
@@ -687,6 +688,7 @@ def main():
 
                 # Increment steps_for_env by the number of parallel envs
                 steps_for_env = steps_for_env + config.num_envs
+                info["explore"] = jnp.ones((config.num_envs,), dtype=jnp.float32) * jnp.float32(explore)
 
                 runner_state = (train_state, env_state, obsv, update_step, steps_for_env, rng)
                 return runner_state, (transition, info)
@@ -898,8 +900,11 @@ def main():
             # General section
             # Update the step counter
             update_step = update_step + 1
+            mean_explore = jnp.mean(info["explore"])
 
+            metric["General/explore"] = mean_explore
             metric["General/update_step"] = update_step
+            metric["General/steps_for_env"] = steps_for_env
             metric["General/env_step"] = update_step * config.num_steps * config.num_envs
             metric["General/learning_rate"] = linear_schedule(
                 update_step * config.num_minibatches * config.update_epochs)
