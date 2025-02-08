@@ -56,7 +56,7 @@ class OvercookedVisualizer:
 		file_name = f"task_{task_idx}_{task_name}"
 		file_path = f"{exp_dir}/{file_name}.gif"
 
-		imageio.mimsave(file_path, frame_seq, 'GIF', duration=0.5)
+		imageio.mimsave(file_path, frame_seq, 'GIF')
 		wandb.log({file_name: wandb.Video(file_path, format="gif")})
 
 
