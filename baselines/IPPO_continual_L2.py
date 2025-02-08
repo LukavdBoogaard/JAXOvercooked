@@ -686,7 +686,7 @@ def main():
                 )
 
                 # Increment steps_for_env by the number of parallel envs
-                steps_for_env += config.num_envs
+                steps_for_env = steps_for_env + config.num_envs
 
                 runner_state = (train_state, env_state, obsv, update_step, steps_for_env, rng)
                 return runner_state, (transition, info)
@@ -939,7 +939,7 @@ def main():
             def true_fun(metric):
                 evaluations = evaluate_model(train_state_eval, network, eval_rng)
                 for i, evaluation in enumerate(evaluations):
-                    metric[f"Evaluation/{config.layout_name[i]}"] = evaluation
+                    metric[f"Evaluation/{i}_{config.layout_name[i]}"] = evaluation
                 return metric
 
             def false_fun(metric):
