@@ -685,6 +685,9 @@ def main():
                     obs_batch
                 )
 
+                # Increment steps_for_env by the number of parallel envs
+                steps_for_env += config.num_envs
+
                 runner_state = (train_state, env_state, obsv, update_step, steps_for_env, rng)
                 return runner_state, (transition, info)
 
