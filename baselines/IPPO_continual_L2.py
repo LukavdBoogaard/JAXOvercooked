@@ -550,7 +550,7 @@ def main():
         frac = 1.0 - (count // (config.num_minibatches * config.update_epochs)) / config.num_updates
         return config.lr * frac
 
-    reward_shaping_horizon = config.total_timesteps
+    reward_shaping_horizon = config.total_timesteps / 2
     rew_shaping_anneal = optax.linear_schedule(
         init_value=1.,
         end_value=0.,
@@ -927,7 +927,7 @@ def main():
 
             # Evaluation section
             for i in range(len(config.layout_name)):
-                metric[f"Evaluation/{config.layout_name[i]}"] = jnp.nan
+                metric[f"Evaluation/{i}_{config.layout_name[i]}"] = jnp.nan
 
             # If update step is a multiple of 20, run the evaluation function
             rng, eval_rng = jax.random.split(rng)
