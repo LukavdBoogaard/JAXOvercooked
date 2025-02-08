@@ -531,6 +531,7 @@ def main():
 
     envs = []
     for i, env_layout in enumerate(padded_envs):
+        # TODO config.layouts[i] doesn't work for a random order
         env = make(config.env_name, layout=env_layout, layout_name=config.layouts[i])
         env = LogWrapper(env, replace_info=False)
         envs.append(env)
@@ -592,6 +593,9 @@ def main():
 
         env = envs[env_idx]
 
+        # How many steps to run purely random actions:
+        exploration_steps = int(0.05 * config.total_timesteps)
+
         # reset the learning rate and the optimizer
         tx = optax.chain(
             optax.clip_by_global_norm(config.max_grad_norm),
@@ -606,7 +610,7 @@ def main():
 
         # TRAIN 
         # @profile
-        def _update_step(runner_state, unused):
+        def _update_step(runner_state, _):
             '''
             perform a single update step in the training loop
             @param runner_state: the carry state that contains all important training information
@@ -615,7 +619,7 @@ def main():
 
             # COLLECT TRAJECTORIES
             # @profile
-            def _env_step(runner_state, unused):
+            def _env_step(runner_state, _):
                 '''
                 selects an action based on the policy, calculates the log probability of the action, 
                 and performs the selected action in the environment
@@ -623,7 +627,7 @@ def main():
                 returns the updated runner state and the transition
                 '''
                 # Unpack the runner state
-                train_state, env_state, last_obs, update_step, rng = runner_state
+                train_state, env_state, last_obs, update_step, steps_for_env, rng = runner_state
 
                 # SELECT ACTION
                 # split the random number generator for action selection
@@ -636,18 +640,25 @@ def main():
                 # apply the policy network to the observations to get the suggested actions and their values
                 pi, value = network.apply(train_state.params, obs_batch)
 
-                # sample the actions from the policy distribution 
-                action = pi.sample(seed=_rng)
-                log_prob = pi.log_prob(action)
+                # Decide whether to explore randomly or use the policy
+                policy_action = pi.sample(seed=_rng)
+                random_action = jax.random.randint(_rng, (config.num_actors,), 0, env.action_space().n)
+                do_random = (steps_for_env < exploration_steps)
 
-                # format the actions to be compatible with the environment
-                env_act = unbatchify(action, env.agents, config.num_envs, env.num_agents)
-                env_act = {k: v.flatten() for k, v in env_act.items()}
+                # Expand bool to match the shape of action arrays:
+                mask = jnp.repeat(jnp.array([do_random]), config.num_actors)
+                action = jnp.where(mask, random_action, policy_action)
+
+                log_prob = pi.log_prob(action)
 
                 # STEP ENV
                 # split the random number generator for stepping the environment
                 rng, _rng = jax.random.split(rng)
                 rng_step = jax.random.split(_rng, config.num_envs)
+
+                # format the actions to be compatible with the environment
+                env_act = unbatchify(action, env.agents, config.num_envs, env.num_agents)
+                env_act = {k: v.flatten() for k, v in env_act.items()}
 
                 # simultaniously step all environments with the selected actions (parallelized over the number of environments with vmap)
                 obsv, env_state, reward, done, info = jax.vmap(env.step, in_axes=(0, 0, 0))(
@@ -674,7 +685,7 @@ def main():
                     obs_batch
                 )
 
-                runner_state = (train_state, env_state, obsv, update_step, rng)
+                runner_state = (train_state, env_state, obsv, update_step, steps_for_env, rng)
                 return runner_state, (transition, info)
 
             # Apply the _env_step function a series of times, while keeping track of the runner state
@@ -686,7 +697,7 @@ def main():
             )
 
             # unpack the runner state that is returned after the scan function
-            train_state, env_state, last_obs, update_step, rng = runner_state
+            train_state, env_state, last_obs, update_step, steps_for_env, rng = runner_state
 
             # create a batch of the observations that is compatible with the network
             last_obs_batch = batchify(last_obs, env.agents, config.num_actors)
@@ -822,7 +833,7 @@ def main():
                     return train_state, loss_information
 
                 # unpack the update_state (because of the scan function)
-                train_state, traj_batch, advantages, targets, rng = update_state
+                train_state, traj_batch, advantages, targets, steps_for_env, rng = update_state
 
                 # set the batch size and check if it is correct
                 batch_size = config.minibatch_size * config.num_minibatches
@@ -860,11 +871,11 @@ def main():
 
                 total_loss, grads = loss_information
                 avg_grads = jax.tree_util.tree_map(lambda x: jnp.mean(x, axis=0), grads)
-                update_state = (train_state, traj_batch, advantages, targets, rng)
+                update_state = (train_state, traj_batch, advantages, targets, steps_for_env, rng)
                 return update_state, total_loss
 
             # create a tuple to be passed into the jax.lax.scan function
-            update_state = (train_state, traj_batch, advantages, targets, rng)
+            update_state = (train_state, traj_batch, advantages, targets, steps_for_env, rng)
 
             update_state, loss_info = jax.lax.scan(
                 f=_update_epoch,
@@ -874,7 +885,7 @@ def main():
             )
 
             # unpack update_state
-            train_state, traj_batch, advantages, targets, rng = update_state
+            train_state, traj_batch, advantages, targets, steps_for_env, rng = update_state
             metric = info
             current_timestep = update_step * config.num_steps * config.num_envs
 
@@ -933,20 +944,20 @@ def main():
 
             metric = jax.lax.cond((update_step % config.eval_freq) == 0, true_fun, false_fun, metric)
 
-            def callback(metric, update_step):
+            def callback(metric, _):
                 wandb.log(metric)
 
             jax.debug.callback(callback, metric, update_step)
 
             rng = update_state[-1]
-            runner_state = (train_state, env_state, last_obs, update_step, rng)
+            runner_state = (train_state, env_state, last_obs, update_step, steps_for_env, rng)
 
             return runner_state, metric
 
         rng, train_rng = jax.random.split(rng)
 
         # initialize a carrier that keeps track of the states and observations of the agents
-        runner_state = (train_state, env_state, obsv, 0, train_rng)
+        runner_state = (train_state, env_state, obsv, 0, 0, train_rng)
 
         # apply the _update_step function a series of times, while keeping track of the state 
         runner_state, metric = jax.lax.scan(
@@ -982,7 +993,7 @@ def main():
             # ----- Generate & log a GIF after finishing task i -----
             # We'll do a purely python-level rollout on the same environment.
             # Use OvercookedVisualizer or env.render() as needed:
-            states = record_gif_of_episode(train_state, envs[i], network)
+            states = run_eval_episode(train_state, envs[i], network)
             visualizer.animate(states, agent_view_size=5, task_idx=i, task_name=envs[i].name, exp_dir=exp_dir)
 
             # -------------- When done with this task, store new params as 'old_params' ---------------
@@ -1006,7 +1017,7 @@ def sample_discrete_action(key, action_space):
     return jax.random.randint(key, (1,), 0, num_actions)
 
 
-def record_gif_of_episode(train_state, env, network, max_steps=300):
+def run_eval_episode(train_state, env, network, max_steps=300):
     rng = jax.random.PRNGKey(0)
     rng, env_rng = jax.random.split(rng)
     obs, state = env.reset(env_rng)
