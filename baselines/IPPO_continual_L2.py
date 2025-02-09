@@ -49,7 +49,7 @@ class ActorCritic(nn.Module):
         else:
             activation = nn.tanh
 
-        # ACTOR  
+        # ACTOR
         actor_mean = nn.Dense(
             64,  # number of neurons
             kernel_init=orthogonal(np.sqrt(2)),
@@ -193,6 +193,13 @@ def update_cl_state(cl_state: CLState, new_params: FrozenDict) -> CLState:
     return new_cl_state
 
 
+def make_task_onehot(task_idx: int, num_tasks: int) -> jnp.ndarray:
+    """
+    Returns a one-hot vector of length `num_tasks` with a 1 at `task_idx`.
+    """
+    return jnp.eye(num_tasks, dtype=jnp.float32)[task_idx]
+
+
 @dataclass
 class Config:
     reg_coef: float = 300.0
@@ -210,11 +217,13 @@ class Config:
     vf_coef: float = 0.5
     max_grad_norm: float = 0.5
     reward_shaping_horizon: float = 2.5e6
-    explore_fraction = 0.05
+    explore_fraction: float = 0.0
     activation: str = "tanh"
     env_name: str = "overcooked"
     alg_name: str = "IPPO"
+    use_task_id: bool = False
 
+    # Environment
     seq_length: int = 3
     strategy: str = "random"
     layouts: Optional[Sequence[str]] = field(
@@ -419,7 +428,7 @@ def main():
         return padded_envs
 
     @partial(jax.jit, static_argnums=(1))
-    def evaluate_model(train_state, network, key):
+    def evaluate_model(train_state, network, key, env_idx):
         '''
         Evaluates the model by running 10 episodes on all environments and returns the average reward
         @param train_state: the current state of the training
@@ -429,7 +438,7 @@ def main():
 
         def run_episode_while(env, key_r, network, network_params, max_steps=1000):
             """
-            Run a single episode using jax.lax.while_loop 
+            Run a single episode using jax.lax.while_loop
             """
 
             class LoopState(NamedTuple):
@@ -454,11 +463,19 @@ def main():
                 @param state: the current state of the loop
                 returns the updated state
                 '''
+
                 key, state_env, obs, _, total_reward, step_count = state
                 key, key_a0, key_a1, key_s = jax.random.split(key, 4)
 
                 # Flatten observations
-                flat_obs = {k: v.flatten() for k, v in obs.items()}
+                flat_obs = {}
+                for k, v in obs.items():
+                    flattened = v.flatten()
+                    if config.use_task_id:
+                        # Use the same one-hot length as during training.
+                        onehot = make_task_onehot(env_idx, config.seq_length)
+                        flattened = jnp.concatenate([flattened, onehot], axis=0)
+                    flat_obs[k] = flattened
 
                 def select_action(train_state, rng, obs):
                     '''
@@ -560,10 +577,16 @@ def main():
 
     network = ActorCritic(temp_env.action_space().n, activation=config.activation)
 
+    obs_dim = np.prod(temp_env.observation_space().shape)
+
+    # Add the task ID one-hot of length seq_length
+    if config.use_task_id:
+        obs_dim += config.seq_length
+
     # Initialize the network
     rng = jax.random.PRNGKey(config.seed)
     rng, network_rng = jax.random.split(rng)
-    init_x = jnp.zeros(env.observation_space().shape).flatten()
+    init_x = jnp.zeros((obs_dim,))
     network_params = network.init(network_rng, init_x)
 
     # Initialize the optimizer
@@ -575,7 +598,7 @@ def main():
     # jit the apply function
     network.apply = jax.jit(network.apply)
 
-    # Initialize the training state      
+    # Initialize the training state
     train_state = TrainState.create(
         apply_fn=network.apply,
         params=network_params,
@@ -586,7 +609,7 @@ def main():
     def train_on_environment(rng, train_state, cl_state, env_idx):
         '''
         Trains the network using IPPO
-        @param rng: random number generator 
+        @param rng: random number generator
         returns the runner state and the metrics
         '''
 
@@ -604,25 +627,25 @@ def main():
         )
         train_state = train_state.replace(tx=tx)
 
-        # Initialize and reset the environment 
+        # Initialize and reset the environment
         rng, env_rng = jax.random.split(rng)
         reset_rng = jax.random.split(env_rng, config.num_envs)
         obsv, env_state = jax.vmap(env.reset, in_axes=(0,))(reset_rng)
 
-        # TRAIN 
+        # TRAIN
         # @profile
         def _update_step(runner_state, _):
             '''
             perform a single update step in the training loop
             @param runner_state: the carry state that contains all important training information
-            returns the updated runner state and the metrics 
+            returns the updated runner state and the metrics
             '''
 
             # COLLECT TRAJECTORIES
             # @profile
             def _env_step(runner_state, _):
                 '''
-                selects an action based on the policy, calculates the log probability of the action, 
+                selects an action based on the policy, calculates the log probability of the action,
                 and performs the selected action in the environment
                 @param runner_state: the current state of the runner
                 returns the updated runner state and the transition
@@ -635,8 +658,16 @@ def main():
                 rng, _rng = jax.random.split(rng)
 
                 # prepare the observations for the network
-                obs_batch = batchify(last_obs, env.agents, config.num_actors)
+                obs_batch = batchify(last_obs, env.agents, config.num_actors)  # (num_actors, obs_dim)
                 # print("obs_shape", obs_batch.shape)
+
+                if config.use_task_id:
+                    # Build a one-hot for env_idx of the sequence length and append it to each row.
+                    onehot = make_task_onehot(env_idx, config.seq_length)
+                    # Broadcast this so we can concat across the batch dimension e.g. shape (num_actors, seq_length)
+                    onehot_batch = jnp.tile(onehot, (obs_batch.shape[0], 1))
+                    # Now concat
+                    obs_batch = jnp.concatenate([obs_batch, onehot_batch], axis=1)
 
                 # apply the policy network to the observations to get the suggested actions and their values
                 pi, value = network.apply(train_state.params, obs_batch)
@@ -673,7 +704,7 @@ def main():
 
                 current_timestep = update_step * config.num_steps * config.num_envs
 
-                # add the shaped reward to the normal reward 
+                # add the shaped reward to the normal reward
                 reward = jax.tree_util.tree_map(lambda x, y: x + y * rew_shaping_anneal(current_timestep), reward,
                                                 info["shaped_reward"])
 
@@ -706,6 +737,11 @@ def main():
 
             # create a batch of the observations that is compatible with the network
             last_obs_batch = batchify(last_obs, env.agents, config.num_actors)
+
+            if config.use_task_id:
+                onehot = make_task_onehot(env_idx, config.seq_length)
+                onehot_batch = jnp.tile(onehot, (last_obs_batch.shape[0], 1))
+                last_obs_batch = jnp.concatenate([last_obs_batch, onehot_batch], axis=1)
 
             # apply the network to the batch of observations to get the value of the last state
             _, last_val = network.apply(train_state.params, last_obs_batch)
@@ -789,7 +825,7 @@ def main():
                         pi, value = network.apply(params, traj_batch.obs)
                         log_prob = pi.log_prob(traj_batch.action)
 
-                        # calculate critic loss 
+                        # calculate critic loss
                         value_pred_clipped = traj_batch.value + (value - traj_batch.value).clip(-config.clip_eps,
                                                                                                 config.clip_eps)
                         value_losses = jnp.square(value - targets)
@@ -856,7 +892,7 @@ def main():
                 # split the random number generator for shuffling the batch
                 rng, _rng = jax.random.split(rng)
 
-                # creates random sequences of numbers from 0 to batch_size, one for each vmap 
+                # creates random sequences of numbers from 0 to batch_size, one for each vmap
                 permutation = jax.random.permutation(_rng, batch_size)
 
                 # shuffle the batch
@@ -942,7 +978,7 @@ def main():
             train_state_eval = jax.tree_util.tree_map(lambda x: x.copy(), train_state)
 
             def true_fun(metric):
-                evaluations = evaluate_model(train_state_eval, network, eval_rng)
+                evaluations = evaluate_model(train_state_eval, network, eval_rng, env_idx)
                 for i, evaluation in enumerate(evaluations):
                     metric[f"Evaluation/{i}_{config.layout_name[i]}"] = evaluation
                 return metric
@@ -967,7 +1003,7 @@ def main():
         # initialize a carrier that keeps track of the states and observations of the agents
         runner_state = (train_state, env_state, obsv, 0, 0, train_rng)
 
-        # apply the _update_step function a series of times, while keeping track of the state 
+        # apply the _update_step function a series of times, while keeping track of the state
         runner_state, metric = jax.lax.scan(
             f=_update_step,
             init=runner_state,
@@ -1001,7 +1037,7 @@ def main():
             # ----- Generate & log a GIF after finishing task i -----
             # We'll do a purely python-level rollout on the same environment.
             # Use OvercookedVisualizer or env.render() as needed:
-            states = run_eval_episode(train_state, envs[i], network)
+            states = run_eval_episode(config, train_state, envs[i], network, env_idx=i)
             visualizer.animate(states, agent_view_size=5, task_idx=i, task_name=envs[i].name, exp_dir=exp_dir)
 
             # -------------- When done with this task, store new params as 'old_params' ---------------
@@ -1025,7 +1061,7 @@ def sample_discrete_action(key, action_space):
     return jax.random.randint(key, (1,), 0, num_actions)
 
 
-def run_eval_episode(train_state, env, network, max_steps=300):
+def run_eval_episode(config, train_state, env, network, env_idx=0, max_steps=300):
     rng = jax.random.PRNGKey(0)
     rng, env_rng = jax.random.split(rng)
     obs, state = env.reset(env_rng)
@@ -1034,9 +1070,16 @@ def run_eval_episode(train_state, env, network, max_steps=300):
     states = [state]
 
     while not done and step_count < max_steps:
-        flat_obs = {k: v.flatten() for k, v in obs.items()}
-        act_keys = jax.random.split(rng, env.num_agents)
+        flat_obs = {}
+        for agent_id, obs_v in obs.items():
+            flattened = obs_v.flatten()
+            if config.use_task_id:
+                onehot = make_task_onehot(env_idx, config.seq_length)
+                flattened = jnp.concatenate([flattened, onehot], axis=0)
+            flat_obs[agent_id] = flattened
+
         actions = {}
+        act_keys = jax.random.split(rng, env.num_agents)
         for i, agent_id in enumerate(env.agents):
             pi, _ = network.apply(train_state.params, flat_obs[agent_id])
             actions[agent_id] = pi.sample(seed=act_keys[i])
