@@ -4,7 +4,6 @@ from typing import Sequence, NamedTuple, Any, Optional, List
 
 import distrax
 import flax.linen as nn
-import imageio
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -35,56 +34,70 @@ from tensorboardX import SummaryWriter
 # jax.log_compiles(True)
 
 
+def choose_head(out: jnp.ndarray, num_heads: int, env_idx: int) -> jnp.ndarray:
+    # out has shape (batch, base_dim * num_heads)
+    batch = out.shape[0]
+    base_dim = out.shape[1] // num_heads
+    out = out.reshape(batch, num_heads, base_dim)
+    return out[:, env_idx, :]
+
+
 class ActorCritic(nn.Module):
-    '''
-    Class to define the actor-critic networks used in IPPO. Each agent has its own actor-critic network
-    '''
-    action_dim: Sequence[int]
+    action_dim: int
     activation: str = "tanh"
+    use_multihead: bool = False
+    num_tasks: int = 1
 
-    @nn.compact
-    def __call__(self, x):
+    def setup(self):
+        # Shared trunk layers:
         if self.activation == "relu":
-            activation = nn.relu
+            self.activation_fn = nn.relu
         else:
-            activation = nn.tanh
+            self.activation_fn = nn.tanh
 
-        # ACTOR
-        actor_mean = nn.Dense(
-            64,  # number of neurons
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0)  # sets the bias initialization to a constant value of 0
-        )(x)  # applies a dense layer to the input x
+        self.fc1 = nn.Dense(64, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0), name="common_dense1")
+        self.fc2 = nn.Dense(64, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0), name="common_dense2")
 
-        actor_mean = activation(actor_mean)  # applies the activation function to the output of the dense layer
+        # Critic trunk (separate for critic)
+        self.critic_fc1 = nn.Dense(64, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+                                   name="critic_dense1")
+        self.critic_fc2 = nn.Dense(64, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+                                   name="critic_dense2")
 
-        actor_mean = nn.Dense(
-            64,
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0)
-        )(actor_mean)
+        self.actor_head = nn.Dense(self.action_dim * self.num_tasks, kernel_init=orthogonal(0.01),
+                                   bias_init=constant(0.0), name="actor_head")
+        self.critic_head = nn.Dense(self.num_tasks, kernel_init=orthogonal(1.0), bias_init=constant(0.0),
+                                    name="critic_head")
 
-        actor_mean = activation(actor_mean)
+    def __call__(self, x, env_idx=0):
+        # Shared trunk for both actor and critic
+        x = self.fc1(x)
+        x = self.activation_fn(x)
+        x = self.fc2(x)
+        x = self.activation_fn(x)
 
-        actor_mean = nn.Dense(
-            self.action_dim,
-            kernel_init=orthogonal(0.01),
-            bias_init=constant(0.0)
-        )(actor_mean)
+        if self.use_multihead:
+            # Produce a concatenated actor output, then splice:
+            actor_concat = self.actor_head(x)  # shape: (batch, action_dim * num_tasks)
+            actor_logits = choose_head(actor_concat, self.num_tasks, env_idx)
+        else:
+            actor_logits = self.actor_head(x)
 
-        pi = distrax.Categorical(
-            logits=actor_mean)  # creates a categorical distribution over all actions (the logits are the output of the actor network)
+        pi = distrax.Categorical(logits=actor_logits)
 
-        # CRITIC
-        critic = nn.Dense(64, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0), name="critic_dense1")(x)
-        critic = activation(critic)
-        critic = nn.Dense(64, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0), name="critic_dense2")(critic)
-        critic = activation(critic)
-        critic = nn.Dense(1, kernel_init=orthogonal(1.0), bias_init=constant(0.0), name="critic_dense3")(critic)
+        # Critic trunk:
+        v = self.critic_fc1(x)
+        v = self.activation_fn(v)
+        v = self.critic_fc2(v)
+        v = self.activation_fn(v)
+        if self.use_multihead:
+            critic_concat = self.critic_head(v)  # shape: (batch, 1 * num_tasks)
+            v = choose_head(critic_concat, self.num_tasks, env_idx)
+        else:
+            v = self.critic_head(v)
 
-        # returns the policy (actor) and state-value (critic) networks
-        value = jnp.squeeze(critic, axis=-1)
-        return pi, value  # squeezed to remove any unnecessary dimensions
+        v = jnp.squeeze(v, axis=-1)
+        return pi, v
 
 
 class Transition(NamedTuple):
@@ -222,6 +235,7 @@ class Config:
     env_name: str = "overcooked"
     alg_name: str = "IPPO"
     use_task_id: bool = False
+    use_multihead: bool = False
 
     # Environment
     seq_length: int = 3
@@ -467,15 +481,17 @@ def main():
                 key, state_env, obs, _, total_reward, step_count = state
                 key, key_a0, key_a1, key_s = jax.random.split(key, 4)
 
-                # Flatten observations
-                flat_obs = {}
-                for k, v in obs.items():
-                    flattened = v.flatten()
+                # ***Create a batched copy for the network only.***
+                # For each agent, expand dims to get shape (1, H, W, C) then flatten to (1, -1)
+                batched_obs = {}
+                for agent, v in obs.items():
+                    v_b = jnp.expand_dims(v, axis=0)  # now (1, H, W, C)
+                    v_flat = jnp.reshape(v_b, (v_b.shape[0], -1))
                     if config.use_task_id:
-                        # Use the same one-hot length as during training.
-                        onehot = make_task_onehot(env_idx, config.seq_length)
-                        flattened = jnp.concatenate([flattened, onehot], axis=0)
-                    flat_obs[k] = flattened
+                        onehot = make_task_onehot(env_idx, config.seq_length)  # shape (seq_length,)
+                        onehot = jnp.expand_dims(onehot, axis=0)  # (1, seq_length)
+                        v_flat = jnp.concatenate([v_flat, onehot], axis=1)
+                    batched_obs[agent] = v_flat
 
                 def select_action(train_state, rng, obs):
                     '''
@@ -487,12 +503,13 @@ def main():
                     '''
                     network_apply = train_state.apply_fn
                     params = train_state.params
-                    pi, value = network_apply(params, obs)
-                    return pi.sample(seed=rng), value
+                    pi, value = network_apply(params, obs, env_idx=env_idx)
+                    action = jnp.squeeze(pi.sample(seed=rng), axis=0)
+                    return action, value
 
                 # Get action distributions
-                action_a1, _ = select_action(train_state, key_a0, flat_obs["agent_0"])
-                action_a2, _ = select_action(train_state, key_a1, flat_obs["agent_1"])
+                action_a1, _ = select_action(train_state, key_a0, batched_obs["agent_0"])
+                action_a2, _ = select_action(train_state, key_a1, batched_obs["agent_1"])
 
                 # Sample actions
                 actions = {
@@ -575,7 +592,8 @@ def main():
         transition_steps=reward_shaping_horizon
     )
 
-    network = ActorCritic(temp_env.action_space().n, activation=config.activation)
+    network = ActorCritic(temp_env.action_space().n, activation=config.activation, use_multihead=config.use_multihead,
+                          num_tasks=config.seq_length)
 
     obs_dim = np.prod(temp_env.observation_space().shape)
 
@@ -586,7 +604,7 @@ def main():
     # Initialize the network
     rng = jax.random.PRNGKey(config.seed)
     rng, network_rng = jax.random.split(rng)
-    init_x = jnp.zeros((obs_dim,))
+    init_x = jnp.zeros((1, obs_dim,))
     network_params = network.init(network_rng, init_x)
 
     # Initialize the optimizer
@@ -613,9 +631,9 @@ def main():
         returns the runner state and the metrics
         '''
 
-        print("Training on environment")
-
         env = envs[env_idx]
+
+        print(f"Training on environment {env_idx}: {env.name}")
 
         # How many steps to explore the environment with random actions
         exploration_steps = int(config.explore_fraction * config.total_timesteps)
@@ -670,7 +688,7 @@ def main():
                     obs_batch = jnp.concatenate([obs_batch, onehot_batch], axis=1)
 
                 # apply the policy network to the observations to get the suggested actions and their values
-                pi, value = network.apply(train_state.params, obs_batch)
+                pi, value = network.apply(train_state.params, obs_batch, env_idx=env_idx)
 
                 # Decide whether to explore randomly or use the policy
                 policy_action = pi.sample(seed=_rng)
@@ -744,7 +762,7 @@ def main():
                 last_obs_batch = jnp.concatenate([last_obs_batch, onehot_batch], axis=1)
 
             # apply the network to the batch of observations to get the value of the last state
-            _, last_val = network.apply(train_state.params, last_obs_batch)
+            _, last_val = network.apply(train_state.params, last_obs_batch, env_idx=env_idx)
 
             # this returns the value network for the last observation batch
 
@@ -822,7 +840,7 @@ def main():
                         returns the total loss and the value loss, actor loss, and entropy
                         '''
                         # apply the network to the observations in the trajectory batch
-                        pi, value = network.apply(params, traj_batch.obs)
+                        pi, value = network.apply(params, traj_batch.obs, env_idx=env_idx)
                         log_prob = pi.log_prob(traj_batch.action)
 
                         # calculate critic loss
@@ -938,6 +956,7 @@ def main():
             update_step = update_step + 1
             mean_explore = jnp.mean(info["explore"])
 
+            metric["General/env_index"] = env_idx
             metric["General/explore"] = mean_explore
             metric["General/update_step"] = update_step
             metric["General/steps_for_env"] = steps_for_env
@@ -1031,7 +1050,7 @@ def main():
 
         runner_state = None
         for i, (r, _) in enumerate(zip(sub_rngs, envs)):
-            runner_state = train_on_environment(r, train_state, cl_state, i)
+            runner_state = train_on_environment(r, train_state, cl_state, env_idx=i)
             train_state = runner_state[0]
 
             # ----- Generate & log a GIF after finishing task i -----
@@ -1072,17 +1091,26 @@ def run_eval_episode(config, train_state, env, network, env_idx=0, max_steps=300
     while not done and step_count < max_steps:
         flat_obs = {}
         for agent_id, obs_v in obs.items():
-            flattened = obs_v.flatten()
+            # Determine the expected raw shape for this agent.
+            expected_shape = env.observation_space().shape
+            # If the observation is unbatched, add a batch dimension.
+            if obs_v.ndim == len(expected_shape):
+                obs_b = jnp.expand_dims(obs_v, axis=0)  # now (1, ...)
+            else:
+                obs_b = obs_v
+            # Flatten the nonbatch dimensions.
+            flattened = jnp.reshape(obs_b, (obs_b.shape[0], -1))
             if config.use_task_id:
-                onehot = make_task_onehot(env_idx, config.seq_length)
-                flattened = jnp.concatenate([flattened, onehot], axis=0)
+                onehot = make_task_onehot(env_idx, config.seq_length)  # (seq_length,)
+                onehot = jnp.expand_dims(onehot, axis=0)  # (1, seq_length)
+                flattened = jnp.concatenate([flattened, onehot], axis=1)
             flat_obs[agent_id] = flattened
 
         actions = {}
         act_keys = jax.random.split(rng, env.num_agents)
         for i, agent_id in enumerate(env.agents):
-            pi, _ = network.apply(train_state.params, flat_obs[agent_id])
-            actions[agent_id] = pi.sample(seed=act_keys[i])
+            pi, _ = network.apply(train_state.params, flat_obs[agent_id], env_idx=env_idx)
+            actions[agent_id] = jnp.squeeze(pi.sample(seed=act_keys[i]), axis=0)
 
         rng, key_step = jax.random.split(rng)
         next_obs, next_state, reward, done_info, info = env.step(key_step, state, actions)
