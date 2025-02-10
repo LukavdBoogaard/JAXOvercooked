@@ -116,7 +116,8 @@ def init_cl_state(params: FrozenDict) -> EWCState:
 def compute_fisher(train_state, env, key, n_samples=256):
     """
     Approximate diagonal Fisher by sampling from the current policy.
-    We'll gather log_prob grads and square them.
+    We'll gather log_prob grads and square them, then scale so the
+    average magnitude of Fisher is ~1.0.
     """
 
     def single_sample_fisher(params, obs, act):
@@ -139,15 +140,12 @@ def compute_fisher(train_state, env, key, n_samples=256):
         rng, fisher_accum = carry
         rng, rng_obs, rng_act = jax.random.split(rng, 3)
 
-        # Single environment reset
-        obs, state = env.reset(rng_obs)
+        obs, _ = env.reset(rng_obs)  # Single environment reset
         obs_batched = {k: v.flatten() for k, v in obs.items()}
-
         pi, _ = train_state.apply_fn(train_state.params, obs_batched["agent_0"])
         act = pi.sample(seed=rng_act)
 
         fisher_sample = single_sample_fisher(train_state.params, obs_batched["agent_0"], act)
-
         fisher_accum = jax.tree_map(lambda f, fs: f + fs, fisher_accum, fisher_sample)
         return (rng, fisher_accum), None
 
@@ -158,7 +156,35 @@ def compute_fisher(train_state, env, key, n_samples=256):
         length=n_samples
     )
 
+    # Average the Fisher across samples
     fisher_accum = jax.tree_map(lambda x: x / n_samples, fisher_accum)
+
+    # -------------------------------------------------------------------
+    # OPTIONAL NORMALIZATION STEP:
+    # Compute the mean magnitude and normalize so that fisher_accum has "average" scale ~1
+    # -------------------------------------------------------------------
+    # Sum up all entries of fisher_accum:
+    total_abs = jax.tree_util.tree_reduce(
+        lambda acc, x: acc + jnp.sum(jnp.abs(x)),
+        fisher_accum,
+        0.0
+    )
+    # Count total number of parameters
+    param_count = jax.tree_util.tree_reduce(
+        lambda acc, x: acc + x.size,
+        fisher_accum,
+        0
+    )
+    # Mean absolute value across entire Fisher
+    fisher_mean = total_abs / (param_count + 1e-8)
+
+    # Rescale all entries so the mean is ~1
+    def normalize(x):
+        return x / (fisher_mean + 1e-8)
+
+    fisher_accum = jax.tree_map(normalize, fisher_accum)
+    # -------------------------------------------------------------------
+
     return fisher_accum
 
 
@@ -176,7 +202,7 @@ def compute_ewc_loss(params: FrozenDict, ewc_state: EWCState, ewc_coef: float):
     return 0.5 * ewc_coef * ewc_term
 
 
-def update_ewc_state(ewc_state: EWCState, new_params: FrozenDict, fisher: FrozenDict) -> EWCState:
+def update_ewc_state(new_params: FrozenDict, fisher: FrozenDict) -> EWCState:
     """
     After finishing a task, record the new params as old_params and store the fisher
     """
@@ -672,7 +698,7 @@ def main():
 
             # --- Compute new Fisher, then update ewc_state for next tasks ---
             fisher = compute_fisher(train_state, envs[i], r, n_samples=256)
-            ewc_state = update_ewc_state(ewc_state, train_state.params, fisher)
+            ewc_state = update_ewc_state(train_state.params, fisher)
 
             # Generate & log a GIF after finishing task i
             states = record_gif_of_episode(train_state, envs[i], network)
