@@ -9,8 +9,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 from dotenv import load_dotenv
-from flax import struct
-from flax.core.frozen_dict import freeze, unfreeze, FrozenDict
+from flax.core.frozen_dict import freeze, unfreeze
 from flax.linen.initializers import constant, orthogonal
 from flax.training.train_state import TrainState
 from gymnax.wrappers.purerl import LogWrapper
@@ -152,14 +151,17 @@ def update_cl_state(cl_state: CLState, new_params: FrozenDict) -> CLState:
 
 
 def build_reg_weights(params: FrozenDict, regularize_critic: bool = False) -> FrozenDict:
-    """Sets 1 for actor parameters and 0 for critic parameters if not regularizing critics."""
     def _assign_reg_weight(path, x):
-        is_critic = any("critic" in str(p).lower() for p in path)
-        if regularize_critic:
-            return jnp.ones_like(x)
-        else:
-            return jnp.zeros_like(x) if is_critic else jnp.ones_like(x)
-
+        # Join the keys in the path to a string.
+        path_str = "/".join(str(key) for key in path)
+        # Exclude head parameters: do not regularize if parameter is in actor_head or critic_head.
+        if "actor_head" in path_str or "critic_head" in path_str:
+            return jnp.zeros_like(x)
+        # If we're not regularizing the critic, then exclude any parameter from critic branches.
+        if not regularize_critic and "critic" in path_str.lower():
+            return jnp.zeros_like(x)
+        # Otherwise, regularize (the trunk).
+        return jnp.ones_like(x)
     return jax.tree_util.tree_map_with_path(_assign_reg_weight, params)
 
 
@@ -168,9 +170,10 @@ def compute_l2_reg_loss(params: FrozenDict,
                         seq_idx: int,
                         cl_reg_coef: float) -> jnp.ndarray:
     """L2 regularization vs. a single old_params, scaled by cl_reg_coef if seq_idx>0."""
+
     def _tree_loss(new_p, old_p, w):
         diff = new_p - old_p
-        return jnp.sum(w * diff**2)
+        return jnp.sum(w * diff ** 2)
 
     # If seq_idx == 0, no penalty:
     coef = jnp.where(seq_idx > 0, cl_reg_coef, 0.0)
@@ -184,6 +187,7 @@ def compute_l2_reg_loss(params: FrozenDict,
     # Count how many are actually being penalized (where reg_weights != 0).
     def _count_params(p, w):
         return jnp.sum(w)  # ignoring partial matches
+
     count_tree = jax.tree_util.tree_map(_count_params, params, cl_state.reg_weights)
     param_count = jax.tree_util.tree_reduce(lambda acc, x: acc + x, count_tree, 0.0)
     param_count = jnp.maximum(param_count, 1.0)
