@@ -554,12 +554,12 @@ def main():
                                       + config.vf_coef * value_loss
                                       - config.ent_coef * entropy_
                                       + ewc_penalty)
-                        return total_loss, (value_loss, loss_actor, entropy_)
+                        return total_loss, (value_loss, loss_actor, entropy_, ewc_penalty)
 
                     grad_fn = jax.value_and_grad(_loss_fn, has_aux=True)
-                    (total_loss, (v_loss, a_loss, ent)), grads_ = grad_fn(train_st.params, traj_b, gae, tgt)
+                    (total_loss, (v_loss, a_loss, ent, reg_loss)), grads_ = grad_fn(train_st.params, traj_b, gae, tgt)
                     train_st = train_st.apply_gradients(grads=grads_)
-                    return train_st, (total_loss, v_loss, a_loss, ent)
+                    return train_st, (total_loss, v_loss, a_loss, ent, reg_loss)
 
                 train_st, traj_b_, gae_, tgt_, rng_ = update_state
 
@@ -582,9 +582,9 @@ def main():
                 )
 
                 train_st, loss_info_ = jax.lax.scan(_update_minbatch, train_st, minibatches)
-                total_loss_, v_loss_, a_loss_, ent_ = loss_info_
+                total_loss_, v_loss_, a_loss_, ent_, reg_loss_ = loss_info_
                 update_state = (train_st, traj_b_, gae_, tgt_, rng_)
-                return update_state, (total_loss_, v_loss_, a_loss_, ent_)
+                return update_state, (total_loss_, v_loss_, a_loss_, ent_, reg_loss_)
 
             update_state = (train_st, traj_batch, advantages, targets, rng_)
             update_state, loss_info = jax.lax.scan(_update_epoch, update_state, None, length=config.update_epochs)
@@ -600,7 +600,7 @@ def main():
             metric["General/learning_rate"] = linear_schedule(
                 update_step * config.num_minibatches * config.update_epochs)
 
-            total_loss_, v_loss_, a_loss_, ent_ = loss_info
+            total_loss_, v_loss_, a_loss_, ent_, reg_ = loss_info
             metric["Losses/total_loss"] = total_loss_.mean()
             metric["Losses/total_loss_max"] = total_loss_.max()
             metric["Losses/total_loss_min"] = total_loss_.min()
@@ -608,6 +608,7 @@ def main():
             metric["Losses/value_loss"] = v_loss_.mean()
             metric["Losses/actor_loss"] = a_loss_.mean()
             metric["Losses/entropy"] = ent_.mean()
+            metric["Losses/reg_loss"] = reg_.mean()
 
             metric["General/shaped_reward_agent0"] = metric["shaped_reward"]["agent_0"]
             metric["General/shaped_reward_agent1"] = metric["shaped_reward"]["agent_1"]
