@@ -64,9 +64,15 @@ class ActorCritic(nn.Module):
         self.critic_fc2 = nn.Dense(64, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
                                    name="critic_dense2")
 
-        self.actor_head = nn.Dense(self.action_dim * self.num_tasks, kernel_init=orthogonal(0.01),
+        # Actor and critic heads
+        actor_head_size = self.action_dim
+        critic_head_size = 1
+        if self.use_multihead:
+            actor_head_size *= self.num_tasks
+            critic_head_size *= self.num_tasks
+        self.actor_head = nn.Dense(actor_head_size, kernel_init=orthogonal(0.01),
                                    bias_init=constant(0.0), name="actor_head")
-        self.critic_head = nn.Dense(self.num_tasks, kernel_init=orthogonal(1.0), bias_init=constant(0.0),
+        self.critic_head = nn.Dense(critic_head_size, kernel_init=orthogonal(1.0), bias_init=constant(0.0),
                                     name="critic_head")
 
     def __call__(self, x, env_idx=0):
@@ -113,6 +119,10 @@ class Transition(NamedTuple):
     # info: jnp.ndarray # additional information
 
 
+from flax.core.frozen_dict import FrozenDict
+from flax import struct
+
+
 @struct.dataclass
 class CLState:
     old_params: FrozenDict
@@ -124,86 +134,107 @@ def copy_params(params):
 
 
 def init_cl_state(params: FrozenDict, regularize_critic: bool = False) -> CLState:
-    """
-    Build the initial old_params and reg_weights from the initial model parameters.
-    You can adapt the logic to skip or include critic parameters, etc.
-    """
-
-    # Deep-copy or freeze the initial parameters as your 'old_params'.
+    """Initialize old_params = current params, reg_weights = all 1 (or 0 if skipping critic)."""
     old_params = copy_params(params)
-
-    # Build reg_weights via a tree map. We only regularize actor weights by default.
-    def _assign_reg_weight(path, x):
-        # path is a tuple of keys like ("Dense_0", "bias") that lead to a param in the tree
-        # Check if 'critic' is in the path, etc.
-        is_critic = any("critic" in str(p).lower() for p in path)
-        if regularize_critic:
-            return jnp.ones_like(x)  # all ones if we regularize everything
-        else:
-            # Turn off weights for anything named 'critic' in the path.
-            return jnp.zeros_like(x) if is_critic else jnp.ones_like(x)
-
-    reg_weights = jax.tree_util.tree_map_with_path(_assign_reg_weight, params)
-
+    reg_weights = build_reg_weights(params, regularize_critic)
     return CLState(old_params=old_params, reg_weights=reg_weights)
-
-
-def compute_l2_reg_loss(
-        params: FrozenDict,
-        cl_state: CLState,
-        seq_idx: int,
-        cl_reg_coef: float
-) -> jnp.ndarray:
-    """
-    Compute an L2 regularization term with averaging over the parameter count.
-    If this is the first task (seq_idx == 0), we typically turn off L2 by returning 0.
-    """
-
-    # Turn off the L2 penalty if on the first task.
-    aux_loss_coef = jnp.where(seq_idx > 0, cl_reg_coef, 0.0)
-
-    # Compute the elementwise sum of squared differences.
-    def tree_loss(new_p, old_p, w):
-        diff = new_p - old_p
-        return jnp.sum(w * diff ** 2)
-
-    loss_tree = jax.tree_util.tree_map(
-        lambda p, old_p, w: tree_loss(p, old_p, w),
-        params,
-        cl_state.old_params,
-        cl_state.reg_weights
-    )
-    total_reg_loss = jax.tree_util.tree_reduce(lambda acc, x: acc + x, loss_tree, 0.0)
-
-    # Count the total number of (actor) parameters we are actually regularizing.
-    # (Only those entries where w != 0.)
-    def count_params(p, w):
-        # For array p, w is typically the same shape.  If w != 0, those entries are regularized.
-        # We'll just treat all entries in p as "counted" if w is non-zero,
-        # but you could do a finer check if you only want some subset.
-        return jnp.sum(w)
-
-    param_count_tree = jax.tree_util.tree_map(count_params, params, cl_state.reg_weights)
-    param_count = jax.tree_util.tree_reduce(lambda acc, x: acc + x, param_count_tree, 0.0)
-    # To prevent division by zero if no parameters are being regularized:
-    param_count = jnp.maximum(param_count, 1.0)
-
-    # Average L2 over all regularized parameters and scale by aux_loss_coef:
-    avg_reg_loss = total_reg_loss / param_count
-
-    return aux_loss_coef * avg_reg_loss
 
 
 def update_cl_state(cl_state: CLState, new_params: FrozenDict) -> CLState:
     """
-    When starting a new task, record the new model params as old_params for future L2 reference.
-    Typically your reg_weights won't change, but you could re-init them if desired.
+    When starting a new task, overwrite old_params with new_params.
+    Keep the same reg_weights. (Do not accumulate from earlier tasks.)
     """
-    new_cl_state = CLState(
+    return CLState(
         old_params=copy_params(new_params),
         reg_weights=cl_state.reg_weights
     )
-    return new_cl_state
+
+
+def build_reg_weights(params: FrozenDict, regularize_critic: bool = False) -> FrozenDict:
+    """Sets 1 for actor parameters and 0 for critic parameters if not regularizing critics."""
+    def _assign_reg_weight(path, x):
+        is_critic = any("critic" in str(p).lower() for p in path)
+        if regularize_critic:
+            return jnp.ones_like(x)
+        else:
+            return jnp.zeros_like(x) if is_critic else jnp.ones_like(x)
+
+    return jax.tree_util.tree_map_with_path(_assign_reg_weight, params)
+
+
+def compute_l2_reg_loss(params: FrozenDict,
+                        cl_state: CLState,
+                        seq_idx: int,
+                        cl_reg_coef: float) -> jnp.ndarray:
+    """L2 regularization vs. a single old_params, scaled by cl_reg_coef if seq_idx>0."""
+    def _tree_loss(new_p, old_p, w):
+        diff = new_p - old_p
+        return jnp.sum(w * diff**2)
+
+    # If seq_idx == 0, no penalty:
+    coef = jnp.where(seq_idx > 0, cl_reg_coef, 0.0)
+
+    loss_tree = jax.tree_util.tree_map(
+        lambda p, op, w: _tree_loss(p, op, w),
+        params, cl_state.old_params, cl_state.reg_weights
+    )
+    total_reg_loss = jax.tree_util.tree_reduce(lambda acc, x: acc + x, loss_tree, 0.0)
+
+    # Count how many are actually being penalized (where reg_weights != 0).
+    def _count_params(p, w):
+        return jnp.sum(w)  # ignoring partial matches
+    count_tree = jax.tree_util.tree_map(_count_params, params, cl_state.reg_weights)
+    param_count = jax.tree_util.tree_reduce(lambda acc, x: acc + x, count_tree, 0.0)
+    param_count = jnp.maximum(param_count, 1.0)
+
+    return coef * (total_reg_loss / param_count)
+
+
+# def compute_l2_reg_loss(
+#         params: FrozenDict,
+#         cl_state: CLState,
+#         seq_idx: int,
+#         cl_reg_coef: float
+# ) -> jnp.ndarray:
+#     """
+#     Compute an L2 regularization term with averaging over the parameter count.
+#     If this is the first task (seq_idx == 0), we typically turn off L2 by returning 0.
+#     """
+#
+#     # Turn off the L2 penalty if on the first task.
+#     aux_loss_coef = jnp.where(seq_idx > 0, cl_reg_coef, 0.0)
+#
+#     # Compute the elementwise sum of squared differences.
+#     def tree_loss(new_p, old_p, w):
+#         diff = new_p - old_p
+#         return jnp.sum(w * diff ** 2)
+#
+#     loss_tree = jax.tree_util.tree_map(
+#         lambda p, old_p, w: tree_loss(p, old_p, w),
+#         params,
+#         cl_state.old_params,
+#         cl_state.reg_weights
+#     )
+#     total_reg_loss = jax.tree_util.tree_reduce(lambda acc, x: acc + x, loss_tree, 0.0)
+#
+#     # Count the total number of (actor) parameters we are actually regularizing.
+#     # (Only those entries where w != 0.)
+#     def count_params(p, w):
+#         # For array p, w is typically the same shape.  If w != 0, those entries are regularized.
+#         # We'll just treat all entries in p as "counted" if w is non-zero,
+#         # but you could do a finer check if you only want some subset.
+#         return jnp.sum(w)
+#
+#     param_count_tree = jax.tree_util.tree_map(count_params, params, cl_state.reg_weights)
+#     param_count = jax.tree_util.tree_reduce(lambda acc, x: acc + x, param_count_tree, 0.0)
+#     # To prevent division by zero if no parameters are being regularized:
+#     param_count = jnp.maximum(param_count, 1.0)
+#
+#     # Average L2 over all regularized parameters and scale by aux_loss_coef:
+#     avg_reg_loss = total_reg_loss / param_count
+#
+#     return aux_loss_coef * avg_reg_loss
 
 
 def make_task_onehot(task_idx: int, num_tasks: int) -> jnp.ndarray:
@@ -1043,13 +1074,15 @@ def main():
         '''
         # split the random number generator for training on the environments
         rngs = jax.random.split(rng, len(envs) + 1)
-        main_rng = rngs[0]
-        sub_rngs = rngs[1:]
+        main_rng, sub_rngs = rngs[0], rngs[1:]
 
         visualizer = OvercookedVisualizer()
 
         runner_state = None
         for i, (r, _) in enumerate(zip(sub_rngs, envs)):
+            if i > 0:
+                # Overwrite old_params with the final params from the last task
+                cl_state = update_cl_state(cl_state, train_state.params)
             runner_state = train_on_environment(r, train_state, cl_state, env_idx=i)
             train_state = runner_state[0]
 
@@ -1058,9 +1091,6 @@ def main():
             # Use OvercookedVisualizer or env.render() as needed:
             states = run_eval_episode(config, train_state, envs[i], network, env_idx=i)
             visualizer.animate(states, agent_view_size=5, task_idx=i, task_name=envs[i].name, exp_dir=exp_dir)
-
-            # -------------- When done with this task, store new params as 'old_params' ---------------
-            cl_state = update_cl_state(cl_state, train_state.params)
 
         return runner_state
 
