@@ -888,8 +888,6 @@ def main():
             for i in range(len(config.layout_name)):
                 metric[f"Evaluation/{config.layout_name[i]}"] = jnp.nan
 
-            
-            
             # If update step is a multiple of 20, run the evaluation function
             rng, eval_rng = jax.random.split(rng)
             train_state_eval = jax.tree_util.tree_map(lambda x: x.copy(), train_state)
@@ -910,11 +908,8 @@ def main():
                 wandb.log(
                     metric
                 )
+            jax.debug.callback(callback, metric)
 
-            
-            jax.experimental.io_callback(callback, None, metric)
-
-            
             rng = update_state[-1]
             runner_state = (train_state, env_state, last_obs, update_step, rng)
 
@@ -952,9 +947,15 @@ def main():
 
         for env_rng, env in zip(env_rngs, envs):
             runner_state, metrics = train_on_environment(env_rng, train_state, env)
+            
+            # make a copy of the metrics to log to tensorboard
+            metrics = jax.tree_util.tree_map(lambda x: x.copy(), metrics)
+            loop_length = range(int(config.num_updates))
 
             # Log the metrics to tensorboard 
-            for i in range(int(config.num_updates)):
+            for i in loop_length:
+                writer.add_scalar("returned_episode_returns", metrics["returned_episode_returns"][i], global_update_step)
+                writer.add_scalar("reward", metrics["reward"][i], global_update_step)
                 writer.add_scalar("learning rate", metrics["General/learning_rate"][i], global_update_step)
                 writer.add_scalar("total loss", metrics["Losses/total_loss"][i], global_update_step)
                 writer.add_scalar("value loss", metrics["Losses/value_loss"][i], global_update_step)
@@ -962,10 +963,10 @@ def main():
                 writer.add_scalar("entropy", metrics["Losses/entropy"][i], global_update_step)
                 writer.add_scalar("advantages", metrics["Advantage_Targets/advantages"][i], global_update_step)
                 writer.add_scalar("targets", metrics["Advantage_Targets/targets"][i], global_update_step)
-                writer.add_scalar("reward agent 0", metrics["General/shaped_reward_agent0"][i], global_update_step)
-                writer.add_scalar("reward agent 1", metrics["General/shaped_reward_agent1"][i], global_update_step)
-                writer.add_scalar("reward agent 0 annealed", metrics["General/shaped_reward_annealed_agent0"][i], global_update_step)
-                writer.add_scalar("reward agent 1 annealed", metrics["General/shaped_reward_annealed_agent1"][i], global_update_step)
+                writer.add_scalar("Shaped reward agent 0", metrics["General/shaped_reward_agent0"][i], global_update_step)
+                writer.add_scalar("Shaped reward agent 1", metrics["General/shaped_reward_agent1"][i], global_update_step)
+                writer.add_scalar("Shaped reward agent 0 annealed", metrics["General/shaped_reward_annealed_agent0"][i], global_update_step)
+                writer.add_scalar("Shaped reward agent 1 annealed", metrics["General/shaped_reward_annealed_agent1"][i], global_update_step)
 
                 global_update_step += 1
 
@@ -991,8 +992,6 @@ def main():
             pickle.dump(params, f)
         
         
-    
-
     # Run the model
     rng, train_rng = jax.random.split(rng)
     # apply the loop_over_envs function to the environments
