@@ -219,7 +219,7 @@ def main():
         config=config,
         sync_tensorboard=True,
         mode=config.wandb_mode,
-        name=run_name
+        name=run_name,
         tags=wandb_tags,
     )
 
