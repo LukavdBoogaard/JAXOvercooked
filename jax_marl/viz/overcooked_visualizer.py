@@ -1,6 +1,7 @@
 import math
 
 import numpy as np
+import wandb
 
 from jax_marl.viz.window import Window
 import jax_marl.viz.grid_rendering as rendering
@@ -33,7 +34,7 @@ class OvercookedVisualizer:
 		"""Method for rendering the state in a window. Esp. useful for interactive mode."""
 		return self._render_state(agent_view_size, state, highlight, tile_size)
 
-	def animate(self, state_seq, agent_view_size, filename="animation.gif"):
+	def animate(self, state_seq, agent_view_size, task_idx, task_name, exp_dir):
 		"""Animate a gif give a state sequence and save if to file."""
 		import imageio
 
@@ -51,9 +52,12 @@ class OvercookedVisualizer:
 			)
 			return frame
 
-		frame_seq =[get_frame(state) for state in state_seq]
+		frame_seq =[get_frame(state.env_state) for state in state_seq]
+		file_name = f"task_{task_idx}_{task_name}"
+		file_path = f"{exp_dir}/{file_name}.gif"
 
-		imageio.mimsave(filename, frame_seq, 'GIF', duration=0.5)
+		imageio.mimsave(file_path, frame_seq, 'GIF')
+		wandb.log({file_name: wandb.Video(file_path, format="gif")})
 
 
 	def render_grid(self, grid, tile_size=TILE_PIXELS, k_rot90=0, agent_dir_idx=None):
