@@ -956,11 +956,6 @@ def main():
             # unpack the runner state
             train_state, env_state, last_obs, update_step, rng = runner_state
 
-            # save the metrics
-            for key, value in metrics.items():
-                writer.add_scalar(f"env_{env_counter}/{key}", value, update_step)
-
-
             # save the model
             path = f"checkpoints/overcooked/{run_name}/model.pkl"
             save_params(path, train_state)
