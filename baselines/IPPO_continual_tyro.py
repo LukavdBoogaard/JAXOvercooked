@@ -1,11 +1,15 @@
 # import os
 # os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
+import copy
+import pickle
 import jax
+import jax.experimental
 import jax.numpy as jnp
 import flax.linen as nn
 import numpy as np
 import optax
+import orbax.checkpoint as ocp
 from flax.linen.initializers import constant, orthogonal
 from flax.core.frozen_dict import FrozenDict, freeze, unfreeze
 from typing import Sequence, NamedTuple, Any, Optional, List
@@ -31,6 +35,7 @@ from functools import partial
 from dataclasses import dataclass, field
 import tyro
 from tensorboardX import SummaryWriter
+from pathlib import Path
 
 # Enable compile logging
 # jax.log_compiles(True)
@@ -51,7 +56,7 @@ class ActorCritic(nn.Module):
 
         # ACTOR  
         actor_mean = nn.Dense(
-            64, # number of neurons
+            128, # number of neurons
             kernel_init=orthogonal(np.sqrt(2)), 
             bias_init=constant(0.0) # sets the bias initialization to a constant value of 0
         )(x) # applies a dense layer to the input x
@@ -59,7 +64,7 @@ class ActorCritic(nn.Module):
         actor_mean = activation(actor_mean) # applies the activation function to the output of the dense layer
 
         actor_mean = nn.Dense(
-            64, 
+            128, 
             kernel_init=orthogonal(np.sqrt(2)), 
             bias_init=constant(0.0)
         )(actor_mean)
@@ -76,13 +81,13 @@ class ActorCritic(nn.Module):
 
         # CRITIC
         critic = nn.Dense(
-            64, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
+            128, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
         )(x)
 
         critic = activation(critic)
 
         critic = nn.Dense(
-            64, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
+            128, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
         )(critic)
 
         critic = activation(critic)
@@ -127,11 +132,12 @@ class Config:
     env_name: str = "overcooked"
     alg_name: str = "ippo"
 
-    seq_length: int = 3
+    seq_length: int = 2
     strategy: str = "random"
     layouts: Optional[Sequence[str]] = field(default_factory=lambda: ["asymm_advantages", "smallest_kitchen", "cramped_room", "easy_layout", "square_arena", "no_cooperation"])
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
+    log_interval = 200 # log every 200 calls to update step
     
     anneal_lr: bool = False
     seed: int = 30
@@ -201,6 +207,8 @@ def main():
     for layout_config in config.env_kwargs:
         layout_name = layout_config["layout"]
         layout_config["layout"] = overcooked_layouts[layout_name]
+    
+    run_name = f"{config.alg_name}_{config.seq_length}_{config.strategy}"
 
     # Initialize WandB
     load_dotenv()
@@ -211,25 +219,29 @@ def main():
         config=config,
         sync_tensorboard=True,
         mode=config.wandb_mode,
+        name=run_name
         tags=wandb_tags,
-        name=f'{config.alg_name}_{config.seq_length}_{config.strategy}'
     )
 
     # Set up Tensorboard
-    writer = SummaryWriter(f"runs/{config.alg_name}_{config.seq_length}_{config.strategy}")
-    # add all the configurations to the tensorboard
-    writer.add_text(
-        "hyperparameters",
-        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(config).items()])),
-    )
+    writer = SummaryWriter(f"runs/{run_name}")
     
+    # add the hyperparameters to the tensorboard
+    rows = []
+    for key, value in vars(config).items():
+        value_str = str(value).replace("\n", "<br>")
+        value_str = value_str.replace("|", "\\|")  # escape pipe chars if needed
+        rows.append(f"|{key}|{value_str}|")
 
-    # pad the observation space
+    table_body = "\n".join(rows)
+    markdown = f"|param|value|\n|-|-|\n{table_body}"
+    writer.add_text("hyperparameters", markdown)
+
     def pad_observation_space():
         '''
-        Pads the observation space of the environment to be compatible with the network
-        @param envs: the environment
-        returns the padded observation space
+        Function that pads the observation space of all environments to be the same size by adding extra walls to the outside.
+        This way, the observation space of all environments is the same, and compatible with the network
+        returns the padded environments
         '''
         envs = []
         for env_args in config.env_kwargs:
@@ -500,7 +512,7 @@ def main():
     # visualize_environments()
 
    
-    # step 1: make sure all envs are the same size and create the environments
+    # padd all environments
     padded_envs = pad_observation_space()
     
     envs = []
@@ -854,6 +866,7 @@ def main():
             update_step = update_step + 1
 
             metric["General/update_step"] = update_step
+            metric["General/global_step"] = update_step * config.num_steps
             metric["General/env_step"] = update_step * config.num_steps * config.num_envs
             metric["General/learning_rate"] = linear_schedule(update_step * config.num_minibatches * config.update_epochs)
 
@@ -880,7 +893,6 @@ def main():
             # Evaluation section
             for i in range(len(config.layout_name)):
                 metric[f"Evaluation/{config.layout_name[i]}"] = jnp.nan
-            
 
             # If update step is a multiple of 20, run the evaluation function
             rng, eval_rng = jax.random.split(rng)
@@ -897,15 +909,11 @@ def main():
             
             metric = jax.lax.cond((update_step % 200) == 0, true_fun, false_fun, metric)
 
-            def callback(metric, update_step):
-                # print(update_step, metric)
-                wandb.log(
-                    metric
-                )
-            
-            jax.debug.callback(callback, metric, update_step)
+            # def callback(metric):
+            #     wandb.log(metric)
 
-            
+            # jax.experimental.io_callback(callback, None, metric)
+
             rng = update_state[-1]
             runner_state = (train_state, env_state, last_obs, update_step, rng)
 
@@ -925,7 +933,7 @@ def main():
         )
 
         # Return the runner state after the training loop, and the metric arrays
-        return runner_state
+        return runner_state, metric
 
 
     def loop_over_envs(rng, train_state, envs):
@@ -939,13 +947,39 @@ def main():
         # split the random number generator for training on the environments
         rng, *env_rngs = jax.random.split(rng, len(envs)+1)
 
+        # counter for the environment 
+        env_counter = 1
+
         for env_rng, env in zip(env_rngs, envs):
-            runner_state = train_on_environment(env_rng, train_state, env)
-            train_state = runner_state[0]
+            runner_state, metrics = train_on_environment(env_rng, train_state, env)
+
+            # unpack the runner state
+            train_state, env_state, last_obs, update_step, rng = runner_state
+
+            # save the metrics
+            for key, value in metrics.items():
+                writer.add_scalar(f"env_{env_counter}/{key}", value, update_step)
+
+
+            # save the model
+            path = f"checkpoints/overcooked/{run_name}/model.pkl"
+            save_params(path, train_state)
 
         return runner_state
 
-    
+    def save_params(path, train_state):
+        '''
+        Saves the parameters of the network
+        @param path: the path to save the parameters
+        @param train_state: the current state of the training
+        returns None
+        '''
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        params = jax.tree_util.tree_map(lambda x: jnp.array(x), train_state.params)
+        with open(path, "wb") as f:
+            pickle.dump(params, f)
+        
+        
     # Run the model
     rng, train_rng = jax.random.split(rng)
     # apply the loop_over_envs function to the environments
