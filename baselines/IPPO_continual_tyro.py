@@ -1,6 +1,7 @@
 # import os
 # os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
+import copy
 import pickle
 import jax
 import jax.experimental
@@ -55,7 +56,7 @@ class ActorCritic(nn.Module):
 
         # ACTOR  
         actor_mean = nn.Dense(
-            64, # number of neurons
+            128, # number of neurons
             kernel_init=orthogonal(np.sqrt(2)), 
             bias_init=constant(0.0) # sets the bias initialization to a constant value of 0
         )(x) # applies a dense layer to the input x
@@ -63,7 +64,7 @@ class ActorCritic(nn.Module):
         actor_mean = activation(actor_mean) # applies the activation function to the output of the dense layer
 
         actor_mean = nn.Dense(
-            64, 
+            128, 
             kernel_init=orthogonal(np.sqrt(2)), 
             bias_init=constant(0.0)
         )(actor_mean)
@@ -80,13 +81,13 @@ class ActorCritic(nn.Module):
 
         # CRITIC
         critic = nn.Dense(
-            64, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
+            128, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
         )(x)
 
         critic = activation(critic)
 
         critic = nn.Dense(
-            64, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
+            128, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
         )(critic)
 
         critic = activation(critic)
@@ -117,9 +118,9 @@ class Config:
     lr: float = 3e-4
     num_envs: int = 16
     num_steps: int = 128
-    total_timesteps: float = 5e6
-    update_epochs: int = 4
-    num_minibatches: int = 4
+    total_timesteps: float = 8e6
+    update_epochs: int = 8
+    num_minibatches: int = 8
     gamma: float = 0.99
     gae_lambda: float = 0.95
     clip_eps: float = 0.2
@@ -131,11 +132,12 @@ class Config:
     env_name: str = "overcooked"
     alg_name: str = "ippo"
 
-    seq_length: int = 3
+    seq_length: int = 2
     strategy: str = "random"
     layouts: Optional[Sequence[str]] = field(default_factory=lambda: ["asymm_advantages", "smallest_kitchen", "cramped_room", "easy_layout", "square_arena", "no_cooperation"])
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
+    log_interval = 200 # log every 200 calls to update step
     
     anneal_lr: bool = False
     seed: int = 30
@@ -861,6 +863,7 @@ def main():
             update_step = update_step + 1
 
             metric["General/update_step"] = update_step
+            metric["General/global_step"] = update_step * config.num_steps
             metric["General/env_step"] = update_step * config.num_steps * config.num_envs
             metric["General/learning_rate"] = linear_schedule(update_step * config.num_minibatches * config.update_epochs)
 
@@ -903,12 +906,10 @@ def main():
             
             metric = jax.lax.cond((update_step % 200) == 0, true_fun, false_fun, metric)
 
-            def callback(metric):
-                # print(update_step, metric)
-                wandb.log(
-                    metric
-                )
-            jax.debug.callback(callback, metric)
+            # def callback(metric):
+            #     wandb.log(metric)
+
+            # jax.experimental.io_callback(callback, None, metric)
 
             rng = update_state[-1]
             runner_state = (train_state, env_state, last_obs, update_step, rng)
@@ -943,38 +944,22 @@ def main():
         # split the random number generator for training on the environments
         rng, *env_rngs = jax.random.split(rng, len(envs)+1)
 
-        global_update_step = 0
+        # counter for the environment 
+        env_counter = 1
 
         for env_rng, env in zip(env_rngs, envs):
             runner_state, metrics = train_on_environment(env_rng, train_state, env)
-            
-            # make a copy of the metrics to log to tensorboard
-            metrics = jax.tree_util.tree_map(lambda x: x.copy(), metrics)
-            loop_length = range(int(config.num_updates))
 
-            # Log the metrics to tensorboard 
-            for i in loop_length:
-                writer.add_scalar("returned_episode_returns", metrics["returned_episode_returns"][i], global_update_step)
-                writer.add_scalar("reward", metrics["reward"][i], global_update_step)
-                writer.add_scalar("learning rate", metrics["General/learning_rate"][i], global_update_step)
-                writer.add_scalar("total loss", metrics["Losses/total_loss"][i], global_update_step)
-                writer.add_scalar("value loss", metrics["Losses/value_loss"][i], global_update_step)
-                writer.add_scalar("actor loss", metrics["Losses/actor_loss"][i], global_update_step)
-                writer.add_scalar("entropy", metrics["Losses/entropy"][i], global_update_step)
-                writer.add_scalar("advantages", metrics["Advantage_Targets/advantages"][i], global_update_step)
-                writer.add_scalar("targets", metrics["Advantage_Targets/targets"][i], global_update_step)
-                writer.add_scalar("Shaped reward agent 0", metrics["General/shaped_reward_agent0"][i], global_update_step)
-                writer.add_scalar("Shaped reward agent 1", metrics["General/shaped_reward_agent1"][i], global_update_step)
-                writer.add_scalar("Shaped reward agent 0 annealed", metrics["General/shaped_reward_annealed_agent0"][i], global_update_step)
-                writer.add_scalar("Shaped reward agent 1 annealed", metrics["General/shaped_reward_annealed_agent1"][i], global_update_step)
+            # unpack the runner state
+            train_state, env_state, last_obs, update_step, rng = runner_state
 
-                global_update_step += 1
+            # save the metrics
+            for key, value in metrics.items():
+                writer.add_scalar(f"env_{env_counter}/{key}", value, update_step)
 
-            # update the train state
-            train_state = runner_state[0]
 
             # save the model
-            path = f"checkpoints/overcooked/{run_name}/model{global_update_step}.pkl"
+            path = f"checkpoints/overcooked/{run_name}/model.pkl"
             save_params(path, train_state)
 
         return runner_state
