@@ -119,8 +119,8 @@ class Config:
     num_envs: int = 16
     num_steps: int = 128
     total_timesteps: float = 8e6
-    update_epochs: int = 8
-    num_minibatches: int = 8
+    update_epochs: int = 4
+    num_minibatches: int = 4
     gamma: float = 0.99
     gae_lambda: float = 0.95
     clip_eps: float = 0.2
@@ -132,12 +132,14 @@ class Config:
     env_name: str = "overcooked"
     alg_name: str = "ippo"
 
-    seq_length: int = 2
+    seq_length: int = 6
     strategy: str = "random"
     layouts: Optional[Sequence[str]] = field(default_factory=lambda: ["asymm_advantages", "smallest_kitchen", "cramped_room", "easy_layout", "square_arena", "no_cooperation"])
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
-    log_interval = 200 # log every 200 calls to update step
+    log_interval: int = 150 # log every 200 calls to update step
+    eval_num_steps: int = 1000 # number of steps to evaluate the model
+    eval_num_episodes: int = 5 # number of episodes to evaluate the model
     
     anneal_lr: bool = False
     seed: int = 30
@@ -147,7 +149,7 @@ class Config:
     wandb_mode: str = "online"
     entity: Optional[str] = ""
     project: str = "ippo_continual"
-    tags: List[str] = None
+    tags: List[str] = field(default_factory=list)
 
     # to be computed during runtime
     num_actors: int = 0
@@ -344,11 +346,11 @@ def main():
         returns the average reward
         '''
 
-        def run_episode_while(env, key_r, network, network_params, max_steps=1000):
+        def run_episode_while(env, key_r, network_params, max_steps=1000):
             """
             Run a single episode using jax.lax.while_loop 
             """
-            class LoopState(NamedTuple):
+            class EvalState(NamedTuple):
                 key: Any
                 state: Any
                 obs: Any
@@ -356,21 +358,24 @@ def main():
                 total_reward: float
                 step_count: int
 
-            def loop_cond(state: LoopState):
+            def cond_fun(state: EvalState):
                 '''
                 Checks if the episode is done or if the maximum number of steps has been reached
                 @param state: the current state of the loop
                 returns a boolean indicating whether the loop should continue
                 '''
-                return jnp.logical_and(~state.done, state.step_count < max_steps)
+                return jnp.logical_and(jnp.logical_not(state.done), state.step_count < max_steps)
 
-            def loop_body(state: LoopState):
+            def body_fun(state: EvalState):
                 '''
                 Performs a single step in the environment
                 @param state: the current state of the loop
                 returns the updated state
                 '''
+                # Unpack the state
                 key, state_env, obs, _, total_reward, step_count = state
+
+                # split the key into keys to sample actions and step the environment
                 key, key_a0, key_a1, key_s = jax.random.split(key, 4)
 
                 # Flatten observations
@@ -385,8 +390,7 @@ def main():
                     returns the action
                     '''
                     network_apply = train_state.apply_fn
-                    params = train_state.params
-                    pi, value = network_apply(params, obs)
+                    pi, value = network_apply(network_params, obs)
                     return pi.sample(seed=rng), value
 
 
@@ -407,17 +411,17 @@ def main():
                 total_reward += reward
                 step_count += 1
 
-                return LoopState(key, next_state, next_obs, done, total_reward, step_count)
+                return EvalState(key, next_state, next_obs, done, total_reward, step_count)
 
-            # Initialize
+            # Initialize the key and first state
             key, key_s = jax.random.split(key_r)
             obs, state = env.reset(key_s)
-            init_state = LoopState(key, state, obs, False, 0.0, 0)
+            init_state = EvalState(key, state, obs, False, 0.0, 0)
 
             # Run while loop
             final_state = jax.lax.while_loop(
-                cond_fun=loop_cond,
-                body_fun=loop_body,
+                cond_fun=cond_fun,
+                body_fun=body_fun,
                 init_val=init_state
             )
 
@@ -430,13 +434,10 @@ def main():
 
         for env in envs:
             env = make(config.env_name, layout=env)  # Create the environment
-
-            # network.init(key_a, init_x)  # initializes the network with the observation space
             network_params = train_state.params
-
             # Run k episodes
-            all_rewards = jax.vmap(lambda k: run_episode_while(env, k, network, network_params, 500))(
-                jax.random.split(key, 5)
+            all_rewards = jax.vmap(lambda k: run_episode_while(env, k, network_params, config.eval_num_steps))(
+                jax.random.split(key, config.eval_num_episodes)
             )
             
             avg_reward = jnp.mean(all_rewards)
@@ -509,9 +510,6 @@ def main():
 
         return None
     
-    # visualize_environments()
-
-   
     # padd all environments
     padded_envs = pad_observation_space()
     
@@ -568,7 +566,7 @@ def main():
     )
 
     @partial(jax.jit, static_argnums=(2))
-    def train_on_environment(rng, train_state, env):
+    def train_on_environment(rng, train_state, env, env_counter):
         '''
         Trains the network using IPPO
         @param rng: random number generator 
@@ -854,28 +852,26 @@ def main():
 
             # unpack update_state
             train_state, traj_batch, advantages, targets, rng = update_state
-            metric = info
-            current_timestep = update_step*config.num_steps * config.num_envs
 
+            # set the metric to be the information of the last update epoch
+            metric = info
+
+            # calculate the current timestep
+            current_timestep = update_step*config.num_steps * config.num_envs
             
-            # update the metric with the current timestep
+            # average the metric
             metric = jax.tree_util.tree_map(lambda x: x.mean(), metric)
 
-            # General section
-            # Update the step counter
             update_step = update_step + 1
 
+            # add the general metrics to the metric dictionary
             metric["General/update_step"] = update_step
-            metric["General/global_step"] = update_step * config.num_steps
             metric["General/env_step"] = update_step * config.num_steps * config.num_envs
             metric["General/learning_rate"] = linear_schedule(update_step * config.num_minibatches * config.update_epochs)
 
             # Losses section
             total_loss, (value_loss, loss_actor, entropy) = loss_info
             metric["Losses/total_loss"] = total_loss.mean()
-            metric["Losses/total_loss_max"] = total_loss.max()
-            metric["Losses/total_loss_min"] = total_loss.min()
-            metric["Losses/total_loss_var"] = total_loss.var()
             metric["Losses/value_loss"] = value_loss.mean()
             metric["Losses/actor_loss"] = loss_actor.mean()
             metric["Losses/entropy"] = entropy.mean()
@@ -883,6 +879,7 @@ def main():
             # Rewards section
             metric["General/shaped_reward_agent0"] = metric["shaped_reward"]["agent_0"]
             metric["General/shaped_reward_agent1"] = metric["shaped_reward"]["agent_1"]
+            metric.pop("shaped_reward", None)
             metric["General/shaped_reward_annealed_agent0"] = metric["General/shaped_reward_agent0"] * rew_shaping_anneal(current_timestep)
             metric["General/shaped_reward_annealed_agent1"] = metric["General/shaped_reward_agent1"] * rew_shaping_anneal(current_timestep)
 
@@ -894,25 +891,34 @@ def main():
             for i in range(len(config.layout_name)):
                 metric[f"Evaluation/{config.layout_name[i]}"] = jnp.nan
 
-            # If update step is a multiple of 20, run the evaluation function
-            rng, eval_rng = jax.random.split(rng)
-            train_state_eval = jax.tree_util.tree_map(lambda x: x.copy(), train_state)
+            def evaluate_and_log(rng, update_step):
+                rng, eval_rng = jax.random.split(rng)
+                train_state_eval = jax.tree_util.tree_map(lambda x: x.copy(), train_state)
 
-            def true_fun(metric):
-                evaluations = evaluate_model(train_state_eval, network, eval_rng)
-                for i, evaluation in enumerate(evaluations):
-                    metric[f"Evaluation/{config.layout_name[i]}"] = evaluation
-                return metric
+                def log_metrics(metric, update_step):
+                    evaluations = evaluate_model(train_state_eval, network, eval_rng)
+                    for i, evaluation in enumerate(evaluations):
+                        metric[f"Evaluation/{config.layout_name[i]}"] = evaluation
+                    
+                    def callback(args):
+                        metric, update_step, env_counter = args
+                        update_step = int(update_step)
+                        env_counter = int(env_counter)
+                        real_step = (env_counter-1) * config.num_updates + update_step
+                        print(real_step)
+                        for key, value in metric.items():
+                            writer.add_scalar(key, value, real_step)
+
+                    jax.experimental.io_callback(callback, None, (metric, update_step, env_counter))
+                    return None
+                
+                def do_not_log(metric, update_step):
+                    return None
+                
+                jax.lax.cond((update_step % config.log_interval) == 0, log_metrics, do_not_log, metric, update_step)
             
-            def false_fun(metric):
-                return metric
-            
-            metric = jax.lax.cond((update_step % 200) == 0, true_fun, false_fun, metric)
-
-            # def callback(metric):
-            #     wandb.log(metric)
-
-            # jax.experimental.io_callback(callback, None, metric)
+            # Evaluate the model and log the metrics
+            evaluate_and_log(rng=rng, update_step=update_step)
 
             rng = update_state[-1]
             runner_state = (train_state, env_state, last_obs, update_step, rng)
@@ -951,14 +957,17 @@ def main():
         env_counter = 1
 
         for env_rng, env in zip(env_rngs, envs):
-            runner_state, metrics = train_on_environment(env_rng, train_state, env)
+            runner_state, metrics = train_on_environment(env_rng, train_state, env, env_counter)
 
             # unpack the runner state
             train_state, env_state, last_obs, update_step, rng = runner_state
 
             # save the model
-            path = f"checkpoints/overcooked/{run_name}/model.pkl"
+            path = f"checkpoints/overcooked/{run_name}/model_env_{env_counter}.pkl"
             save_params(path, train_state)
+
+            # update the environment counter
+            env_counter += 1
 
         return runner_state
 
