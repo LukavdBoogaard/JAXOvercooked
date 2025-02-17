@@ -2,7 +2,9 @@
 # os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 import copy
+import datetime
 import pickle
+import flax
 import jax
 import jax.experimental
 import jax.numpy as jnp
@@ -210,7 +212,9 @@ def main():
         layout_name = layout_config["layout"]
         layout_config["layout"] = overcooked_layouts[layout_name]
     
-    run_name = f"{config.alg_name}_{config.seq_length}_{config.strategy}"
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    run_name = f'{config.alg_name}_EWC_seq{config.seq_length}_{config.strategy}_{timestamp}'
+    exp_dir = os.path.join("runs", run_name)
 
     # Initialize WandB
     load_dotenv()
@@ -226,7 +230,7 @@ def main():
     )
 
     # Set up Tensorboard
-    writer = SummaryWriter(f"runs/{run_name}")
+    writer = SummaryWriter(exp_dir)
     
     # add the hyperparameters to the tensorboard
     rows = []
@@ -905,7 +909,6 @@ def main():
                         update_step = int(update_step)
                         env_counter = int(env_counter)
                         real_step = (env_counter-1) * config.num_updates + update_step
-                        print(real_step)
                         for key, value in metric.items():
                             writer.add_scalar(key, value, real_step)
 
@@ -963,7 +966,7 @@ def main():
             train_state, env_state, last_obs, update_step, rng = runner_state
 
             # save the model
-            path = f"checkpoints/overcooked/{run_name}/model_env_{env_counter}.pkl"
+            path = f"checkpoints/overcooked/{run_name}/model_env_{env_counter}"
             save_params(path, train_state)
 
             # update the environment counter
@@ -979,9 +982,13 @@ def main():
         returns None
         '''
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        params = jax.tree_util.tree_map(lambda x: jnp.array(x), train_state.params)
         with open(path, "wb") as f:
-            pickle.dump(params, f)
+            f.write(
+                flax.serialization.to_bytes(
+                    {"params": train_state.params}
+                )
+            )
+        print('model saved to', path)
         
         
     # Run the model
