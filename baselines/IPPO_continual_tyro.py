@@ -2,7 +2,7 @@
 # os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 import copy
-import datetime
+from datetime import datetime
 import pickle
 import flax
 import jax
@@ -118,11 +118,11 @@ class Transition(NamedTuple):
 @dataclass
 class Config:
     lr: float = 3e-4
-    num_envs: int = 16
-    num_steps: int = 128
-    total_timesteps: float = 8e6
-    update_epochs: int = 4
-    num_minibatches: int = 4
+    num_envs: int = 32
+    num_steps: int = 256
+    total_timesteps: float = 3e7
+    update_epochs: int = 8
+    num_minibatches: int = 8
     gamma: float = 0.99
     gae_lambda: float = 0.95
     clip_eps: float = 0.2
@@ -139,7 +139,7 @@ class Config:
     layouts: Optional[Sequence[str]] = field(default_factory=lambda: ["asymm_advantages", "smallest_kitchen", "cramped_room", "easy_layout", "square_arena", "no_cooperation"])
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
-    log_interval: int = 150 # log every 200 calls to update step
+    log_interval: int = 75 # log every 200 calls to update step
     eval_num_steps: int = 1000 # number of steps to evaluate the model
     eval_num_episodes: int = 5 # number of episodes to evaluate the model
     
@@ -213,7 +213,7 @@ def main():
         layout_config["layout"] = overcooked_layouts[layout_name]
     
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    run_name = f'{config.alg_name}_EWC_seq{config.seq_length}_{config.strategy}_{timestamp}'
+    run_name = f'{config.alg_name}_seq{config.seq_length}_{config.strategy}_{timestamp}'
     exp_dir = os.path.join("runs", run_name)
 
     # Initialize WandB
