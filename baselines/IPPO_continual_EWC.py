@@ -690,6 +690,9 @@ def main():
                     return None
                 
                 jax.lax.cond((update_step % config.log_interval) == 0, log_metrics, do_not_log, metric, update_step)
+            
+             # Evaluate the model and log the metrics
+            evaluate_and_log(rng=rng, update_step=update_step)
 
             runner_state_out = (train_st, env_st, last_obs, update_step, rng_)
             return runner_state_out, metric
