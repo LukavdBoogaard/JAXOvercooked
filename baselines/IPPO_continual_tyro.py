@@ -1,5 +1,6 @@
 # import os
 # os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+from datetime import datetime
 
 import copy
 from datetime import datetime
@@ -920,6 +921,7 @@ def main():
                 
                 jax.lax.cond((update_step % config.log_interval) == 0, log_metrics, do_not_log, metric, update_step)
             
+
             # Evaluate the model and log the metrics
             evaluate_and_log(rng=rng, update_step=update_step)
 
