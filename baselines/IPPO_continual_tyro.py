@@ -118,9 +118,9 @@ class Transition(NamedTuple):
 @dataclass
 class Config:
     lr: float = 3e-4
-    num_envs: int = 32
-    num_steps: int = 256
-    total_timesteps: float = 3e7
+    num_envs: int = 16
+    num_steps: int = 128
+    total_timesteps: float = 8e6
     update_epochs: int = 8
     num_minibatches: int = 8
     gamma: float = 0.99
