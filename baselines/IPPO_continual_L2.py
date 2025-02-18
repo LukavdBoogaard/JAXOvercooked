@@ -375,11 +375,16 @@ def main():
 
     # Set up Tensorboard
     writer = SummaryWriter(exp_dir)
-    # add all the configurations to the tensorboard
-    writer.add_text(
-        "hyperparameters",
-        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(config).items()])),
-    )
+    # add the hyperparameters to the tensorboard
+    rows = []
+    for key, value in vars(config).items():
+        value_str = str(value).replace("\n", "<br>")
+        value_str = value_str.replace("|", "\\|")  # escape pipe chars if needed
+        rows.append(f"|{key}|{value_str}|")
+
+    table_body = "\n".join(rows)
+    markdown = f"|param|value|\n|-|-|\n{table_body}"
+    writer.add_text("hyperparameters", markdown)
 
     # pad the observation space
     def pad_observation_space():
