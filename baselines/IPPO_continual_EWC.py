@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Sequence, NamedTuple, Any, Optional, List
 
 import distrax
+import flax
 import flax.linen as nn
 import jax
 import jax.numpy as jnp
@@ -101,7 +102,7 @@ class EWCState:
 
 
 def copy_params(params):
-    return jax.tree_map(lambda x: x.copy(), params)
+    return jax.tree_util.tree_map(lambda x: x.copy(), params)
 
 
 def init_cl_state(params: FrozenDict) -> EWCState:
@@ -109,7 +110,7 @@ def init_cl_state(params: FrozenDict) -> EWCState:
     Initialize old_params with the current parameters, fisher with zeros
     """
     old_params = copy_params(params)
-    fisher = jax.tree_map(lambda x: jnp.zeros_like(x), old_params)
+    fisher = jax.tree_util.tree_map(lambda x: jnp.zeros_like(x), old_params)
     return EWCState(old_params=old_params, fisher=fisher)
 
 
@@ -131,10 +132,10 @@ def compute_fisher(train_state, env, key, n_samples=256):
             return pi.log_prob(act).sum()
 
         grad_log_p = jax.grad(log_prob_sum)(params)
-        return jax.tree_map(lambda g: g ** 2, grad_log_p)
+        return jax.tree_util.tree_map(lambda g: g ** 2, grad_log_p)
 
     # Initialize fisher_accum to zero
-    fisher_accum_init = jax.tree_map(lambda x: jnp.zeros_like(x), train_state.params)
+    fisher_accum_init = jax.tree_util.tree_map(lambda x: jnp.zeros_like(x), train_state.params)
 
     def body_fn(carry, _):
         rng, fisher_accum = carry
@@ -146,7 +147,7 @@ def compute_fisher(train_state, env, key, n_samples=256):
         act = pi.sample(seed=rng_act)
 
         fisher_sample = single_sample_fisher(train_state.params, obs_batched["agent_0"], act)
-        fisher_accum = jax.tree_map(lambda f, fs: f + fs, fisher_accum, fisher_sample)
+        fisher_accum = jax.tree_util.tree_map(lambda f, fs: f + fs, fisher_accum, fisher_sample)
         return (rng, fisher_accum), None
 
     (rng_final, fisher_accum), _ = jax.lax.scan(
@@ -157,7 +158,7 @@ def compute_fisher(train_state, env, key, n_samples=256):
     )
 
     # Average the Fisher across samples
-    fisher_accum = jax.tree_map(lambda x: x / n_samples, fisher_accum)
+    fisher_accum = jax.tree_util.tree_map(lambda x: x / n_samples, fisher_accum)
 
     # -------------------------------------------------------------------
     # OPTIONAL NORMALIZATION STEP:
@@ -182,7 +183,7 @@ def compute_fisher(train_state, env, key, n_samples=256):
     def normalize(x):
         return x / (fisher_mean + 1e-8)
 
-    fisher_accum = jax.tree_map(normalize, fisher_accum)
+    fisher_accum = jax.tree_util.tree_map(normalize, fisher_accum)
     # -------------------------------------------------------------------
 
     return fisher_accum
@@ -196,7 +197,7 @@ def compute_ewc_loss(params: FrozenDict, ewc_state: EWCState, ewc_coef: float):
     def penalty(p, old_p, f):
         return f * (p - old_p) ** 2
 
-    ewc_term_tree = jax.tree_map(lambda p, old_p, f: penalty(p, old_p, f),
+    ewc_term_tree = jax.tree_util.tree_map(lambda p, old_p, f: penalty(p, old_p, f),
                                  params, ewc_state.old_params, ewc_state.fisher)
     ewc_term = jax.tree_util.tree_reduce(lambda acc, x: acc + x.sum(), ewc_term_tree, 0.0)
     return 0.5 * ewc_coef * ewc_term
@@ -243,6 +244,9 @@ class Config:
     )
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
+    log_interval: int = 75 # log every 200 calls to update step
+    eval_num_steps: int = 1000 # number of steps to evaluate the model
+    eval_num_episodes: int = 5 # number of episodes to evaluate the model
 
     anneal_lr: bool = False
     seed: int = 30
@@ -252,7 +256,7 @@ class Config:
     wandb_mode: str = "online"
     entity: Optional[str] = ""
     project: str = "ippo_continual"
-    tags: List[str] = None
+    tags: List[str] = field(default_factory=list)
 
     # to be computed during runtime
     num_actors: int = 0
@@ -379,7 +383,7 @@ def main():
     @partial(jax.jit, static_argnums=(1))
     def evaluate_model(train_state, network, key):
         def run_episode_while(env, key_r, network, network_params, max_steps=1000):
-            class LoopState(NamedTuple):
+            class EvalState(NamedTuple):
                 key: Any
                 state: Any
                 obs: Any
@@ -387,10 +391,10 @@ def main():
                 total_reward: float
                 step_count: int
 
-            def loop_cond(state: LoopState):
+            def cond_fun(state: EvalState):
                 return jnp.logical_and(~state.done, state.step_count < max_steps)
 
-            def loop_body(state: LoopState):
+            def body_fun(state: EvalState):
                 key, state_env, obs, _, total_reward, step_count = state
                 key, key_a0, key_a1, key_s = jax.random.split(key, 4)
                 flat_obs = {k: v.flatten() for k, v in obs.items()}
@@ -414,12 +418,18 @@ def main():
                 reward = reward["agent_0"]
                 total_reward += reward
                 step_count += 1
-                return LoopState(key, next_state, next_obs, done, total_reward, step_count)
+                return EvalState(key, next_state, next_obs, done, total_reward, step_count)
 
             key, key_s = jax.random.split(key_r)
             obs, state = env.reset(key_s)
-            init_state = LoopState(key, state, obs, False, 0.0, 0)
-            final_state = jax.lax.while_loop(loop_cond, loop_body, init_state)
+            init_state = EvalState(key, state, obs, False, 0.0, 0)
+
+            final_state = jax.lax.while_loop(
+                cond_fun=cond_fun, 
+                body_fun=body_fun, 
+                init_val=init_state
+            )
+
             return final_state.total_reward
 
         all_avg_rewards = []
@@ -427,11 +437,14 @@ def main():
         for env in envs:
             env = make(config.env_name, layout=env)
             network_params = train_state.params
-            all_rewards = jax.vmap(lambda k: run_episode_while(env, k, network, network_params, 500))(
-                jax.random.split(key, 5)
+
+            all_rewards = jax.vmap(lambda k: run_episode_while(env, k, network_params, config.eval_num_steps))(
+                jax.random.split(key, config.eval_num_episodes)
             )
+
             avg_reward = jnp.mean(all_rewards)
             all_avg_rewards.append(avg_reward)
+
         return all_avg_rewards
 
     padded_envs = pad_observation_space()
@@ -476,7 +489,7 @@ def main():
     )
 
     @partial(jax.jit, static_argnums=(3,))
-    def train_on_environment(rng, train_state, ewc_state, env_idx):
+    def train_on_environment(rng, train_state, ewc_state, env_idx, env_counter):
         env = envs[env_idx]
         print(f"Training on environment {env_idx}: {env.name}")
         tx_local = optax.chain(
@@ -618,7 +631,7 @@ def main():
 
             metric = info
             current_timestep = update_step * config.num_steps * config.num_envs
-            metric = jax.tree_map(lambda x: x.mean(), metric)
+            metric = jax.tree_util.tree_map(lambda x: x.mean(), metric)
 
             update_step += 1
             metric["General/update_step"] = update_step
@@ -628,9 +641,6 @@ def main():
 
             total_loss_, v_loss_, a_loss_, ent_, reg_ = loss_info
             metric["Losses/total_loss"] = total_loss_.mean()
-            metric["Losses/total_loss_max"] = total_loss_.max()
-            metric["Losses/total_loss_min"] = total_loss_.min()
-            metric["Losses/total_loss_var"] = total_loss_.var()
             metric["Losses/value_loss"] = v_loss_.mean()
             metric["Losses/actor_loss"] = a_loss_.mean()
             metric["Losses/entropy"] = ent_.mean()
@@ -638,6 +648,7 @@ def main():
 
             metric["General/shaped_reward_agent0"] = metric["shaped_reward"]["agent_0"]
             metric["General/shaped_reward_agent1"] = metric["shaped_reward"]["agent_1"]
+            metric.pop("shaped_reward")
             metric["General/shaped_reward_annealed_agent0"] = metric[
                                                                   "General/shaped_reward_agent0"] * rew_shaping_anneal(
                 current_timestep)
@@ -651,24 +662,30 @@ def main():
             for i_ in range(len(config.layout_name)):
                 metric[f"Evaluation/{config.layout_name[i_]}"] = jnp.nan
 
-            rng_, eval_rng = jax.random.split(rng_)
-            train_state_eval = jax.tree_map(lambda x: x.copy(), train_st)
+            def evaluate_and_log(rng, update_step):
+                rng, eval_rng = jax.random.split(rng)
+                train_state_eval = jax.tree_util.tree_map(lambda x: x.copy(), train_state)
 
-            def true_fun(met):
-                evaluations = evaluate_model(train_state_eval, network, eval_rng)
-                for i_, evaluation in enumerate(evaluations):
-                    met[f"Evaluation/{config.layout_name[i_]}"] = evaluation
-                return met
+                def log_metrics(metric, update_step):
+                    evaluations = evaluate_model(train_state_eval, network, eval_rng)
+                    for i, evaluation in enumerate(evaluations):
+                        metric[f"Evaluation/{config.layout_name[i]}"] = evaluation
+                    
+                    def callback(args):
+                        metric, update_step, env_counter = args
+                        update_step = int(update_step)
+                        env_counter = int(env_counter)
+                        real_step = (env_counter-1) * config.num_updates + update_step
+                        for key, value in metric.items():
+                            writer.add_scalar(key, value, real_step)
 
-            def false_fun(met):
-                return met
-
-            metric = jax.lax.cond((update_step % config.eval_freq) == 0, true_fun, false_fun, metric)
-
-            def callback(met, update_step_):
-                wandb.log(met)
-
-            jax.debug.callback(callback, metric, update_step)
+                    jax.experimental.io_callback(callback, None, (metric, update_step, env_counter))
+                    return None
+                
+                def do_not_log(metric, update_step):
+                    return None
+                
+                jax.lax.cond((update_step % config.log_interval) == 0, log_metrics, do_not_log, metric, update_step)
 
             runner_state_out = (train_st, env_st, last_obs, update_step, rng_)
             return runner_state_out, metric
@@ -676,13 +693,13 @@ def main():
         rng, train_rng_ = jax.random.split(rng)
         runner_state_init = (train_state, env_state, obsv, 0, train_rng_)
 
-        runner_state_final, metric_ = jax.lax.scan(
+        runner_state_final, metric = jax.lax.scan(
             _update_step,
             init=runner_state_init,
             xs=None,
             length=config.num_updates
         )
-        return runner_state_final
+        return runner_state_final, metric
 
     def loop_over_envs(rng, train_state, ewc_state, envs):
         rngs = jax.random.split(rng, len(envs) + 1)
@@ -691,9 +708,11 @@ def main():
         visualizer = OvercookedVisualizer()
 
         runner_state = None
+        env_counter = 1
+
         for i, (r, _) in enumerate(zip(sub_rngs, envs)):
             # --- Train on environment i using the *current* ewc_state ---
-            runner_state = train_on_environment(r, train_state, ewc_state, i)
+            runner_state, metric = train_on_environment(r, train_state, ewc_state, i, env_counter)
             train_state = runner_state[0]
 
             # --- Compute new Fisher, then update ewc_state for next tasks ---
@@ -704,7 +723,30 @@ def main():
             states = record_gif_of_episode(train_state, envs[i], network)
             visualizer.animate(states, agent_view_size=5, task_idx=i, task_name=envs[i].name, exp_dir=exp_dir)
 
+             # save the model
+            path = f"checkpoints/overcooked/EWC/{run_name}/model_env_{env_counter}"
+            save_params(path, train_state)
+
+            # update the environment counter
+            env_counter += 1
+
         return runner_state
+    
+    def save_params(path, train_state):
+        '''
+        Saves the parameters of the network
+        @param path: the path to save the parameters
+        @param train_state: the current state of the training
+        returns None
+        '''
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(
+                flax.serialization.to_bytes(
+                    {"params": train_state.params}
+                )
+            )
+        print('model saved to', path)
 
     rng, train_rng = jax.random.split(rng)
     ewc_state = init_cl_state(train_state.params)
