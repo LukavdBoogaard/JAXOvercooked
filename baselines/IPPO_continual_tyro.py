@@ -1,5 +1,6 @@
 # import os
 # os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
+from datetime import datetime
 
 import copy
 import pickle
@@ -132,7 +133,7 @@ class Config:
     env_name: str = "overcooked"
     alg_name: str = "ippo"
 
-    seq_length: int = 2
+    seq_length: int = 6
     strategy: str = "random"
     layouts: Optional[Sequence[str]] = field(default_factory=lambda: ["asymm_advantages", "smallest_kitchen", "cramped_room", "easy_layout", "square_arena", "no_cooperation"])
     env_kwargs: Optional[Sequence[dict]] = None
@@ -208,7 +209,9 @@ def main():
         layout_name = layout_config["layout"]
         layout_config["layout"] = overcooked_layouts[layout_name]
     
-    run_name = f"{config.alg_name}_{config.seq_length}_{config.strategy}"
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    run_name = f'{config.alg_name}_main_seq{config.seq_length}_{config.strategy}_{timestamp}'
+    exp_dir = os.path.join("runs", run_name)
 
     # Initialize WandB
     load_dotenv()
@@ -224,7 +227,7 @@ def main():
     )
 
     # Set up Tensorboard
-    writer = SummaryWriter(f"runs/{run_name}")
+    writer = SummaryWriter(exp_dir)
     
     # add the hyperparameters to the tensorboard
     rows = []
@@ -909,10 +912,10 @@ def main():
             
             metric = jax.lax.cond((update_step % 200) == 0, true_fun, false_fun, metric)
 
-            # def callback(metric):
-            #     wandb.log(metric)
+            def callback(metric):
+                wandb.log(metric)
 
-            # jax.experimental.io_callback(callback, None, metric)
+            jax.experimental.io_callback(callback, None, (metric))
 
             rng = update_state[-1]
             runner_state = (train_state, env_state, last_obs, update_step, rng)
@@ -956,9 +959,9 @@ def main():
             # unpack the runner state
             train_state, env_state, last_obs, update_step, rng = runner_state
 
-            # save the metrics
-            for key, value in metrics.items():
-                writer.add_scalar(f"env_{env_counter}/{key}", value, update_step)
+            # # save the metrics
+            # for key, value in metrics.items():
+            #     writer.add_scalar(f"env_{env_counter}/{key}", value, update_step)
 
 
             # save the model
