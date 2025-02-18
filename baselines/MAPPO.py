@@ -3,8 +3,6 @@
 from datetime import datetime
 
 import copy
-from datetime import datetime
-import pickle
 import flax
 import jax
 import jax.experimental
@@ -15,7 +13,7 @@ import optax
 import orbax.checkpoint as ocp
 from flax.linen.initializers import constant, orthogonal
 from flax.core.frozen_dict import FrozenDict, freeze, unfreeze
-from typing import Sequence, NamedTuple, Any, Optional, List
+from typing import Dict, Sequence, NamedTuple, Any, Optional, List
 from flax.training.train_state import TrainState
 import distrax
 from gymnax.wrappers.purerl import LogWrapper, FlattenObservationWrapper
@@ -27,7 +25,6 @@ from jax_marl.environments.env_selection import generate_sequence
 from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
 from jax_marl.environments.overcooked_environment.layouts import counter_circuit_grid
 from dotenv import load_dotenv
-import hydra
 import os
 os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
 
@@ -104,6 +101,61 @@ class ActorCritic(nn.Module):
         return pi, value #squeezed to remove any unnecessary dimensions
     
 
+class Actor(nn.Module):
+    action_dim: Sequence[int]
+    config: Dict
+
+    @nn.compact
+    def __call__(self, x):
+        if self.config["ACTIVATION"] == "relu":
+            activation = nn.relu
+        else:
+            activation = nn.tanh
+        obs, avail_actions = x
+        actor_mean = nn.Dense(
+            self.config["FC_DIM_SIZE"], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
+        )(obs)
+        actor_mean = activation(actor_mean)
+        actor_mean = nn.Dense(
+            self.config["FC_DIM_SIZE"], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
+        )(actor_mean)
+        actor_mean = activation(actor_mean)
+        action_logits = nn.Dense(
+            self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0)
+        )(actor_mean)
+        unavail_actions = 1 - avail_actions
+        action_logits = action_logits - (unavail_actions * 1e10)
+
+        pi = distrax.Categorical(logits=action_logits)
+
+        return pi
+
+
+class Critic(nn.Module):
+    config: dataclass
+    
+    @nn.compact
+    def __call__(self, x):
+        if self.config.activation == "relu":
+            activation = nn.relu
+        else:
+            activation = nn.tanh
+            
+        critic = nn.Dense(
+            self.config["FC_DIM_SIZE"], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
+        )(x)
+        critic = activation(critic)
+        critic = nn.Dense(
+            self.config["FC_DIM_SIZE"], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
+        )(critic)
+        critic = activation(critic)
+        critic = nn.Dense(
+            1, kernel_init=orthogonal(0.01), bias_init=constant(0.0)
+        )(critic)
+            
+        return jnp.squeeze(critic, axis=-1)
+
+
 class Transition(NamedTuple):
     '''
     Named tuple to store the transition information
@@ -124,6 +176,7 @@ class Config:
     total_timesteps: float = 8e6
     update_epochs: int = 8
     num_minibatches: int = 8
+    fc_dim_size: int = 128
     gamma: float = 0.99
     gae_lambda: float = 0.95
     clip_eps: float = 0.2
