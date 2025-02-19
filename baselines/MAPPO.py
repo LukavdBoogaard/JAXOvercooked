@@ -40,6 +40,52 @@ from pathlib import Path
 # Enable compile logging
 # jax.log_compiles(True)
 
+
+@dataclass
+class Config:
+    lr: float = 3e-4
+    num_envs: int = 16
+    num_steps: int = 128
+    total_timesteps: float = 8e6
+    update_epochs: int = 8
+    num_minibatches: int = 8
+    fc_dim_size: int = 128
+    gamma: float = 0.99
+    gae_lambda: float = 0.95
+    clip_eps: float = 0.2
+    ent_coef: float = 0.01
+    vf_coef: float = 0.5
+    max_grad_norm: float = 0.5
+    reward_shaping_horizon: float = 2.5e6
+    activation: str = "tanh"
+    env_name: str = "overcooked"
+    alg_name: str = "ippo"
+
+    seq_length: int = 2
+    strategy: str = "random"
+    layouts: Optional[Sequence[str]] = field(default_factory=lambda: ["asymm_advantages", "smallest_kitchen", "cramped_room", "easy_layout", "square_arena", "no_cooperation"])
+    env_kwargs: Optional[Sequence[dict]] = None
+    layout_name: Optional[Sequence[str]] = None
+    log_interval: int = 75 # log every 200 calls to update step
+    eval_num_steps: int = 1000 # number of steps to evaluate the model
+    eval_num_episodes: int = 5 # number of episodes to evaluate the model
+    
+    anneal_lr: bool = False
+    seed: int = 30
+    num_seeds: int = 1
+    
+    # Wandb settings
+    wandb_mode: str = "online"
+    entity: Optional[str] = ""
+    project: str = "ippo_continual"
+    tags: List[str] = field(default_factory=list)
+
+    # to be computed during runtime
+    num_actors: int = 0
+    num_updates: int = 0
+    minibatch_size: int = 0
+
+
 class ActorCritic(nn.Module):
     '''
     Class to define the actor-critic networks used in IPPO. Each agent has its own actor-critic network
@@ -102,60 +148,89 @@ class ActorCritic(nn.Module):
     
 
 class Actor(nn.Module):
-    action_dim: Sequence[int]
-    config: Dict
+    """
+    Actor network for MAPPO.
+    
+    This network takes observations as input and outputs a 
+    categorical distribution over actions.
+    """
+    action_dim: int
+    activation: str = "tanh"
 
     @nn.compact
     def __call__(self, x):
-        if self.config["ACTIVATION"] == "relu":
-            activation = nn.relu
-        else:
-            activation = nn.tanh
-        obs, avail_actions = x
-        actor_mean = nn.Dense(
-            self.config["FC_DIM_SIZE"], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
-        )(obs)
-        actor_mean = activation(actor_mean)
-        actor_mean = nn.Dense(
-            self.config["FC_DIM_SIZE"], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
-        )(actor_mean)
-        actor_mean = activation(actor_mean)
-        action_logits = nn.Dense(
-            self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0)
-        )(actor_mean)
-        unavail_actions = 1 - avail_actions
-        action_logits = action_logits - (unavail_actions * 1e10)
+        # Choose the activation function based on input parameter.
+        act_fn = nn.relu if self.activation == "relu" else nn.tanh
 
-        pi = distrax.Categorical(logits=action_logits)
+        # First hidden layer
+        x = nn.Dense(
+            128,
+            kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0)
+        )(x)
+        x = act_fn(x)
 
+        # Second hidden layer
+        x = nn.Dense(
+            128,
+            kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0)
+        )(x)
+        x = act_fn(x)
+
+        # Output layer to produce logits for the action distribution
+        logits = nn.Dense(
+            self.action_dim,
+            kernel_init=orthogonal(0.01),
+            bias_init=constant(0.0)
+        )(x)
+
+        # Create a categorical distribution using the logits
+        pi = distrax.Categorical(logits=logits)
         return pi
 
-
 class Critic(nn.Module):
-    config: dataclass
+    """
+    Critic network for MAPPO.
     
+    This network takes observations as input and outputs a scalar 
+    state-value estimate.
+    """
+    activation: str = "tanh"
+
     @nn.compact
     def __call__(self, x):
-        if self.config.activation == "relu":
-            activation = nn.relu
-        else:
-            activation = nn.tanh
-            
-        critic = nn.Dense(
-            self.config["FC_DIM_SIZE"], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
+        # Choose the activation function based on input parameter.
+        act_fn = nn.relu if self.activation == "relu" else nn.tanh
+
+        # First hidden layer
+        x = nn.Dense(
+            128,
+            kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0)
         )(x)
-        critic = activation(critic)
-        critic = nn.Dense(
-            self.config["FC_DIM_SIZE"], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
-        )(critic)
-        critic = activation(critic)
-        critic = nn.Dense(
-            1, kernel_init=orthogonal(0.01), bias_init=constant(0.0)
-        )(critic)
-            
-        return jnp.squeeze(critic, axis=-1)
+        x = act_fn(x)
 
+        # Second hidden layer
+        x = nn.Dense(
+            128,
+            kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0)
+        )(x)
+        x = act_fn(x)
 
+        # Output layer to produce a single state-value
+        value = nn.Dense(
+            1,
+            kernel_init=orthogonal(1.0),
+            bias_init=constant(0.0)
+        )(x)
+        
+        # Squeeze the output to remove the singleton dimension
+        value = jnp.squeeze(value, axis=-1)
+        return value
+    
+    
 class Transition(NamedTuple):
     '''
     Named tuple to store the transition information
@@ -168,49 +243,6 @@ class Transition(NamedTuple):
     obs: jnp.ndarray # the observation
     # info: jnp.ndarray # additional information
 
-@dataclass
-class Config:
-    lr: float = 3e-4
-    num_envs: int = 16
-    num_steps: int = 128
-    total_timesteps: float = 8e6
-    update_epochs: int = 8
-    num_minibatches: int = 8
-    fc_dim_size: int = 128
-    gamma: float = 0.99
-    gae_lambda: float = 0.95
-    clip_eps: float = 0.2
-    ent_coef: float = 0.01
-    vf_coef: float = 0.5
-    max_grad_norm: float = 0.5
-    reward_shaping_horizon: float = 2.5e6
-    activation: str = "tanh"
-    env_name: str = "overcooked"
-    alg_name: str = "ippo"
-
-    seq_length: int = 2
-    strategy: str = "random"
-    layouts: Optional[Sequence[str]] = field(default_factory=lambda: ["asymm_advantages", "smallest_kitchen", "cramped_room", "easy_layout", "square_arena", "no_cooperation"])
-    env_kwargs: Optional[Sequence[dict]] = None
-    layout_name: Optional[Sequence[str]] = None
-    log_interval: int = 75 # log every 200 calls to update step
-    eval_num_steps: int = 1000 # number of steps to evaluate the model
-    eval_num_episodes: int = 5 # number of episodes to evaluate the model
-    
-    anneal_lr: bool = False
-    seed: int = 30
-    num_seeds: int = 1
-    
-    # Wandb settings
-    wandb_mode: str = "online"
-    entity: Optional[str] = ""
-    project: str = "ippo_continual"
-    tags: List[str] = field(default_factory=list)
-
-    # to be computed during runtime
-    num_actors: int = 0
-    num_updates: int = 0
-    minibatch_size: int = 0
 
     
 ############################
@@ -598,12 +630,21 @@ def main():
         transition_steps=config.reward_shaping_horizon
     )
 
+    actor = Actor(
+        action_dim=temp_env.action_space().n, 
+        config=config
+    )
 
-    network = ActorCritic(temp_env.action_space().n, activation=config.activation)
+    critic = Critic(
+        config=config
+    )
 
     # Initialize the network
     rng = jax.random.PRNGKey(config.seed)
-    rng, network_rng = jax.random.split(rng)
+    rng, actor_rng, critic_rng = jax.random.split(rng, 3)
+
+    actor_init_x = 
+    critic_init_x
     init_x = jnp.zeros(env.observation_space().shape).flatten()
     network_params = network.init(network_rng, init_x)
 
