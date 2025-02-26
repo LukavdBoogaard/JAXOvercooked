@@ -15,7 +15,7 @@ import optax
 import orbax.checkpoint as ocp
 from flax.linen.initializers import constant, orthogonal
 from flax.core.frozen_dict import FrozenDict, freeze, unfreeze
-from typing import Sequence, NamedTuple, Any, Optional, List
+from typing import Dict, Sequence, NamedTuple, Any, Optional, List
 from flax.training.train_state import TrainState
 import distrax
 from gymnax.wrappers.purerl import LogWrapper, FlattenObservationWrapper
@@ -27,7 +27,6 @@ from jax_marl.environments.env_selection import generate_sequence
 from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
 from jax_marl.environments.overcooked_environment.layouts import counter_circuit_grid
 from dotenv import load_dotenv
-import hydra
 import os
 os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
 
@@ -670,7 +669,7 @@ def main():
                 init=runner_state, 
                 xs=None, 
                 length=config.num_steps
-            )  
+            ) 
 
             # unpack the runner state that is returned after the scan function
             train_state, env_state, last_obs, update_step, rng = runner_state
