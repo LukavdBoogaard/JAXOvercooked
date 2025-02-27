@@ -25,9 +25,7 @@ from jax_marl.wrappers.baselines import LogWrapper
 from jax_marl.environments.overcooked_environment import overcooked_layouts
 from jax_marl.environments.env_selection import generate_sequence
 from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
-from jax_marl.environments.overcooked_environment.layouts import counter_circuit_grid
 from dotenv import load_dotenv
-import hydra
 import os
 os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
 
@@ -203,11 +201,12 @@ def main():
     config = tyro.cli(Config)
 
     # generate a sequence of tasks
-    seq_length = config.seq_length
-    strategy = config.strategy
-    layouts = config.layouts
-    config.env_kwargs, config.layout_name = generate_sequence(seq_length, strategy, layout_names=layouts, seed=config.seed)
-
+    config.env_kwargs, config.layout_name = generate_sequence(
+        seq_length=config.seq_length, 
+        strategy=config.strategy, 
+        layout_names=config.layouts, 
+        seed=config.seed
+    )
 
     for layout_config in config.env_kwargs:
         layout_name = layout_config["layout"]
