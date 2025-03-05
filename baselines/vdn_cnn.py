@@ -493,7 +493,7 @@ def main():
 
         print("Training on environment")
 
-        # reset the learning rate if needed
+        # reset the learning rate
         lr = lr_scheduler if config.lr_linear_decay else config.lr
         tx = optax.chain(
             optax.clip_by_global_norm(config.max_grad_norm),
@@ -501,6 +501,13 @@ def main():
         )
         train_state = train_state.replace(tx=tx)
 
+        # reset the epsilon scheduler
+        eps_scheduler = optax.linear_schedule(
+            config.eps_start,
+            config.eps_finish,
+            config.eps_decay * config.num_updates,
+        )
+        
         # reset the timesteps, updates and gradient steps
         train_state = train_state.replace(timesteps=0, n_updates=0, grad_steps=0)
 
