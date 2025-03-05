@@ -5,6 +5,7 @@ Specific to this implementation: CNN network and Reward Shaping Annealing as per
 import os
 import copy
 import jax
+import jax.experimental
 import jax.numpy as jnp
 import numpy as np
 from functools import partial
@@ -236,7 +237,7 @@ def main():
     # load the config
     config = tyro.cli(Config)
 
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    timestamp = datetime.now().strftime("%m-%d_%H-%M")
     run_name = f'{config.alg_name}_seq{config.seq_length}_{config.strategy}_{timestamp}'
     exp_dir = os.path.join("runs", run_name)
 
@@ -379,12 +380,21 @@ def main():
         layout_config["layout"] = overcooked_layouts[layout_name]
 
     padded_envs = pad_observation_space()
-    envs = []
+    train_envs = []
+    test_envs = []
     for env_layout in padded_envs:
         env = make(config.env_name, layout=env_layout)
         env = LogWrapper(env, replace_info=False)
-        envs.append(env)
+        train_env = CTRolloutManager(
+            env, batch_size=config.num_envs, preprocess_obs=False
+        )
+        test_env = CTRolloutManager(
+            env, batch_size=config.test_num_envs, preprocess_obs=False
+        )
+        train_envs.append(train_env)
+        test_envs.append(test_env)
     
+        
     config.num_updates = (
         config.total_timesteps // config.num_steps // config.num_envs
     )
@@ -402,22 +412,15 @@ def main():
     # Initialize the network
     rng = jax.random.PRNGKey(config.seed)
 
-    wrapped_env = CTRolloutManager(
-        envs[0], batch_size=config.num_envs, preprocess_obs=False
-    )
-    
-    test_env = CTRolloutManager(
-        env, batch_size=config.test_num_envs, preprocess_obs=False
-    )
-
+    init_env = train_envs[0]
     network = QNetwork(
-        action_dim=wrapped_env.max_action_space,
+        action_dim=init_env.max_action_space,
         hidden_size=config.hidden_size,
     )
 
     rng, agent_rng = jax.random.split(rng)
 
-    init_x = jnp.zeros((1, *env.observation_space().shape))
+    init_x = jnp.zeros((1, *init_env.observation_space().shape))
     network_params = network.init(agent_rng, init_x)
 
     lr_scheduler = optax.linear_schedule(
@@ -457,14 +460,14 @@ def main():
 
     rng, init_rng = jax.random.split(rng)
 
-    init_obs, init_env_state = wrapped_env.batch_reset(init_rng)
+    init_obs, init_env_state = init_env.batch_reset(init_rng)
     init_actions = {
-        agent: wrapped_env.batch_sample(init_rng, agent) for agent in env.agents
+        agent: init_env.batch_sample(init_rng, agent) for agent in env.agents
     }
-    init_obs, _, init_rewards, init_dones, init_infos = wrapped_env.batch_step(
+    init_obs, _, init_rewards, init_dones, init_infos = init_env.batch_step(
         init_rng, init_env_state, init_actions
     )
-    init_avail_actions = wrapped_env.get_valid_actions(init_env_state.env_state)
+    init_avail_actions = init_env.get_valid_actions(init_env_state.env_state)
     init_timestep = Timestep(
         obs=init_obs,
         actions=init_actions,
@@ -477,8 +480,8 @@ def main():
     )  # remove the NUM_ENV dim
     buffer_state = buffer.init(init_timestep_unbatched)
 
-    @partial(jax.jit, static_argnums=(2))
-    def train_on_environment(rng, train_state, env, buffer_state):
+    @partial(jax.jit, static_argnums=(2, 3))
+    def train_on_environment(rng, train_state, train_env, test_env, buffer_state, env_counter):
         '''
         Trains the agent on a single environment
         @param rng: the random number generator
@@ -504,7 +507,7 @@ def main():
         # Initialize and reset the environment
         rng, env_rng = jax.random.split(rng) 
         reset_rng = jax.random.split(env_rng, config.num_envs) 
-        obsv, env_state = jax.vmap(env.reset, in_axes=(0,))(reset_rng) 
+        obsv, env_state = jax.vmap(train_env.reset, in_axes=(0,))(reset_rng) 
 
         def _update_step(runner_state, unused):
 
@@ -528,7 +531,7 @@ def main():
                 )  # (num_agents, num_envs, num_actions)
 
                 # retrieve the valid actions
-                avail_actions = wrapped_env.get_valid_actions(env_state.env_state)
+                avail_actions = train_env.get_valid_actions(env_state.env_state)
 
                 # perform epsilon-greedy exploration
                 eps = eps_scheduler(train_state.n_updates)
@@ -538,7 +541,7 @@ def main():
                 )
                 actions = unbatchify(new_action, env)
 
-                new_obs, new_env_state, rewards, dones, infos = wrapped_env.batch_step(
+                new_obs, new_env_state, rewards, dones, infos = train_env.batch_step(
                     rng_step, env_state, actions
                 )
 
@@ -568,7 +571,6 @@ def main():
                 xs=None,
                 length=config.num_steps,
             )
-            print("info", infos)
             expl_state = carry[:2]
 
             # update the steps count of the train state
@@ -683,8 +685,16 @@ def main():
             }
             metrics.update(jax.tree.map(lambda x: x.mean(), infos))
 
-            if config.test_during_training:
-                rng, _rng = jax.random.split(rng)
+            def evaluate_and_log(rng, update_steps, test_metrics):
+                '''
+                Evaluates the model and logs the metrics
+                @param rng: the random number generator
+                @param update_steps: the number of update steps
+                returns the metrics
+                '''
+                rng, eval_rng = jax.random.split(rng)
+                
+                # evaluate the model
                 test_metrics = jax.lax.cond(
                     train_state.n_updates
                     % int(config.num_updates * config.test_interval)
@@ -693,22 +703,49 @@ def main():
                     lambda _: test_metrics,
                     operand=None,
                 )
-                metrics.update({"Evaluation/evaluation_" + k: v for k, v in test_metrics.items()})
+                for i, eval_metric in enumerate(test_metrics):
+                    metrics[f"Evaluation/evaluation_{config.layout_name[i]}"] = eval_metric
 
-            # report on wandb if required
-            if config.wandb_mode != "disabled":
+                # log the metrics
+                def callback(args):
+                    metrics, update_steps, env_counter = args
+                    update_steps = int(update_steps)
+                    env_counter = int(env_counter)
+                    real_step = (env_counter - 1) * config.num_updates + update_steps
+                    for k, v in metrics.items():
+                        writer.add_scalar(k, v, real_step)
+                
+                jax.experimental.io_callback(callback, None, (metrics, update_steps, env_counter))
+            
+            evaluate_and_log(rng, train_state.n_updates, test_metrics)
+                        
 
-                def callback(metrics, seed):
-                    if config.wandb_log_all_seeds:
-                        metrics.update(
-                            {
-                                f"rng{int(seed)}/{k}": v
-                                for k, v in metrics.items()
-                            }
-                        )
-                    wandb.log(metrics, step=metrics["General/update_steps"])
+            # if config.test_during_training:
+            #     rng, _rng = jax.random.split(rng)
+            #     test_metrics = jax.lax.cond(
+            #         train_state.n_updates
+            #         % int(config.num_updates * config.test_interval)
+            #         == 0,
+            #         lambda _: evaluate_model(_rng, train_state),
+            #         lambda _: test_metrics,
+            #         operand=None,
+            #     )
+            #     metrics.update({"Evaluation/evaluation_" + k: v for k, v in test_metrics.items()})
 
-                jax.debug.callback(callback, metrics, config.seed)
+            # # report on wandb if required
+            # if config.wandb_mode != "disabled":
+
+            #     def callback(metrics, seed):
+            #         if config.wandb_log_all_seeds:
+            #             metrics.update(
+            #                 {
+            #                     f"rng{int(seed)}/{k}": v
+            #                     for k, v in metrics.items()
+            #                 }
+            #             )
+            #         wandb.log(metrics, step=metrics["General/update_steps"])
+
+            #     jax.debug.callback(callback, metrics, config.seed)
 
             runner_state = (train_state, buffer_state, expl_state, test_metrics, rng)
 
@@ -721,7 +758,7 @@ def main():
             @param train_state: the current training state
             returns the metrics: the average returns of the evaluated episodes
             '''
-            def evaluate_on_environment(rng, train_state):
+            def evaluate_on_environment(test_env, rng, train_state):
                 '''
                 Evaluates the current model on a single environment
                 @param rng: the random number generator
@@ -752,44 +789,32 @@ def main():
                     None,
                     config.test_num_steps,
                 )
-                metrics = {
-                    "avg_returns": jnp.nanmean(
+                metrics = jnp.nanmean(
                         jnp.where(
                             infos["returned_episode"],
                             infos["returned_episode_returns"],
                             jnp.nan,
                         )
                     )
-                }
                 return metrics
-            
-            # evaluate the model on all environments
-            envs = pad_observation_space()
  
             evaluation_returns = []
 
-            for env in envs:
-                env = make(config.env_name, layout=env)
-                all_returns = jax.vmap(lambda k: evaluate_on_environment(rng, train_state))(
+            for env in test_envs:
+                all_returns = jax.vmap(lambda k: evaluate_on_environment(env, k, train_state))(
                     jax.random.split(rng, config.eval_num_episodes)
                 )
                 
-                mean_returns = jnp.mean(jnp.stack(all_returns))
+                mean_returns = jnp.mean(all_returns)
                 evaluation_returns.append(mean_returns)
 
             return evaluation_returns
-                
-
-
-            
-
-            
         
         rng, _rng = jax.random.split(rng)
         test_metrics = evaluate_model(_rng, train_state)
 
         rng, _rng = jax.random.split(rng)
-        obs, env_state = wrapped_env.batch_reset(_rng)
+        obs, env_state = train_env.batch_reset(_rng)
         expl_state = (obs, env_state)
 
         # train
@@ -805,22 +830,23 @@ def main():
 
         return runner_state, metrics
     
-    def loop_over_envs(rng, train_state, envs, buffer_state):
+    def loop_over_envs(rng, train_state, train_envs, test_envs, buffer_state):
         '''
         Loops over the environments and trains the network
         @param rng: random number generator
         @param train_state: the current state of the training
-        @param envs: the environments
+        @param train_envs: the training environments
+        @param test_envs: the test environments
         returns the runner state and the metrics
         '''
         # split the random number generator for training on the environments
-        rng, *env_rngs = jax.random.split(rng, len(envs)+1)
+        rng, *env_rngs = jax.random.split(rng, len(train_envs)+1)
 
         # counter for the environment 
         env_counter = 1
 
-        for env_rng, env in zip(env_rngs, envs):
-            runner_state, metrics = train_on_environment(env_rng, train_state, env, buffer_state)
+        for env_rng, train_env, test_env in zip(env_rngs, train_envs, test_envs):
+            runner_state, metrics = train_on_environment(env_rng, train_state, train_env, test_env, buffer_state, env_counter)
 
             # unpack the runner state
             train_state, buffer_state, expl_state, test_metrics, rng = runner_state
@@ -852,7 +878,8 @@ def main():
 
     # train the network
     rng, train_rng = jax.random.split(rng)
-    runner_state = loop_over_envs(train_rng, train_state, envs, buffer_state)
+
+    runner_state = loop_over_envs(train_rng, train_state, train_envs, test_envs, buffer_state)
         
 
 if __name__ == "__main__":
