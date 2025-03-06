@@ -383,6 +383,7 @@ def make_train(config, env):
                 "grad_steps": train_state.grad_steps,
                 "loss": loss.mean(),
                 "qvals": qvals.mean(),
+                "epsilon": eps_scheduler(train_state.n_updates),
             }
             metrics.update(jax.tree.map(lambda x: x.mean(), infos))
 

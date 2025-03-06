@@ -99,19 +99,16 @@ class CustomTrainState(TrainState):
 @dataclass
 class Config:
     total_timesteps: float = 5e6
-    num_envs: int = 64
-    num_steps: int = 16
-    hidden_size: int = 512
-    num_layers: int = 2
-    norm_type: str = "layer_norm"
-    norm_input: bool = False
+    num_envs: int = 32
+    num_steps: int = 1
+    hidden_size: int = 64
     eps_start: float = 1.0
     eps_finish: float = 0.2
     eps_decay: float = 0.2
-    max_grad_norm: int = 10
+    max_grad_norm: int = 1
     num_minibatches: int = 16
     num_epochs: int = 4
-    lr: float = 0.000075
+    lr: float = 0.00007
     lr_linear_decay: bool = True
     lambda_: float = 0.5 
     gamma: float = 0.99
@@ -126,7 +123,7 @@ class Config:
     env_kwargs: Dict[str, str] = field(default_factory=lambda: {"layout": "counter_circuit"})
     rew_shaping_horizon: float = 2.5e6
     test_during_training: bool = True
-    test_interval: float = 0.01  # as a fraction of updates (e.g., log every 5% of the training process)
+    test_interval: float = 0.05  # as a fraction of updates (e.g., log every 5% of the training process)
     test_num_steps: int = 400
     test_num_envs: int = 512  # number of episodes to average over
     seed: int = 30
@@ -163,23 +160,23 @@ class Config:
 ############### HELPER FUNCTIONS ##################
 ###################################################
 
-def batchify(x: dict, env: LogWrapper):
+def batchify(x: dict, agent_list: List[str]):
     '''
     stack the observations of all agents into a single array
     @param x: the observations
     @param env: the environment
     returns the batchified observations
     '''
-    return jnp.stack([x[agent] for agent in env.agents], axis=0)
+    return jnp.stack([x[agent] for agent in agent_list], axis=0)
 
-def unbatchify(x: jnp.ndarray, env: LogWrapper):
+def unbatchify(x: jnp.ndarray, agent_list: List[str]):
     '''
     unstack the observations of all agents into a dictionary
     @param x: the batchified observations
     @param env: the environment
     returns the unbatchified observations
     '''
-    return {agent: x[i] for i, agent in enumerate(env.agents)}    
+    return {agent: x[i] for i, agent in enumerate(agent_list)}    
 
 def get_greedy_actions(q_vals, valid_actions):
     '''
@@ -500,16 +497,11 @@ def main():
             optax.radam(learning_rate=lr),
         )
         train_state = train_state.replace(tx=tx)
-
-        # reset the epsilon scheduler
-        eps_scheduler = optax.linear_schedule(
-            config.eps_start,
-            config.eps_finish,
-            config.eps_decay * config.num_updates,
-        )
         
-        # reset the timesteps, updates and gradient steps
-        train_state = train_state.replace(timesteps=0, n_updates=0, grad_steps=0)
+
+        
+        # reset the n_updates
+        train_state = train_state.replace(n_updates=0)
 
         # Initialize and reset the environment
         rng, env_rng = jax.random.split(rng) 
@@ -534,7 +526,7 @@ def main():
                 # Compute Q-values for all agents
                 q_vals = jax.vmap(network.apply, in_axes=(None, 0))(
                     train_state.params,
-                    batchify(last_obs, env), 
+                    batchify(last_obs, env.agents), 
                 )  # (num_agents, num_envs, num_actions)
 
                 # retrieve the valid actions
@@ -544,9 +536,9 @@ def main():
                 eps = eps_scheduler(train_state.n_updates)
                 _rngs = jax.random.split(rng_action, env.num_agents)
                 new_action = jax.vmap(eps_greedy_exploration, in_axes=(0, 0, None, 0))(
-                    _rngs, q_vals, eps, batchify(avail_actions, env)
+                    _rngs, q_vals, eps, batchify(avail_actions, env.agents)
                 )
-                actions = unbatchify(new_action, env)
+                actions = unbatchify(new_action, env.agents)
 
                 new_obs, new_env_state, rewards, dones, infos = train_env.batch_step(
                     rng_step, env_state, actions
@@ -554,7 +546,7 @@ def main():
 
                 # add shaped reward
                 shaped_reward = infos.pop("shaped_reward")
-                shaped_reward["__all__"] = batchify(shaped_reward, env).sum(axis=0)
+                shaped_reward["__all__"] = batchify(shaped_reward, env.agents).sum(axis=0)
                 rewards = jax.tree.map(
                     lambda x, y: x + y * rew_shaping_anneal(train_state.timesteps),
                     rewards,
@@ -602,7 +594,7 @@ def main():
                 minibatch = buffer.sample(buffer_state, _rng).experience # collects a minibatch of size buffer_batch_size
 
                 q_next_target = jax.vmap(network.apply, in_axes=(None, 0))(
-                    train_state.target_network_params, batchify(minibatch.second.obs, env)
+                    train_state.target_network_params, batchify(minibatch.second.obs, env.agents)
                 )  # (num_agents, batch_size, ...)
                 q_next_target = jnp.max(q_next_target, axis=-1)  # (batch_size,)
 
@@ -614,13 +606,13 @@ def main():
 
                 def _loss_fn(params):
                     q_vals = jax.vmap(network.apply, in_axes=(None, 0))(
-                        params, batchify(minibatch.first.obs, env)
+                        params, batchify(minibatch.first.obs, env.agents)
                     )  # (num_agents, batch_size, ...)
 
                     # get logits of the chosen actions
                     chosen_action_q_vals = jnp.take_along_axis(
                         q_vals,
-                        batchify(minibatch.first.actions, env)[..., jnp.newaxis],
+                        batchify(minibatch.first.actions, env.agents)[..., jnp.newaxis],
                         axis=-1,
                     ).squeeze()  # (num_agents, batch_size, )
 
@@ -678,7 +670,9 @@ def main():
                 ),
                 lambda train_state: train_state,
                 operand=train_state,
+
             )
+
 
             # UPDATE METRICS
             train_state = train_state.replace(n_updates=train_state.n_updates + 1)
@@ -689,6 +683,7 @@ def main():
                 "General/learning_rate": lr_scheduler(train_state.n_updates),
                 "Losses/loss": loss.mean(),
                 "Values/qvals": qvals.mean(),
+                "General/epsilon": eps_scheduler(train_state.n_updates),
             }
             metrics.update(jax.tree.map(lambda x: x.mean(), infos))
 
@@ -777,10 +772,10 @@ def main():
                     rng, rng_a, rng_s = jax.random.split(rng, 3)
                     q_vals = jax.vmap(network.apply, in_axes=(None, 0))(
                         train_state.params,
-                        batchify(last_obs, env),  # (num_agents, num_envs, num_actions)
+                        batchify(last_obs, env.agents),  # (num_agents, num_envs, num_actions)
                     )  # (num_agents, num_envs, num_actions)
                     actions = jnp.argmax(q_vals, axis=-1)
-                    actions = unbatchify(actions, env)
+                    actions = unbatchify(actions, env.agents)
                     new_obs, new_env_state, rewards, dones, infos = test_env.batch_step(
                         rng_s, env_state, actions
                     )
@@ -816,6 +811,46 @@ def main():
                 evaluation_returns.append(mean_returns)
 
             return evaluation_returns
+
+        # def evaluate_model(rng, train_state):
+        #     if not config.test_during_training:
+        #         return None
+        #     """Help function to test greedy policy during training"""
+
+        #     def _greedy_env_step(step_state, unused):
+        #         last_obs, env_state, rng = step_state
+        #         rng, rng_a, rng_s = jax.random.split(rng, 3)
+        #         q_vals = jax.vmap(network.apply, in_axes=(None, 0))(
+        #             train_state.params,
+        #             batchify(last_obs, test_env.agents),  # (num_agents, num_envs, num_actions)
+        #         )  # (num_agents, num_envs, num_actions)
+        #         actions = jnp.argmax(q_vals, axis=-1)
+        #         actions = unbatchify(actions, test_env.agents)
+        #         new_obs, new_env_state, rewards, dones, infos = test_env.batch_step(
+        #             rng_s, env_state, actions
+        #         )
+        #         step_state = (new_obs, new_env_state, rng)
+        #         return step_state, (rewards, dones, infos)
+
+        #     rng, _rng = jax.random.split(rng)
+        #     init_obs, env_state = test_env.batch_reset(_rng)
+        #     rng, _rng = jax.random.split(rng)
+        #     step_state, (rewards, dones, infos) = jax.lax.scan(
+        #         _greedy_env_step,
+        #         (init_obs, env_state, _rng),
+        #         None,
+        #         config.test_num_steps,
+        #     )
+        #     metrics = {"metrics": jnp.nanmean(
+        #             jnp.where(
+        #                 infos["returned_episode"],
+        #                 infos["returned_episode_returns"],
+        #                 jnp.nan,
+        #             )
+        #         )
+        #     }
+        #     return metrics
+
         
         rng, _rng = jax.random.split(rng)
         test_metrics = evaluate_model(_rng, train_state)
