@@ -148,12 +148,12 @@ class Config:
     alg_name: str = "ippo"
     network_architecture: str = "cnn"
 
-    seq_length: int = 6
+    seq_length: int = 3
     strategy: str = "random"
     layouts: Optional[Sequence[str]] = field(default_factory=lambda: ["asymm_advantages", "smallest_kitchen", "cramped_room", "easy_layout", "square_arena", "no_cooperation"])
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
-    log_interval: int = 1 
+    log_interval: int = 10 
     eval_num_steps: int = 400 # number of steps to evaluate the model
     eval_num_episodes: int = 5 # number of episodes to evaluate the model
     
