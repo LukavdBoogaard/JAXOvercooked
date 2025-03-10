@@ -24,4 +24,5 @@ models/
 .idea
 *.iml
 events.out*
-
+model_*
+*.gif

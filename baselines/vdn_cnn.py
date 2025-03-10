@@ -125,7 +125,7 @@ class Config:
     test_during_training: bool = True
     test_interval: float = 0.05  # as a fraction of updates (e.g., log every 5% of the training process)
     test_num_steps: int = 400
-    test_num_envs: int = 512  # number of episodes to average over
+    test_num_envs: int = 256 # number of episodes to average over
     seed: int = 30
 
     # Sequence settings 
@@ -696,58 +696,32 @@ def main():
                 '''
                 rng, eval_rng = jax.random.split(rng)
                 
-                # evaluate the model
-                test_metrics = jax.lax.cond(
-                    train_state.n_updates
-                    % int(config.num_updates * config.test_interval)
-                    == 0,
-                    lambda _: evaluate_model(_rng, train_state),
-                    lambda _: test_metrics,
-                    operand=None,
-                )
-                for i, eval_metric in enumerate(test_metrics):
-                    metrics[f"Evaluation/evaluation_{config.layout_name[i]}"] = eval_metric
+                def log_metrics(metrics, update_steps, env_counter):
+                    # evaluate the model
+                    test_metrics = evaluate_model(eval_rng, train_state)
+                    for i, eval_metric in enumerate(test_metrics):
+                        metrics[f"Evaluation/evaluation_{config.layout_name[i]}"] = eval_metric
 
-                # log the metrics
-                def callback(args):
-                    metrics, update_steps, env_counter = args
-                    update_steps = int(update_steps)
-                    env_counter = int(env_counter)
-                    real_step = (env_counter - 1) * config.num_updates + update_steps
-                    for k, v in metrics.items():
-                        writer.add_scalar(k, v, real_step)
-                
-                jax.experimental.io_callback(callback, None, (metrics, update_steps, env_counter))
-            
-            evaluate_and_log(rng, train_state.n_updates, test_metrics)
+                    # log the metrics
+                    def callback(args):
+                        metrics, update_steps, env_counter = args
+                        update_steps = int(update_steps)
+                        env_counter = int(env_counter)
+                        real_step = (env_counter - 1) * config.num_updates + update_steps
+                        for k, v in metrics.items():
+                            writer.add_scalar(k, v, real_step)
+                    
+                    jax.experimental.io_callback(callback, None, (metrics, update_steps, env_counter))
+                    return None
                         
+                def do_not_log(metrics, update_steps, env_counter):
+                    return None
 
-            # if config.test_during_training:
-            #     rng, _rng = jax.random.split(rng)
-            #     test_metrics = jax.lax.cond(
-            #         train_state.n_updates
-            #         % int(config.num_updates * config.test_interval)
-            #         == 0,
-            #         lambda _: evaluate_model(_rng, train_state),
-            #         lambda _: test_metrics,
-            #         operand=None,
-            #     )
-            #     metrics.update({"Evaluation/evaluation_" + k: v for k, v in test_metrics.items()})
+                # conditionally evaluate and log the metrics
+                jax.lax.cond((train_state.n_updates % int(config.num_updates * config.test_interval)) == 0, log_metrics, do_not_log, metrics, update_steps, env_counter)
 
-            # # report on wandb if required
-            # if config.wandb_mode != "disabled":
-
-            #     def callback(metrics, seed):
-            #         if config.wandb_log_all_seeds:
-            #             metrics.update(
-            #                 {
-            #                     f"rng{int(seed)}/{k}": v
-            #                     for k, v in metrics.items()
-            #                 }
-            #             )
-            #         wandb.log(metrics, step=metrics["General/update_steps"])
-
-            #     jax.debug.callback(callback, metrics, config.seed)
+            # Evaluate the model and log metrics    
+            evaluate_and_log(rng, train_state.n_updates, test_metrics)
 
             runner_state = (train_state, buffer_state, expl_state, test_metrics, rng)
 
