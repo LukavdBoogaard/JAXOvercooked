@@ -153,8 +153,8 @@ class Config:
     layouts: Optional[Sequence[str]] = field(default_factory=lambda: ["asymm_advantages", "smallest_kitchen", "cramped_room", "easy_layout", "square_arena", "no_cooperation"])
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
-    log_interval: int = 75 # log every 200 calls to update step
-    eval_num_steps: int = 1000 # number of steps to evaluate the model
+    log_interval: int = 1 
+    eval_num_steps: int = 400 # number of steps to evaluate the model
     eval_num_episodes: int = 5 # number of episodes to evaluate the model
     
     anneal_lr: bool = False
