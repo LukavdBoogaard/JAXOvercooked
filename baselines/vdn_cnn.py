@@ -418,7 +418,7 @@ def main():
     rng, agent_rng = jax.random.split(rng)
 
     init_x = jnp.zeros((1, *init_env.observation_space().shape))
-    network_params = network.init(agent_rng, init_x)
+    init_network_params = network.init(agent_rng, init_x)
 
     lr_scheduler = optax.linear_schedule(
         config.lr,
@@ -435,8 +435,8 @@ def main():
 
     train_state = CustomTrainState.create(
         apply_fn=network.apply,
-        params=network_params,
-        target_network_params=network_params,
+        params=init_network_params,
+        target_network_params=init_network_params,
         tx=tx,
     )
 
@@ -477,18 +477,20 @@ def main():
     )  # remove the NUM_ENV dim
     buffer_state = buffer.init(init_timestep_unbatched)
 
-    @partial(jax.jit, static_argnums=(2, 3))
-    def train_on_environment(rng, train_state, train_env, test_env, buffer_state, env_counter):
+    @partial(jax.jit, static_argnums=(2))
+    def train_on_environment(rng, train_state, train_env, env_counter):
         '''
         Trains the agent on a single environment
         @param rng: the random number generator
         @param train_state: the current training state
-        @param env: the environment to train on
-        @param buffer_state: the current buffer state
+        @param train_env: the environment to train on
         returns the updated training state
         '''
 
         print("Training on environment")
+
+        # for each new environment, we want to start with a fresh buffer
+        buffer_state = buffer.init(init_timestep_unbatched)
 
         # reset the learning rate
         lr = lr_scheduler if config.lr_linear_decay else config.lr
@@ -497,16 +499,16 @@ def main():
             optax.radam(learning_rate=lr),
         )
         train_state = train_state.replace(tx=tx)
-        
 
+        # reset the entire training state
+        train_state = train_state.replace(params=init_network_params)
+        train_state = train_state.replace(target_network_params=init_network_params)
         
         # reset the n_updates
         train_state = train_state.replace(n_updates=0)
 
-        # Initialize and reset the environment
-        rng, env_rng = jax.random.split(rng) 
-        reset_rng = jax.random.split(env_rng, config.num_envs) 
-        obsv, env_state = jax.vmap(train_env.reset, in_axes=(0,))(reset_rng) 
+        # Empty the buffer
+        buffer_state = buffer.init(init_timestep_unbatched)
 
         def _update_step(runner_state, unused):
 
@@ -786,51 +788,12 @@ def main():
 
             return evaluation_returns
 
-        # def evaluate_model(rng, train_state):
-        #     if not config.test_during_training:
-        #         return None
-        #     """Help function to test greedy policy during training"""
-
-        #     def _greedy_env_step(step_state, unused):
-        #         last_obs, env_state, rng = step_state
-        #         rng, rng_a, rng_s = jax.random.split(rng, 3)
-        #         q_vals = jax.vmap(network.apply, in_axes=(None, 0))(
-        #             train_state.params,
-        #             batchify(last_obs, test_env.agents),  # (num_agents, num_envs, num_actions)
-        #         )  # (num_agents, num_envs, num_actions)
-        #         actions = jnp.argmax(q_vals, axis=-1)
-        #         actions = unbatchify(actions, test_env.agents)
-        #         new_obs, new_env_state, rewards, dones, infos = test_env.batch_step(
-        #             rng_s, env_state, actions
-        #         )
-        #         step_state = (new_obs, new_env_state, rng)
-        #         return step_state, (rewards, dones, infos)
-
-        #     rng, _rng = jax.random.split(rng)
-        #     init_obs, env_state = test_env.batch_reset(_rng)
-        #     rng, _rng = jax.random.split(rng)
-        #     step_state, (rewards, dones, infos) = jax.lax.scan(
-        #         _greedy_env_step,
-        #         (init_obs, env_state, _rng),
-        #         None,
-        #         config.test_num_steps,
-        #     )
-        #     metrics = {"metrics": jnp.nanmean(
-        #             jnp.where(
-        #                 infos["returned_episode"],
-        #                 infos["returned_episode_returns"],
-        #                 jnp.nan,
-        #             )
-        #         )
-        #     }
-        #     return metrics
-
         
-        rng, _rng = jax.random.split(rng)
-        test_metrics = evaluate_model(_rng, train_state)
+        rng, eval_rng = jax.random.split(rng)
+        test_metrics = evaluate_model(eval_rng, train_state)
 
-        rng, _rng = jax.random.split(rng)
-        obs, env_state = train_env.batch_reset(_rng)
+        rng, reset_rng = jax.random.split(rng)
+        obs, env_state = train_env.batch_reset(reset_rng)
         expl_state = (obs, env_state)
 
         # train
@@ -862,10 +825,10 @@ def main():
         env_counter = 1
 
         for env_rng, train_env, test_env in zip(env_rngs, train_envs, test_envs):
-            runner_state, metrics = train_on_environment(env_rng, train_state, train_env, test_env, buffer_state, env_counter)
+            runner_state, metrics = train_on_environment(env_rng, train_state, train_env, env_counter)
 
-            # unpack the runner state
-            train_state, buffer_state, expl_state, test_metrics, rng = runner_state
+            # update the train state and buffer state
+            train_state = runner_state[0]
 
             # save the model
             path = f"checkpoints/overcooked/{run_name}/model_env_{env_counter}"
