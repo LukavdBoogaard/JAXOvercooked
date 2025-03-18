@@ -107,7 +107,12 @@ class Packnet():
     '''
     Class that implements the Packnet CL-method
     '''
-    def __init__(self, seq_length, prune_instructions=0.5, train_finetune_split=(1,1), prunable_layers=(nn.Conv2d, nn.Linear)):
+    def __init__(self, 
+                 seq_length, 
+                 prune_instructions=0.5, 
+                 train_finetune_split=(1,1), 
+                 prunable_layers=(nn.Conv, nn.Dense)
+            ):
         '''
         Initializes the Packnet class
         @param seq_length: the length of the sequence
@@ -125,42 +130,65 @@ class Packnet():
             self.create_pruning_instructions()
         
         self.PATH = None
-        self.env_counter = 0
+        self.current_task = 0
         self.masks = []  # 3-dimensions: task (list), layer (dict), parameter mask (tensor)
         self.mode = None
+
+    def create_pruning_instructions(self):
+        '''
+        Creates the pruning instructions based on the sequence length
+        '''
+        assert self.seq_length is not None, "Sequence length not provided"
+
+        if not isinstance(self.prune_instructions, list):
+            # Check if the pruning instruction is a percentage 
+            assert 0 < self.prune_instructions < 1, (
+                "Pruning instructions should be a list of percentages"
+                )
+            # Create a list of pruning instructions for each task
+            self.prune_instructions = [self.prune_instructions] * (self.seq_length-1)
+
+        assert len(self.prune_instructions) == self.seq_length-1, (
+            "Must provide pruning instructions for each task"
+            )
+        
+    def layer_is_prunable(self, layer_name):
+        '''
+        Checks if a layer is prunable
+        @param layer_name: the name of the layer
+        returns a boolean indicating whether the layer is prunable
+        '''
+        for prunable_type in self.prunable_layers:
+            if prunable_type in layer_name:
+                return True
+        return False
     
-    def prune(self, model, prune_quantile):
+    def prune(self, params, prune_quantile):
         '''
         Prunes the model based on the pruning instructions
         @param model: the model to prune
         @param prune_quantile: the quantile to prune
         returns the pruned model
         '''
-        all_prunable = jnp.array([])
-        for layer_name, layer_dict in model.params.items():
+        # Create a list for all prunable parameters
+        all_prunable = jnp.array([]) 
+
+        for layer_name, layer_dict in params.items():
             # Check if the layer is prunable 
-            is_prunable = False
-            for prunable_type in self.prunable_layers:
-                if prunable_type in layer_name:
-                    is_prunable = True
-                    break
-            
-            if is_prunable:
+            if self.layer_is_prunable(layer_name):
                 for param_name, param_array in layer_dict.items():
                     # Make sure we don't prune the bias
                     if "bias" not in param_name:
                         full_param_name = f"{layer_name}/{param_name}"
 
-                        # Get the fixed weights for the current task
+                        # Create a mask with all previously fixed weights 
                         prev_mask = jnp.zeros(param_array.shape, dtype=bool)   
-
-                        # Combine masks from previous tasks
                         for task_mask in self.masks:
                             if full_param_name in task_mask:
-                                prev_mask = prev_mask | task_mask[full_param_name]
+                                prev_mask = jnp.logical_or(prev_mask, task_mask[full_param_name])
 
                         # Get parameters not used by previous tasks
-                        p = param_array[~prev_mask]
+                        p = param_array[jnp.logical_not(prev_mask)]
 
                         # Concatenate with existing prunable parameters
                         if p.size > 0: 
@@ -170,48 +198,77 @@ class Packnet():
 
         mask = {}
         new_params = {}
-        for layer_name, layer_dict in model.params.items():
-            # Check if this layer should be pruned
-            is_prunable = False
-            for prunable_type in self.prunable_layers:
-                if prunable_type in layer_name:
-                    is_prunable = True
-                    break
-            
-            new_layer_dict = {}
+        for layer_name, layer_dict in params.items():
+            # Create an empty dictionary for the adapted parameters
+            new_layer = {}
+
             for param_name, param_array in layer_dict.items():
-                if is_prunable and "bias" not in param_name:
+                if self.layer_is_prunable(layer_name) and "bias" not in param_name:
                     full_param_name = f"{layer_name}/{param_name}"
+
+                    # Create a mask with all previously fixed weights
                     prev_mask = jnp.zeros(param_array.shape, dtype=bool)
                     for task_mask in self.masks:
                         if full_param_name in task_mask:
-                            prev_mask = prev_mask | task_mask[full_param_name]
+                            prev_mask = jnp.logical_or(prev_mask, task_mask[full_param_name])
                     
-                    # Create a new mask for the current task
+                    # only keep parameters above the cutoff
                     new_mask = jnp.abs(param_array) >= cutoff
+                    # only keep parameters that are not already pruned
                     new_mask = jnp.logical_and(new_mask, ~prev_mask)
 
-                    # Create a new parameter array with the pruned weights set to 0
+                    # Combine the new mask with the previous mask
                     combined_mask = jnp.logical_or(new_mask, prev_mask)
                     new_param_array = jnp.where(combined_mask, param_array, 0)
 
                     # Store the mask and the new parameter array
                     mask[full_param_name] = new_mask
-                    new_layer_dict[param_name] = new_param_array
+                    new_layer[param_name] = new_param_array
                 else:
-                    new_layer_dict[param_name] = param_array
-                
-            new_params[layer_name] = new_layer_dict
-        
+                    new_layer[param_name] = param_array
+
+            # Store the new parameters for the current layer    
+            new_params[layer_name] = new_layer
+
+        # Store the mask for the current task
         self.masks.append(mask)
+
         return new_params
 
-    def train_mask(self, model): 
+    def train_mask(self, grads): 
         '''
         Zeroes out the gradients of the fixed weights of previous tasks. 
         This mask should be applied after backpropagation and before each optimizer step during training
         '''
-        pass
+        # check if there are any masks to apply
+        if len(self.masks) == 0:
+            return
+        
+        # Otherwise, collect previous masks and zero out those gradients 
+        new_grads = {}
+        for layer_name, layer_dict in grads.items():
+            # Create a new dictionary for the adapted gradients
+            new_layer_grads = {}
+
+            for param_name, grad_array in layer_dict.items():
+                if self.layer_is_prunable(layer_name) and "bias" not in param_name:
+                    full_param_name = f"{layer_name}/{param_name}"
+
+                    # Create a mask with all previously fixed weights
+                    prev_mask = jnp.zeros(grad_array.shape, dtype=bool)
+                    for task_mask in self.masks:
+                        if full_param_name in task_mask:
+                            prev_mask = jnp.logical_or(prev_mask, task_mask[full_param_name])
+                    
+                    # Zero out the gradients for the fixed weights
+                    new_layer_grads[param_name] = grad_array * jnp.logical_not(prev_mask)
+                else:
+                    new_layer_grads[param_name] = grad_array
+            
+            # Store the new gradients for the current layer
+            new_grads[layer_name] = new_layer_grads
+
+        return new_grads
 
     def fine_tune_mask(self, grads):
         '''
@@ -219,40 +276,107 @@ class Packnet():
         This mask should be applied before each optimizer step during fine-tuning
         '''
         assert len(self.masks) > self.env_counter, "Current task index exceeds available masks"
-
+        
+        # Get the mask with the current task's pruned weights
         current_mask = self.masks[self.current_task]
+
+
         masked_grads = {}
-
         for layer_name, layer_dict in grads.items():
-            # Check if the layer is prunable
-            is_prunable = False
-            for prunable_type in self.prunable_layers:
-                if prunable_type in layer_name:
-                    is_prunable = True
-                    break
-
             masked_layer_dict = {}
-            for param_name, param_grad in layer_dict.items():
-                if is_prunable and "bias" not in param_name:
+            for param_name, grad_array in layer_dict.items():
+                if self.layer_is_prunable(layer_name) and "bias" not in param_name:
                     full_param_name = f"{layer_name}/{param_name}"
+
+                    # Create a mask with all previously fixed weights
+                    prev_mask = jnp.zeros(grad_array.shape, dtype=bool)
+                    for task_mask in self.masks:
+                        if full_param_name in task_mask:
+                            prev_mask = jnp.logical_or(prev_mask, task_mask[full_param_name])
                     
+                    # Fix the gradients of the pruned weights of the current task
                     if full_param_name in current_mask:
-                        # Zero out gradients for weights not used in current task
-                        masked_layer_dict[param_name] = param_grad * current_mask[full_param_name]
-                    else:
-                        # If not in mask, zero the entire gradient
-                        masked_layer_dict[param_name] = jnp.zeros_like(param_grad)
+                        # Keep only the gradients of the non-pruned weights
+                        masked_layer_dict[param_name] = grad_array * current_mask[full_param_name]
+                    # Fix the gradient of the fixed weights of previous tasks
+                    elif full_param_name in prev_mask:
+                        # Zero out the gradients of the fixed weights of previous tasks
+                        masked_layer_dict[param_name] = grad_array * jnp.logical_not(prev_mask)
+
                 else:
                     # Keep bias gradients unchanged
-                    masked_layer_dict[param_name] = param_grad
+                    masked_layer_dict[param_name] = grad_array
             
             masked_grads[layer_name] = masked_layer_dict
         
-        return masked_grads            
+        return masked_grads    
 
-    def create_pruning_instructions(self):
-        pass
+    def fix_biases(self, grads):
+        '''
+        fixes the gradients of the prunable bias parameters to 0
+        '''
+        masked_grads = {}
+        for layer_name, layer_dict in grads.items():
+            masked_layer_dict = {}
+            for param_name, grad_array in layer_dict.items():
+                if self.layer_is_prunable(layer_name) and "bias" in param_name:
+                    masked_layer_dict[param_name] = jnp.zeros(grad_array.shape)
+                else:
+                    masked_layer_dict[param_name] = grad_array
+        
+            masked_grads[layer_name] = masked_layer_dict
+
+        return masked_grads
+
     
+    def apply_eval_mask(self, params, task_id):
+        '''
+        Applies the mask of a given task to the model to revert to that network state
+        '''
+        assert len(self.masks) > task_id, "Current task index exceeds available masks"
+
+        masked_params = {}
+
+        # Iterate over prunable layers and collect the masks of previous tasks
+        for layer_name, layer_dict in params.items():
+            for param_name, param_array in layer_dict.items():
+                if self.layer_is_prunable and "bias" not in param_name:
+                    full_param_name = f"{layer_name}/{param_name}"
+                    prev_mask = jnp.zeros(param_array.shape, dtype=bool)
+                    for i in range(0, task_id+1):
+                        prev_mask = jnp.logical_or(prev_mask, self.masks[i][full_param_name])
+
+                    # Zero out all weights that are not in the mask for this task
+                    
+        
+    def mask_remaining_params(self, model):
+        '''
+        Masks the remaining parameters of the model that are not pruned
+        typically called after the last task's initial training phase
+        '''
+        mask = {}
+        for layer_name, layer_dict in model.params.items():
+            for param_name, param_array in layer_dict.items():
+                if self.layer_is_prunable(layer_name) and "bias" not in param_name:
+                    full_param_name = f"{layer_name}/{param_name}"
+                    prev_mask = jnp.zeros(param_array.shape, dtype=bool)
+                    for task_mask in self.masks:
+                        if full_param_name in task_mask:
+                            prev_mask = jnp.logical_or(prev_mask, task_mask[full_param_name])
+                    
+                    # Create a mask for the remaining parameters
+                    new_mask = jnp.logical_not(prev_mask)
+                    mask[full_param_name] = new_mask
+
+        self.masks.append(mask)
+
+    def get_total_epochs(self):
+        return self.train_finetune_split[0] + self.train_finetune_split[1]
+                    
+    
+    
+
+        
 
 class Transition(NamedTuple):
     '''
@@ -720,6 +844,14 @@ def main():
         tx=tx
     )
 
+    
+    def get_shape(x):
+        return x.shape if hasattr(x, "shape") else type(x)
+
+    # This returns a nested structure with each array replaced by its shape.
+    shapes = jax.tree_util.tree_map(get_shape, train_state.params)
+    print(shapes)
+
     @partial(jax.jit, static_argnums=(2))
     def train_on_environment(rng, train_state, env, env_counter):
         '''
@@ -992,6 +1124,11 @@ def main():
                 
                 total_loss, grads = loss_information 
                 avg_grads = jax.tree_util.tree_map(lambda x: jnp.mean(x, axis=0), grads)
+
+                 # This returns a nested structure with each array replaced by its shape.
+                shapes = jax.tree_util.tree_map(get_shape, grads)
+                print("grad shapes", shapes)
+
                 update_state = (train_state, traj_batch, advantages, targets, rng)
                 return update_state, total_loss
 
