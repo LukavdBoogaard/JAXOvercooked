@@ -25,9 +25,7 @@ from jax_marl.wrappers.baselines import LogWrapper
 from jax_marl.environments.overcooked_environment import overcooked_layouts
 from jax_marl.environments.env_selection import generate_sequence
 from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
-from jax_marl.environments.overcooked_environment.layouts import counter_circuit_grid
 from dotenv import load_dotenv
-import hydra
 import os
 os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
 
@@ -187,6 +185,26 @@ def unbatchify(x: jnp.ndarray, agent_list, num_envs, num_actors):
     x = x.reshape((num_actors, num_envs, -1))
     return {a: x[i] for i, a in enumerate(agent_list)}
 
+def calculate_sparsity(params, threshold=1e-5):
+    """
+    Calculate the percentage of parameters that are close to zero
+    """
+    # Flatten the params into a single array
+    flat_params, _ = jax.tree_util.tree_flatten(params)
+    
+    # Concatenate all weights into one large array
+    all_weights = jnp.concatenate([jnp.ravel(p) for p in flat_params])
+    
+    # Count weights below threshold
+    num_small_weights = jnp.sum(jnp.abs(all_weights) < threshold)
+    total_weights = all_weights.size
+    
+    # Compute percentage of small weights
+    sparsity_percentage = 100 * (num_small_weights / total_weights)
+
+    print(f"Sparsity: {sparsity_percentage:.2f}%")
+    
+    return sparsity_percentage
     
 ############################
 ##### MAIN FUNCTION    #####
@@ -203,11 +221,12 @@ def main():
     config = tyro.cli(Config)
 
     # generate a sequence of tasks
-    seq_length = config.seq_length
-    strategy = config.strategy
-    layouts = config.layouts
-    config.env_kwargs, config.layout_name = generate_sequence(seq_length, strategy, layout_names=layouts, seed=config.seed)
-
+    config.env_kwargs, config.layout_name = generate_sequence(
+        sequence_length=config.seq_length, 
+        strategy=config.strategy, 
+        layout_names=config.layouts, 
+        seed=config.seed
+    )
 
     for layout_config in config.env_kwargs:
         layout_name = layout_config["layout"]
@@ -873,6 +892,7 @@ def main():
             metric["General/update_step"] = update_step
             metric["General/env_step"] = update_step * config.num_steps * config.num_envs
             metric["General/learning_rate"] = linear_schedule(update_step * config.num_minibatches * config.update_epochs)
+            metric["General/sparsity"] = calculate_sparsity(train_state.params)
 
             # Losses section
             total_loss, (value_loss, loss_actor, entropy) = loss_info

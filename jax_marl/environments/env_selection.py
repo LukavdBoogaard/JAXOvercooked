@@ -37,6 +37,11 @@ def generate_sequence(sequence_length=2, strategy='random', layout_names=None, s
     env_kwargs = [{'layout': layout} for layout in selected_layouts]
     layout_names = selected_layouts
 
+    # add a number to the layout name indicating the order in the sequence
+    for i, layout_name in enumerate(layout_names):
+        layout_names[i] = str(i) + "__" + layout_name
+
+    print("Selected layouts: ", layout_names)
     return env_kwargs, layout_names
     
 
