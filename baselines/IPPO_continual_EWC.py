@@ -1159,7 +1159,7 @@ def main():
 
             # --- Compute new Fisher, then update ewc_state for next tasks ---
             fisher = compute_fisher(train_state, envs[i], r, config.normalize_fisher, n_samples=256)
-            ewc_state = update_ewc_state(cl_state, train_state.params, fisher)
+            cl_state = update_ewc_state(cl_state, train_state.params, fisher)
 
             # Generate & log a GIF after finishing task i
             states = record_gif_of_episode(config, train_state, envs[i], network, env_idx=i)
