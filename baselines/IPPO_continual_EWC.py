@@ -275,8 +275,8 @@ def compute_ewc_loss(params: FrozenDict,
     0.5 * ewc_coef * sum_k [ fisher_k * (params - old_params_k)^2 ].
     """
 
-    def penalty(p, old_p, f):
-        return f * (p - old_p) ** 2
+    def penalty(p, old_p, f, w):
+        return w * f * (p - old_p) ** 2
 
     # Sum across all tasks
     total_penalty = 0.0
