@@ -17,6 +17,7 @@ docs/
 tmp/
 *-checkpoint.py
 wandb/
+runs/
 outputs/
 models/
 *.dat

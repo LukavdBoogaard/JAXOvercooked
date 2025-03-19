@@ -10,10 +10,10 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 from dotenv import load_dotenv
-from flax.core.frozen_dict import freeze, unfreeze
+from flax import struct
+from flax.core.frozen_dict import freeze, unfreeze, FrozenDict
 from flax.linen.initializers import constant, orthogonal
 from flax.training.train_state import TrainState
-from gymnax.wrappers.purerl import LogWrapper
 
 from jax_marl.environments.env_selection import generate_sequence
 from jax_marl.environments.overcooked_environment import overcooked_layouts
@@ -30,7 +30,7 @@ import tyro
 from tensorboardX import SummaryWriter
 
 
-# Enable compile logging
+# Enable compile logging if desired
 # jax.log_compiles(True)
 
 
@@ -119,10 +119,6 @@ class Transition(NamedTuple):
     # info: jnp.ndarray # additional information
 
 
-from flax.core.frozen_dict import FrozenDict
-from flax import struct
-
-
 @struct.dataclass
 class CLState:
     old_params: FrozenDict
@@ -163,6 +159,7 @@ def build_reg_weights(params: FrozenDict, regularize_critic: bool = False) -> Fr
             return jnp.zeros_like(x)
         # Otherwise, regularize (the trunk).
         return jnp.ones_like(x)
+
     return jax.tree_util.tree_map_with_path(_assign_reg_weight, params)
 
 
@@ -258,7 +255,6 @@ class Config:
     total_timesteps: float = 8e6
     update_epochs: int = 8
     num_minibatches: int = 8
-    eval_freq: int = 200
     gamma: float = 0.99
     gae_lambda: float = 0.95
     clip_eps: float = 0.2
@@ -277,13 +273,16 @@ class Config:
     seq_length: int = 6
     strategy: str = "random"
     layouts: Optional[Sequence[str]] = field(
-        default_factory=lambda: ["asymm_advantages", "smallest_kitchen", "cramped_room", "easy_layout", "square_arena",
-                                 "no_cooperation"])
+        default_factory=lambda: [
+            "asymm_advantages", "smallest_kitchen", "cramped_room",
+            "easy_layout", "square_arena", "no_cooperation"
+        ]
+    )
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
-    log_interval: int = 75 # log every 200 calls to update step
-    eval_num_steps: int = 1000 # number of steps to evaluate the model
-    eval_num_episodes: int = 5 # number of episodes to evaluate the model
+    log_interval: int = 75  # log every n calls to update step
+    eval_num_steps: int = 1000  # number of steps to evaluate the model
+    eval_num_episodes: int = 5  # number of episodes to evaluate the model
 
     anneal_lr: bool = False
     seed: int = 30
@@ -633,7 +632,7 @@ def main():
     rew_shaping_anneal = optax.linear_schedule(
         init_value=1.,
         end_value=0.,
-        transition_steps=reward_shaping_horizon
+        transition_steps=config.total_timesteps
     )
 
     network = ActorCritic(temp_env.action_space().n, activation=config.activation, use_multihead=config.use_multihead,
@@ -919,7 +918,7 @@ def main():
                                 - config.ent_coef * entropy
                                 + l2_loss
                         )
-                        return total_loss, (value_loss, loss_actor, entropy)
+                        return total_loss, (value_loss, loss_actor, entropy, l2_loss)
 
                     # returns a function with the same parameters as loss_fn that calculates the gradient of the loss function
                     grad_fn = jax.value_and_grad(_loss_fn, has_aux=True)
@@ -1009,11 +1008,12 @@ def main():
                 update_step * config.num_minibatches * config.update_epochs)
 
             # Losses section
-            total_loss, (value_loss, loss_actor, entropy) = loss_info
+            total_loss, (value_loss, loss_actor, entropy, l2_loss) = loss_info
             metric["Losses/total_loss"] = total_loss.mean()
             metric["Losses/value_loss"] = value_loss.mean()
             metric["Losses/actor_loss"] = loss_actor.mean()
             metric["Losses/entropy"] = entropy.mean()
+            metric["Losses/reg_loss"] = l2_loss.mean()
 
             # Rewards section
             metric["General/shaped_reward_agent0"] = metric["shaped_reward"]["agent_0"]
@@ -1042,23 +1042,23 @@ def main():
                     evaluations = evaluate_model(train_state_eval, network, eval_rng, env_idx)
                     for i, evaluation in enumerate(evaluations):
                         metric[f"Evaluation/{config.layout_name[i]}"] = evaluation
-                    
+
                     def callback(args):
                         metric, update_step, env_counter = args
                         update_step = int(update_step)
                         env_counter = int(env_counter)
-                        real_step = (env_counter-1) * config.num_updates + update_step
+                        real_step = (env_counter - 1) * config.num_updates + update_step
                         for key, value in metric.items():
                             writer.add_scalar(key, value, real_step)
 
                     jax.experimental.io_callback(callback, None, (metric, update_step, env_counter))
                     return None
-                
+
                 def do_not_log(metric, update_step):
                     return None
-                
+
                 jax.lax.cond((update_step % config.log_interval) == 0, log_metrics, do_not_log, metric, update_step)
-            
+
             # Evaluate the model and log the metrics
             evaluate_and_log(rng=rng, update_step=update_step)
 
@@ -1110,10 +1110,10 @@ def main():
             # ----- Generate & log a GIF after finishing task i -----
             # We'll do a purely python-level rollout on the same environment.
             # Use OvercookedVisualizer or env.render() as needed:
-            states = run_eval_episode(config, train_state, envs[i], network, env_idx=i)
+            states = record_gif_of_episode(config, train_state, envs[i], network, env_idx=i)
             visualizer.animate(states, agent_view_size=5, task_idx=i, task_name=envs[i].name, exp_dir=exp_dir)
 
-             # save the model
+            # save the model
             path = f"checkpoints/overcooked/L2/{run_name}/model_env_{env_counter}"
             save_params(path, train_state)
 
@@ -1121,7 +1121,7 @@ def main():
             env_counter += 1
 
         return runner_state
-    
+
     def save_params(path, train_state):
         '''
         Saves the parameters of the network
@@ -1154,7 +1154,7 @@ def sample_discrete_action(key, action_space):
     return jax.random.randint(key, (1,), 0, num_actions)
 
 
-def run_eval_episode(config, train_state, env, network, env_idx=0, max_steps=300):
+def record_gif_of_episode(config, train_state, env, network, env_idx=0, max_steps=300):
     rng = jax.random.PRNGKey(0)
     rng, env_rng = jax.random.split(rng)
     obs, state = env.reset(env_rng)
