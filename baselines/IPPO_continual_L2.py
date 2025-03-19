@@ -268,6 +268,7 @@ class Config:
     alg_name: str = "IPPO"
     use_task_id: bool = False
     use_multihead: bool = False
+    regularize_critic: bool = False
 
     # Environment
     seq_length: int = 6
@@ -1032,7 +1033,7 @@ def main():
 
             # Evaluation section
             for i in range(len(config.layout_name)):
-                metric[f"Evaluation/{i}_{config.layout_name[i]}"] = jnp.nan
+                metric[f"Evaluation/{config.layout_name[i]}"] = jnp.nan
 
             def evaluate_and_log(rng, update_step):
                 rng, eval_rng = jax.random.split(rng)
@@ -1142,7 +1143,7 @@ def main():
     rng, train_rng = jax.random.split(rng)
 
     # -------------- Initialize CLState once ---------------
-    cl_state = init_cl_state(train_state.params, regularize_critic=False)
+    cl_state = init_cl_state(train_state.params, regularize_critic=config.regularize_critic)
 
     # apply the loop_over_envs function to the environments
     loop_over_envs(train_rng, train_state, cl_state, envs)

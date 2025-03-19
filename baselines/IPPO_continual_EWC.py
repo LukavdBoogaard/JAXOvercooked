@@ -143,15 +143,17 @@ from flax import struct
 class EWCState:
     old_params: List[FrozenDict]  # list of parameter snapshots
     fishers: List[FrozenDict]  # list of corresponding Fishers
+    reg_weights: FrozenDict # a mask: ones for parameters to regularize, zeros otherwise
 
 
 def copy_params(params):
     return jax.tree_util.tree_map(lambda x: x.copy(), params)
 
 
-def init_cl_state(params: FrozenDict) -> EWCState:
+def init_cl_state(params: FrozenDict, regularize_critic: bool) -> EWCState:
     """Start with empty lists; we will append after finishing each task."""
-    return EWCState(old_params=[], fishers=[])
+    reg_weights = build_reg_weights(params, regularize_critic)
+    return EWCState(old_params=[], fishers=[], reg_weights=reg_weights)
 
 
 def update_ewc_state(ewc_state: EWCState,
@@ -161,7 +163,8 @@ def update_ewc_state(ewc_state: EWCState,
     """Append the new snapshot of parameters and its Fisher to the lists."""
     return EWCState(
         old_params=ewc_state.old_params + [copy_params(new_params)],
-        fishers=ewc_state.fishers + [new_fisher]
+        fishers=ewc_state.fishers + [new_fisher],
+        reg_weights=ewc_state.reg_weights
     )
 
 
@@ -182,7 +185,7 @@ def build_reg_weights(params: FrozenDict, regularize_critic: bool = False) -> Fr
 
 
 # @partial(jax.jit, static_argnums=(1,3))
-def compute_fisher(train_state, env, key, n_samples=256):
+def compute_fisher(train_state, env, key, normalize_fisher=False, n_samples=256):
     """
     Compute a diagonal Fisher approximation by sampling from the current policy.
     For a multi-agent setting, we compute the Fisher for each agent and average them.
@@ -237,26 +240,27 @@ def compute_fisher(train_state, env, key, n_samples=256):
     # OPTIONAL NORMALIZATION STEP:
     # Compute the mean magnitude and normalize so that fisher_accum has "average" scale ~1
     # -------------------------------------------------------------------
-    # Sum up all entries of fisher_accum:
-    # total_abs = jax.tree_util.tree_reduce(
-    #     lambda acc, x: acc + jnp.sum(jnp.abs(x)),
-    #     fisher_accum,
-    #     0.0
-    # )
-    # # Count total number of parameters
-    # param_count = jax.tree_util.tree_reduce(
-    #     lambda acc, x: acc + x.size,
-    #     fisher_accum,
-    #     0
-    # )
-    # # Mean absolute value across entire Fisher
-    # fisher_mean = total_abs / (param_count + 1e-8)
-    #
-    # # Rescale all entries so the mean is ~1
-    # def normalize(x):
-    #     return x / (fisher_mean + 1e-8)
-    #
-    # fisher_accum = jax.tree_util.tree_map(normalize, fisher_accum)
+    if normalize_fisher:
+        # Sum up all entries of fisher_accum:
+        total_abs = jax.tree_util.tree_reduce(
+            lambda acc, x: acc + jnp.sum(jnp.abs(x)),
+            fisher_accum,
+            0.0
+        )
+        # Count total number of parameters
+        param_count = jax.tree_util.tree_reduce(
+            lambda acc, x: acc + x.size,
+            fisher_accum,
+            0
+        )
+        # Mean absolute value across entire Fisher
+        fisher_mean = total_abs / (param_count + 1e-8)
+
+        # Rescale all entries so the mean is ~1
+        def normalize(x):
+            return x / (fisher_mean + 1e-8)
+
+        fisher_accum = jax.tree_util.tree_map(normalize, fisher_accum)
     # -------------------------------------------------------------------
 
     return fisher_accum
@@ -265,7 +269,7 @@ def compute_fisher(train_state, env, key, n_samples=256):
 def compute_ewc_loss(params: FrozenDict,
                      ewc_state: EWCState,
                      ewc_coef: float
-                     ) -> jnp.ndarray:
+                     ) -> float:
     """
     Sum of EWC penalties over all previously learned tasks:
     0.5 * ewc_coef * sum_k [ fisher_k * (params - old_params_k)^2 ].
@@ -277,8 +281,8 @@ def compute_ewc_loss(params: FrozenDict,
     # Sum across all tasks
     total_penalty = 0.0
     for old_p, fsh in zip(ewc_state.old_params, ewc_state.fishers):
-        ewc_term_tree = jax.tree_util.tree_map(lambda p_, op_, ff_: penalty(p_, op_, ff_),
-                                               params, old_p, fsh)
+        ewc_term_tree = jax.tree_util.tree_map(lambda p_, op_, ff_, w: penalty(p_, op_, ff_, w),
+                                               params, old_p, fsh, ewc_state.reg_weights)
         ewc_term = jax.tree_util.tree_reduce(lambda acc, x: acc + x.sum(), ewc_term_tree, 0.0)
         total_penalty += 0.5 * ewc_coef * ewc_term
     return total_penalty
@@ -314,6 +318,8 @@ class Config:
     use_task_id: bool = False
     use_multihead: bool = False
     shared_backbone: bool = False
+    normalize_fisher: bool = False
+    regularize_critic: bool = False
 
     # Environment
     seq_length: int = 6
@@ -1078,7 +1084,7 @@ def main():
 
             # Evaluation section
             for i in range(len(config.layout_name)):
-                metric[f"Evaluation/{i}_{config.layout_name[i]}"] = jnp.nan
+                metric[f"Evaluation/{config.layout_name[i]}"] = jnp.nan
 
             def evaluate_and_log(rng, update_step):
                 rng, eval_rng = jax.random.split(rng)
@@ -1152,7 +1158,7 @@ def main():
             train_state = runner_state[0]
 
             # --- Compute new Fisher, then update ewc_state for next tasks ---
-            fisher = compute_fisher(train_state, envs[i], r, n_samples=256)
+            fisher = compute_fisher(train_state, envs[i], r, config.normalize_fisher, n_samples=256)
             ewc_state = update_ewc_state(cl_state, train_state.params, fisher)
 
             # Generate & log a GIF after finishing task i
@@ -1186,7 +1192,7 @@ def main():
 
     # Run the model
     rng, train_rng = jax.random.split(rng)
-    cl_state = init_cl_state(train_state.params)
+    cl_state = init_cl_state(train_state.params, regularize_critic=config.regularize_critic)
 
     # apply the loop_over_envs function to the environments
     loop_over_envs(train_rng, train_state, cl_state, envs)
