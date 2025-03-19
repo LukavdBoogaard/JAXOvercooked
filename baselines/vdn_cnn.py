@@ -674,7 +674,17 @@ def main():
                 operand=train_state,
 
             )
-
+            
+            def compute_action_gap(q_vals):
+                '''
+                Computes the action gap
+                @param q_vals: the Q-values
+                returns the action gap
+                '''
+                top_2_q_vals, _ = jax.lax.top_k(q_vals, 2)
+                top_q = top_2_q_vals[0]
+                second_q = top_2_q_vals[1]
+                return top_q - second_q
 
             # UPDATE METRICS
             train_state = train_state.replace(n_updates=train_state.n_updates + 1)
@@ -686,6 +696,7 @@ def main():
                 "Losses/loss": loss.mean(),
                 "Values/qvals": qvals.mean(),
                 "General/epsilon": eps_scheduler(train_state.n_updates),
+                "General/action_gap": compute_action_gap(qvals),
             }
             metrics.update(jax.tree.map(lambda x: x.mean(), infos))
 
