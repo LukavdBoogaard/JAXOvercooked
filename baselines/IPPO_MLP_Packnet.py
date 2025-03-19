@@ -339,6 +339,7 @@ class Packnet():
 
         # Iterate over prunable layers and collect the masks of previous tasks
         for layer_name, layer_dict in params.items():
+            masked_layer_dict = {}
             for param_name, param_array in layer_dict.items():
                 if self.layer_is_prunable and "bias" not in param_name:
                     full_param_name = f"{layer_name}/{param_name}"
@@ -347,6 +348,14 @@ class Packnet():
                         prev_mask = jnp.logical_or(prev_mask, self.masks[i][full_param_name])
 
                     # Zero out all weights that are not in the mask for this task
+                    masked_layer_dict[param_name] = param_array * prev_mask
+                else:
+                    masked_layer_dict[param_name] = param_array
+                
+            masked_params[layer_name] = masked_layer_dict
+
+        return masked_params
+
                     
         
     def mask_remaining_params(self, model):
@@ -374,9 +383,7 @@ class Packnet():
         return self.train_finetune_split[0] + self.train_finetune_split[1]
                     
     
-    
 
-        
 
 class Transition(NamedTuple):
     '''
