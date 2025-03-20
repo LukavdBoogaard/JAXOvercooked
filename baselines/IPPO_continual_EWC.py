@@ -332,6 +332,7 @@ class Config:
     shared_backbone: bool = False
     normalize_fisher: bool = False
     regularize_critic: bool = False
+    n_fisher_samples: int = 256
 
     # Environment
     seq_length: int = 6
@@ -1170,7 +1171,7 @@ def main():
             train_state = runner_state[0]
 
             # --- Compute new Fisher, then update ewc_state for next tasks ---
-            fisher = compute_fisher(train_state, envs[i], r, config.use_task_id, seq_length, i, config.normalize_fisher, n_samples=256)
+            fisher = compute_fisher(train_state, envs[i], r, config.use_task_id, seq_length, i, config.normalize_fisher, n_samples=config.n_fisher_samples)
             cl_state = update_ewc_state(cl_state, train_state.params, fisher)
 
             # Generate & log a GIF after finishing task i
