@@ -198,87 +198,153 @@ def build_reg_weights(params: FrozenDict, regularize_critic: bool = False) -> Fr
 
 
 # @partial(jax.jit, static_argnums=(1,3))
-def compute_fisher(train_state, env, key, use_task_id, seq_length, env_idx, normalize_fisher=False, n_samples=256):
+def compute_fisher_with_rollouts(
+        config,
+        train_state,
+        env,
+        network,
+        env_idx=0,
+        key: jax.random.PRNGKey = jax.random.PRNGKey(0),
+        max_episodes=5,
+        max_steps=300,
+        normalize_fisher=False
+):
     """
-    Compute a diagonal Fisher approximation by sampling from the current policy.
-    For a multi-agent setting, we compute the Fisher for each agent and average them.
+    Perform up to `max_episodes` rollouts (each up to `max_steps` steps),
+    computing the diagonal Fisher approximation by accumulating:
+       E[ grad(log π(a|s))^2 ]
+    for all environment steps across all agents.
+
+    Args:
+      config: your config containing use_task_id, seq_length, etc.
+      train_state: the current model (params + optimizer).
+      env: the environment (multi-agent or single-agent).
+      network: your ActorCritic module with apply_fn = network.apply.
+      env_idx: which task index (for appending task ID if use_task_id == True).
+      key: random key.
+      max_episodes: how many episodes to roll out for the Fisher estimate.
+      max_steps: max steps per episode.
+      normalize_fisher: optionally rescale the Fisher to have average magnitude ~ 1.
+
+    Returns:
+      fisher_accum: a FrozenDict with the same structure as params,
+                    containing the average of grad(log π)^2 across episodes/steps.
     """
-
-    def single_sample_fisher(params, obs, act):
-        def log_prob_sum(params_):
-            pi, _ = train_state.apply_fn(params_, obs)
-            return pi.log_prob(act).sum()
-
-        grad_log_p = jax.grad(log_prob_sum)(params)
-        return jax.tree_util.tree_map(lambda g: g ** 2, grad_log_p)
-
-    # Initialize fisher_accum to zeros
-    fisher_accum_init = jax.tree_util.tree_map(lambda x: jnp.zeros_like(x), train_state.params)
-
-    # Get the number of agents from the environment (assumes env.agents exists)
-    num_agents = len(env.agents)
-
-    def body_fn(carry, _):
-        rng, fisher_accum = carry
-        rng, rng_obs, rng_act = jax.random.split(rng, 3)
-        obs, _ = env.reset(rng_obs)  # Reset the environment to get an initial observation
-
-        # For each agent, compute the Fisher information
-        agent_fishers = []
-        for agent in env.agents:
-            # Flatten the observation for the agent
-            obs_flat = obs[agent].flatten()
-            if use_task_id:  # pass use_task_id and seq_length as parameters to compute_fisher
-                onehot = make_task_onehot(env_idx, seq_length)
-                obs_flat = jnp.concatenate([obs_flat, onehot], axis=-1)
-            obs_flat = jnp.expand_dims(obs_flat, 0)
-            pi, _ = train_state.apply_fn(train_state.params, obs_flat)
-            # Use a split of rng_act for each agent to ensure different samples
-            act = pi.sample(seed=rng_act)
-            agent_fishers.append(single_sample_fisher(train_state.params, obs_flat, act))
-
-        # Average the Fisher over all agents
-        fisher_sample = jax.tree_util.tree_map(lambda *fs: sum(fs) / num_agents, *agent_fishers)
-        # Accumulate the Fisher information
-        fisher_accum = jax.tree_util.tree_map(lambda f, fs: f + fs, fisher_accum, fisher_sample)
-        return (rng, fisher_accum), None
-
-    (rng_final, fisher_accum), _ = jax.lax.scan(
-        body_fn,
-        init=(key, fisher_accum_init),
-        xs=None,
-        length=n_samples
+    # Initialize fisher_accum to zeros matching shape of your parameters:
+    fisher_accum_init = jax.tree_util.tree_map(
+        lambda x: jnp.zeros_like(x),
+        train_state.params
     )
 
-    # Average the Fisher across samples
-    fisher_accum = jax.tree_util.tree_map(lambda x: x / n_samples, fisher_accum)
+    def actor_log_prob_sum(params, obs_dict, actions_dict):
+        """
+        Sums the log-probs of each agent’s chosen action.
+        This is what we'll differentiate to get a diagonal Fisher approximation.
+        """
+        total_lp = 0.0
+        # For each agent in obs_dict, compute log-prob of the action
+        for agent_id in obs_dict.keys():
+            pi, _ = network.apply(params, obs_dict[agent_id], env_idx=env_idx)
+            # shape might be (1,) so we sum or squeeze
+            log_p = pi.log_prob(actions_dict[agent_id])
+            total_lp += jnp.sum(log_p)  # or just log_p if it's scalar
+        return total_lp
 
-    # -------------------------------------------------------------------
-    # OPTIONAL NORMALIZATION STEP:
-    # Compute the mean magnitude and normalize so that fisher_accum has "average" scale ~1
-    # -------------------------------------------------------------------
-    if normalize_fisher:
-        # Sum up all entries of fisher_accum:
+    def single_episode_fisher(rng_ep, fisher_accum):
+        """
+        Runs one rollout (up to max_steps).
+        Each step we accumulate grad(log π(a|s))^2 for all agents.
+        """
+        rng, rng_reset = jax.random.split(rng_ep)
+        obs, state = env.reset(rng_reset)
+        done = False
+        step_count = 0
+
+        while (not done) and (step_count < max_steps):
+            # Prepare each agent’s observation as a (1, obs_dim) batch
+            # This part is copied from your record_gif_of_episode, minus the 'states' tracking:
+            flat_obs = {}
+            for agent_id, obs_v in obs.items():
+                expected_shape = env.observation_space().shape
+                if obs_v.ndim == len(expected_shape):
+                    obs_b = jnp.expand_dims(obs_v, axis=0)  # (1, ...)
+                else:
+                    obs_b = obs_v  # already batched
+                flattened = jnp.reshape(obs_b, (obs_b.shape[0], -1))
+
+                if config.use_task_id:
+                    onehot = make_task_onehot(env_idx, config.seq_length)
+                    onehot = jnp.expand_dims(onehot, axis=0)  # shape (1, seq_length)
+                    flattened = jnp.concatenate([flattened, onehot], axis=1)
+                flat_obs[agent_id] = flattened
+
+            # Sample an action for each agent
+            act_keys = jax.random.split(rng, env.num_agents)
+            rng, rng_step = jax.random.split(rng)
+
+            actions = {}
+            for i, agent_id in enumerate(env.agents):
+                pi, _ = network.apply(train_state.params, flat_obs[agent_id], env_idx=env_idx)
+                sampled_action = jnp.squeeze(pi.sample(seed=act_keys[i]), axis=0)
+                actions[agent_id] = sampled_action
+
+            # Compute grad of sum of log-probs wrt params
+            def _grad_log_prob(p_):
+                return actor_log_prob_sum(p_, flat_obs, actions)
+
+            grads = jax.grad(_grad_log_prob)(train_state.params)
+            # Square them for the diagonal Fisher approximation
+            grad_sqr = jax.tree_util.tree_map(lambda g: g**2, grads)
+
+            # Accumulate
+            fisher_accum = jax.tree_util.tree_map(
+                lambda fa, gs: fa + gs,
+                fisher_accum, grad_sqr
+            )
+
+            # Step environment
+            next_obs, next_state, reward, done_info, _info = env.step(rng_step, state, actions)
+            done = done_info["__all__"]
+
+            obs, state = next_obs, next_state
+            step_count += 1
+
+        return fisher_accum, step_count
+
+    # Main loop over multiple episodes
+    fisher_accum = fisher_accum_init
+    total_steps = 0
+    rngs = jax.random.split(key, max_episodes)
+
+    for ep_i in range(max_episodes):
+        fisher_accum, ep_steps = single_episode_fisher(rngs[ep_i], fisher_accum)
+        total_steps += ep_steps
+
+    # Average over the total number of environment steps
+    # so we get E[ grad^2 ] rather than a sum.
+    if total_steps > 0:
+        fisher_accum = jax.tree_util.tree_map(
+            lambda x: x / float(total_steps),
+            fisher_accum
+        )
+
+    # Optional normalization so the average magnitude is ~1
+    if normalize_fisher and total_steps > 0:
         total_abs = jax.tree_util.tree_reduce(
             lambda acc, x: acc + jnp.sum(jnp.abs(x)),
             fisher_accum,
             0.0
         )
-        # Count total number of parameters
         param_count = jax.tree_util.tree_reduce(
             lambda acc, x: acc + x.size,
             fisher_accum,
             0
         )
-        # Mean absolute value across entire Fisher
         fisher_mean = total_abs / (param_count + 1e-8)
-
-        # Rescale all entries so the mean is ~1
-        def normalize(x):
-            return x / (fisher_mean + 1e-8)
-
-        fisher_accum = jax.tree_util.tree_map(normalize, fisher_accum)
-    # -------------------------------------------------------------------
+        fisher_accum = jax.tree_util.tree_map(
+            lambda x: x / (fisher_mean + 1e-8),
+            fisher_accum
+        )
 
     return fisher_accum
 
@@ -332,7 +398,6 @@ class Config:
     shared_backbone: bool = False
     normalize_fisher: bool = False
     regularize_critic: bool = False
-    n_fisher_samples: int = 256
 
     # Environment
     seq_length: int = 6
@@ -1171,7 +1236,8 @@ def main():
             train_state = runner_state[0]
 
             # --- Compute new Fisher, then update ewc_state for next tasks ---
-            fisher = compute_fisher(train_state, envs[i], r, config.use_task_id, seq_length, i, config.normalize_fisher, n_samples=config.n_fisher_samples)
+            # fisher = compute_fisher_with_rollouts(config, train_state, envs[i], network, i, r, config.use_task_id, seq_length, i, config.normalize_fisher)
+            fisher = compute_fisher_with_rollouts(config, train_state, envs[i], network, i, r, normalize_fisher=config.normalize_fisher)
             cl_state = update_ewc_state(cl_state, train_state.params, fisher)
 
             # Generate & log a GIF after finishing task i
