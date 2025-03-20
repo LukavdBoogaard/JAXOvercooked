@@ -56,12 +56,15 @@ class ActorCritic(nn.Module):
 
         if self.shared_backbone:
             # New architecture: shared trunk and multihead logic
-            self.fc1 = nn.Dense(128, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0), name="common_dense1")
-            self.fc2 = nn.Dense(128, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0), name="common_dense2")
-            self.critic_fc1 = nn.Dense(128, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+            self.fc1 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0), name="common_dense1")
+            self.fc2 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0), name="common_dense2")
+            self.fc3 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0), name="common_dense3")
+            self.critic_fc1 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
                                        name="critic_dense1")
-            self.critic_fc2 = nn.Dense(128, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+            self.critic_fc2 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
                                        name="critic_dense2")
+            self.critic_fc3 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+                                       name="critic_dense3")
             actor_head_size = self.action_dim * (self.num_tasks if self.use_multihead else 1)
             critic_head_size = 1 * (self.num_tasks if self.use_multihead else 1)
             self.actor_head = nn.Dense(actor_head_size, kernel_init=orthogonal(0.01), bias_init=constant(0.0),
@@ -70,20 +73,23 @@ class ActorCritic(nn.Module):
                                         name="critic_head")
         else:
             # Original architecture: separate actor/critic branches
-            self.actor_dense1 = nn.Dense(128, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))
-            self.actor_dense2 = nn.Dense(128, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))
-            self.actor_out = nn.Dense(self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0))
-            self.critic_dense1 = nn.Dense(128, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))
-            self.critic_dense2 = nn.Dense(128, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))
-            self.critic_out = nn.Dense(1, kernel_init=orthogonal(1.0), bias_init=constant(0.0))
+            self.actor_dense1 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0), name="actor_dense1")
+            self.actor_dense2 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0), name="actor_dense2")
+            self.actor_dense3 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0), name="actor_dense3")
+            self.actor_out = nn.Dense(self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0), name="actor_head")
+            self.critic_dense1 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0), name="critic_dense1")
+            self.critic_dense2 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0), name="critic_dense2")
+            self.critic_dense3 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0), name="critic_dense3")
+            self.critic_out = nn.Dense(1, kernel_init=orthogonal(1.0), bias_init=constant(0.0), name="critic_head")
 
     def __call__(self, x, env_idx=0):
 
         if self.shared_backbone:
-            # New logic with shared trunk
             x = self.fc1(x)
             x = self.activation_fn(x)
             x = self.fc2(x)
+            x = self.activation_fn(x)
+            x = self.fc3(x)
             x = self.activation_fn(x)
             if self.use_multihead:
                 # Concatenate and then select the correct head
@@ -96,6 +102,8 @@ class ActorCritic(nn.Module):
             v = self.activation_fn(v)
             v = self.critic_fc2(v)
             v = self.activation_fn(v)
+            v = self.critic_fc3(v)
+            v = self.activation_fn(v)
             if self.use_multihead:
                 critic_concat = self.critic_head(v)
                 v = choose_head(critic_concat, self.num_tasks, env_idx)
@@ -104,10 +112,11 @@ class ActorCritic(nn.Module):
             v = jnp.squeeze(v, axis=-1)
             return pi, v
         else:
-            # Original logic
             actor = self.actor_dense1(x)
             actor = self.activation_fn(actor)
             actor = self.actor_dense2(actor)
+            actor = self.activation_fn(actor)
+            actor = self.actor_dense3(actor)
             actor = self.activation_fn(actor)
             actor_logits = self.actor_out(actor)
 
@@ -116,6 +125,8 @@ class ActorCritic(nn.Module):
             critic = self.critic_dense1(x)
             critic = self.activation_fn(critic)
             critic = self.critic_dense2(critic)
+            critic = self.activation_fn(critic)
+            critic = self.critic_dense3(critic)
             critic = self.activation_fn(critic)
             value = self.critic_out(critic)
             value = jnp.squeeze(value, axis=-1)
@@ -141,8 +152,8 @@ from flax import struct
 
 @struct.dataclass
 class EWCState:
-    old_params: List[FrozenDict]  # list of parameter snapshots
-    fishers: List[FrozenDict]  # list of corresponding Fishers
+    old_params: FrozenDict
+    fisher: FrozenDict
     reg_weights: FrozenDict # a mask: ones for parameters to regularize, zeros otherwise
 
 
@@ -151,9 +162,11 @@ def copy_params(params):
 
 
 def init_cl_state(params: FrozenDict, regularize_critic: bool) -> EWCState:
-    """Start with empty lists; we will append after finishing each task."""
+    """Initialize old_params with the current parameters, fisher with zeros."""
+    old_params = copy_params(params)
     reg_weights = build_reg_weights(params, regularize_critic)
-    return EWCState(old_params=[], fishers=[], reg_weights=reg_weights)
+    fisher = jax.tree_map(lambda x: jnp.zeros_like(x), old_params)
+    return EWCState(old_params=old_params, fisher=fisher, reg_weights=reg_weights)
 
 
 def update_ewc_state(ewc_state: EWCState,
@@ -162,8 +175,8 @@ def update_ewc_state(ewc_state: EWCState,
                      ) -> EWCState:
     """Append the new snapshot of parameters and its Fisher to the lists."""
     return EWCState(
-        old_params=ewc_state.old_params + [copy_params(new_params)],
-        fishers=ewc_state.fishers + [new_fisher],
+        old_params=copy_params(new_params),
+        fisher=new_fisher,
         reg_weights=ewc_state.reg_weights
     )
 
@@ -185,7 +198,7 @@ def build_reg_weights(params: FrozenDict, regularize_critic: bool = False) -> Fr
 
 
 # @partial(jax.jit, static_argnums=(1,3))
-def compute_fisher(train_state, env, key, normalize_fisher=False, n_samples=256):
+def compute_fisher(train_state, env, key, use_task_id, seq_length, env_idx, normalize_fisher=False, n_samples=256):
     """
     Compute a diagonal Fisher approximation by sampling from the current policy.
     For a multi-agent setting, we compute the Fisher for each agent and average them.
@@ -215,6 +228,10 @@ def compute_fisher(train_state, env, key, normalize_fisher=False, n_samples=256)
         for agent in env.agents:
             # Flatten the observation for the agent
             obs_flat = obs[agent].flatten()
+            if use_task_id:  # pass use_task_id and seq_length as parameters to compute_fisher
+                onehot = make_task_onehot(env_idx, seq_length)
+                obs_flat = jnp.concatenate([obs_flat, onehot], axis=-1)
+            obs_flat = jnp.expand_dims(obs_flat, 0)
             pi, _ = train_state.apply_fn(train_state.params, obs_flat)
             # Use a split of rng_act for each agent to ensure different samples
             act = pi.sample(seed=rng_act)
@@ -271,21 +288,16 @@ def compute_ewc_loss(params: FrozenDict,
                      ewc_coef: float
                      ) -> float:
     """
-    Sum of EWC penalties over all previously learned tasks:
-    0.5 * ewc_coef * sum_k [ fisher_k * (params - old_params_k)^2 ].
+    Compute EWC penalty: 0.5 * ewc_coef * sum( fisher * (params - old_params)^2 )
     """
 
     def penalty(p, old_p, f, w):
         return w * f * (p - old_p) ** 2
 
-    # Sum across all tasks
-    total_penalty = 0.0
-    for old_p, fsh in zip(ewc_state.old_params, ewc_state.fishers):
-        ewc_term_tree = jax.tree_util.tree_map(lambda p_, op_, ff_, w: penalty(p_, op_, ff_, w),
-                                               params, old_p, fsh, ewc_state.reg_weights)
-        ewc_term = jax.tree_util.tree_reduce(lambda acc, x: acc + x.sum(), ewc_term_tree, 0.0)
-        total_penalty += 0.5 * ewc_coef * ewc_term
-    return total_penalty
+    ewc_term_tree = jax.tree_util.tree_map(lambda p_, op_, ff_, w: penalty(p_, op_, ff_, w),
+                                           params, ewc_state.old_params, ewc_state.fisher, ewc_state.reg_weights)
+    ewc_term = jax.tree_util.tree_reduce(lambda acc, x: acc + x.sum(), ewc_term_tree, 0.0)
+    return 0.5 * ewc_coef * ewc_term
 
 
 def make_task_onehot(task_idx: int, num_tasks: int) -> jnp.ndarray:
@@ -1158,7 +1170,7 @@ def main():
             train_state = runner_state[0]
 
             # --- Compute new Fisher, then update ewc_state for next tasks ---
-            fisher = compute_fisher(train_state, envs[i], r, config.normalize_fisher, n_samples=256)
+            fisher = compute_fisher(train_state, envs[i], r, config.use_task_id, seq_length, i, config.normalize_fisher, n_samples=256)
             cl_state = update_ewc_state(cl_state, train_state.params, fisher)
 
             # Generate & log a GIF after finishing task i
