@@ -293,8 +293,6 @@ def compute_fisher_with_rollouts(
                 expected_shape = env.observation_space().shape
                 if obs_v.ndim == len(expected_shape):
                     obs_b = jnp.expand_dims(obs_v, axis=0)  # (1, ...)
-                else:
-                    obs_b = obs_v  # already batched
                 flattened = jnp.reshape(obs_b, (obs_b.shape[0], -1))
 
                 if config.use_task_id:
