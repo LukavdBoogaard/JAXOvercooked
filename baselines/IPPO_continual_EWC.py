@@ -72,15 +72,30 @@ class ActorCritic(nn.Module):
             self.critic_head = nn.Dense(critic_head_size, kernel_init=orthogonal(1.0), bias_init=constant(0.0),
                                         name="critic_head")
         else:
-            # Original architecture: separate actor/critic branches
-            self.actor_dense1 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0), name="actor_dense1")
-            self.actor_dense2 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0), name="actor_dense2")
-            self.actor_dense3 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0), name="actor_dense3")
-            self.actor_out = nn.Dense(self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0), name="actor_head")
-            self.critic_dense1 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0), name="critic_dense1")
-            self.critic_dense2 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0), name="critic_dense2")
-            self.critic_dense3 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0), name="critic_dense3")
-            self.critic_out = nn.Dense(1, kernel_init=orthogonal(1.0), bias_init=constant(0.0), name="critic_head")
+            # Separate trunk: each branch is its own network
+
+            # Actor branch
+            self.actor_dense1 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+                                         name="actor_dense1")
+            self.actor_dense2 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+                                         name="actor_dense2")
+            self.actor_dense3 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+                                         name="actor_dense3")
+            # If using multihead, output dimension is action_dim*num_tasks.
+            actor_out_dim = self.action_dim * self.num_tasks if self.use_multihead else self.action_dim
+            self.actor_out = nn.Dense(actor_out_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0),
+                                      name="actor_head")
+
+            # Critic branch
+            self.critic_dense1 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+                                          name="critic_dense1")
+            self.critic_dense2 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+                                          name="critic_dense2")
+            self.critic_dense3 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+                                          name="critic_dense3")
+            critic_out_dim = 1 * self.num_tasks if self.use_multihead else 1
+            self.critic_out = nn.Dense(critic_out_dim, kernel_init=orthogonal(1.0), bias_init=constant(0.0),
+                                       name="critic_head")
 
     def __call__(self, x, env_idx=0):
 
@@ -112,23 +127,32 @@ class ActorCritic(nn.Module):
             v = jnp.squeeze(v, axis=-1)
             return pi, v
         else:
+            # Actor branch: separate trunk
             actor = self.actor_dense1(x)
             actor = self.activation_fn(actor)
             actor = self.actor_dense2(actor)
             actor = self.activation_fn(actor)
             actor = self.actor_dense3(actor)
             actor = self.activation_fn(actor)
-            actor_logits = self.actor_out(actor)
-
+            actor_all = self.actor_out(actor)
+            if self.use_multihead:
+                actor_logits = choose_head(actor_all, self.num_tasks, env_idx)
+            else:
+                actor_logits = actor_all
             pi = distrax.Categorical(logits=actor_logits)
 
+            # Critic branch: separate trunk
             critic = self.critic_dense1(x)
             critic = self.activation_fn(critic)
             critic = self.critic_dense2(critic)
             critic = self.activation_fn(critic)
             critic = self.critic_dense3(critic)
             critic = self.activation_fn(critic)
-            value = self.critic_out(critic)
+            critic_all = self.critic_out(critic)
+            if self.use_multihead:
+                value = choose_head(critic_all, self.num_tasks, env_idx)
+            else:
+                value = critic_all
             value = jnp.squeeze(value, axis=-1)
             return pi, value
 
@@ -154,17 +178,17 @@ from flax import struct
 class EWCState:
     old_params: FrozenDict
     fisher: FrozenDict
-    reg_weights: FrozenDict # a mask: ones for parameters to regularize, zeros otherwise
+    reg_weights: FrozenDict  # a mask: ones for parameters to regularize, zeros otherwise
 
 
 def copy_params(params):
     return jax.tree_util.tree_map(lambda x: x.copy(), params)
 
 
-def init_cl_state(params: FrozenDict, regularize_critic: bool) -> EWCState:
+def init_cl_state(params: FrozenDict, regularize_critic: bool, regularize_heads: bool) -> EWCState:
     """Initialize old_params with the current parameters, fisher with zeros."""
     old_params = copy_params(params)
-    reg_weights = build_reg_weights(params, regularize_critic)
+    reg_weights = build_reg_weights(params, regularize_critic, regularize_heads)
     fisher = jax.tree_map(lambda x: jnp.zeros_like(x), old_params)
     return EWCState(old_params=old_params, fisher=fisher, reg_weights=reg_weights)
 
@@ -181,13 +205,14 @@ def update_ewc_state(ewc_state: EWCState,
     )
 
 
-def build_reg_weights(params: FrozenDict, regularize_critic: bool = False) -> FrozenDict:
+def build_reg_weights(params: FrozenDict, regularize_critic: bool = False, regularize_heads: bool = True) -> FrozenDict:
     def _assign_reg_weight(path, x):
         # Join the keys in the path to a string.
         path_str = "/".join(str(key) for key in path)
         # Exclude head parameters: do not regularize if parameter is in actor_head or critic_head.
-        if "actor_head" in path_str or "critic_head" in path_str:
-            return jnp.zeros_like(x)
+        if not regularize_heads:
+            if "actor_head" in path_str or "critic_head" in path_str:
+                return jnp.zeros_like(x)
         # If we're not regularizing the critic, then exclude any parameter from critic branches.
         if not regularize_critic and "critic" in path_str.lower():
             return jnp.zeros_like(x)
@@ -206,7 +231,7 @@ def compute_fisher_with_rollouts(
         env_idx=0,
         key: jax.random.PRNGKey = jax.random.PRNGKey(0),
         max_episodes=5,
-        max_steps=300,
+        max_steps=500,
         normalize_fisher=False
 ):
     """
@@ -294,7 +319,7 @@ def compute_fisher_with_rollouts(
 
             grads = jax.grad(_grad_log_prob)(train_state.params)
             # Square them for the diagonal Fisher approximation
-            grad_sqr = jax.tree_util.tree_map(lambda g: g**2, grads)
+            grad_sqr = jax.tree_util.tree_map(lambda g: g ** 2, grads)
 
             # Accumulate
             fisher_accum = jax.tree_util.tree_map(
@@ -375,7 +400,7 @@ def make_task_onehot(task_idx: int, num_tasks: int) -> jnp.ndarray:
 
 @dataclass
 class Config:
-    reg_coef: float = 300.0
+    reg_coef: float = 5e7
     lr: float = 3e-4
     num_envs: int = 16
     num_steps: int = 128
@@ -398,6 +423,7 @@ class Config:
     shared_backbone: bool = False
     normalize_fisher: bool = False
     regularize_critic: bool = False
+    regularize_heads: bool = True
 
     # Environment
     seq_length: int = 6
@@ -413,6 +439,7 @@ class Config:
     log_interval: int = 75  # log every n calls to update step
     eval_num_steps: int = 1000  # number of steps to evaluate the model
     eval_num_episodes: int = 5  # number of episodes to evaluate the model
+    gif_len: int = 300
 
     anneal_lr: bool = False
     seed: int = 30
@@ -614,8 +641,8 @@ def main():
 
         return padded_envs
 
-    @partial(jax.jit, static_argnums=(1))
-    def evaluate_model(train_state, network, key, env_idx):
+    @partial(jax.jit, static_argnums=(2))
+    def evaluate_model(train_state, key, env_idx):
         '''
         Evaluates the model by running 10 episodes on all environments and returns the average reward
         @param train_state: the current state of the training
@@ -623,7 +650,7 @@ def main():
         returns the average reward
         '''
 
-        def run_episode_while(env, key_r, network, network_params, max_steps=1000):
+        def run_episode_while(env, key_r, max_steps=1000):
             """
             Run a single episode using jax.lax.while_loop
             """
@@ -693,7 +720,7 @@ def main():
                 # Environment step
                 next_obs, next_state, reward, done_step, info = env.step(key_s, state_env, actions)
                 done = done_step["__all__"]
-                reward = reward["agent_0"]
+                reward = reward["agent_0"]  # Common reward
                 total_reward += reward
                 step_count += 1
 
@@ -721,11 +748,8 @@ def main():
         for env in envs:
             env = make(config.env_name, layout=env)  # Create the environment
 
-            # network.init(key_a, init_x)  # initializes the network with the observation space
-            network_params = train_state.params
-
             # Run k episodes
-            all_rewards = jax.vmap(lambda k: run_episode_while(env, k, network_params, config.eval_num_steps))(
+            all_rewards = jax.vmap(lambda k: run_episode_while(env, k, config.eval_num_steps))(
                 jax.random.split(key, config.eval_num_episodes)
             )
 
@@ -797,7 +821,7 @@ def main():
     )
 
     @partial(jax.jit, static_argnums=(3))
-    def train_on_environment(rng, train_state, cl_state, env_idx, env_counter):
+    def train_on_environment(rng, train_state, cl_state, env_idx):
         '''
         Trains the network using IPPO
         @param rng: random number generator
@@ -1169,7 +1193,7 @@ def main():
                 train_state_eval = jax.tree_util.tree_map(lambda x: x.copy(), train_state)
 
                 def log_metrics(metric, update_step):
-                    evaluations = evaluate_model(train_state_eval, network, eval_rng, env_idx)
+                    evaluations = evaluate_model(train_state_eval, eval_rng, env_idx)
                     for i, evaluation in enumerate(evaluations):
                         metric[f"Evaluation/{config.layout_name[i]}"] = evaluation
 
@@ -1181,7 +1205,7 @@ def main():
                         for key, value in metric.items():
                             writer.add_scalar(key, value, real_step)
 
-                    jax.experimental.io_callback(callback, None, (metric, update_step, env_counter))
+                    jax.experimental.io_callback(callback, None, (metric, update_step, env_idx + 1))
                     return None
 
                 def do_not_log(metric, update_step):
@@ -1227,29 +1251,25 @@ def main():
 
         visualizer = OvercookedVisualizer()
 
-        env_counter = 1
-
         runner_state = None
         for i, (r, _) in enumerate(zip(sub_rngs, envs)):
             # --- Train on environment i using the *current* ewc_state ---
-            runner_state, metric = train_on_environment(r, train_state, cl_state, i, env_counter)
+            runner_state, metric = train_on_environment(r, train_state, cl_state, i)
             train_state = runner_state[0]
 
             # --- Compute new Fisher, then update ewc_state for next tasks ---
             # fisher = compute_fisher_with_rollouts(config, train_state, envs[i], network, i, r, config.use_task_id, seq_length, i, config.normalize_fisher)
-            fisher = compute_fisher_with_rollouts(config, train_state, envs[i], network, i, r, normalize_fisher=config.normalize_fisher)
+            fisher = compute_fisher_with_rollouts(config, train_state, envs[i], network, i, r,
+                                                  normalize_fisher=config.normalize_fisher)
             cl_state = update_ewc_state(cl_state, train_state.params, fisher)
 
             # Generate & log a GIF after finishing task i
-            states = record_gif_of_episode(config, train_state, envs[i], network, env_idx=i)
+            states = record_gif_of_episode(config, train_state, envs[i], network, env_idx=i, max_steps=config.gif_len)
             visualizer.animate(states, agent_view_size=5, task_idx=i, task_name=envs[i].name, exp_dir=exp_dir)
 
             # save the model
-            path = f"checkpoints/overcooked/EWC/{run_name}/model_env_{env_counter}"
+            path = f"checkpoints/overcooked/EWC/{run_name}/model_env_{i + 1}"
             save_params(path, train_state)
-
-            # update the environment counter
-            env_counter += 1
 
         return runner_state
 
@@ -1271,7 +1291,9 @@ def main():
 
     # Run the model
     rng, train_rng = jax.random.split(rng)
-    cl_state = init_cl_state(train_state.params, regularize_critic=config.regularize_critic)
+    cl_state = init_cl_state(train_state.params,
+                             regularize_critic=config.regularize_critic,
+                             regularize_heads=config.regularize_heads)
 
     # apply the loop_over_envs function to the environments
     loop_over_envs(train_rng, train_state, cl_state, envs)
