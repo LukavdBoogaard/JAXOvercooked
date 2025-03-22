@@ -378,7 +378,7 @@ def make_task_onehot(task_idx: int, num_tasks: int) -> jnp.ndarray:
 
 @dataclass
 class Config:
-    reg_coef: float = 5e7
+    reg_coef: float = 2e4
     lr: float = 3e-4
     num_envs: int = 16
     num_steps: int = 128
