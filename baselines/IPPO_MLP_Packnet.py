@@ -130,7 +130,7 @@ class Packnet():
             self.create_pruning_instructions()
         
         self.PATH = None
-        self.current_task = 0
+        self.current_task = -1
         self.masks = []  # 3-dimensions: task (list), layer (dict), parameter mask (tensor)
         self.mode = None
 
@@ -159,7 +159,7 @@ class Packnet():
         returns a boolean indicating whether the layer is prunable
         '''
         for prunable_type in self.prunable_layers:
-            if prunable_type in layer_name:
+            if prunable_type.__name__ in layer_name:
                 return True
         return False
     
@@ -174,9 +174,11 @@ class Packnet():
         all_prunable = jnp.array([]) 
 
         for layer_name, layer_dict in params.items():
+            print("layer_name: ", layer_name)
             # Check if the layer is prunable 
             if self.layer_is_prunable(layer_name):
                 for param_name, param_array in layer_dict.items():
+                    print("param_name: ", param_name)
                     # Make sure we don't prune the bias
                     if "bias" not in param_name:
                         full_param_name = f"{layer_name}/{param_name}"
@@ -188,7 +190,10 @@ class Packnet():
                                 prev_mask = jnp.logical_or(prev_mask, task_mask[full_param_name])
 
                         # Get parameters not used by previous tasks
-                        p = param_array[jnp.logical_not(prev_mask)]
+                        flat_mask = prev_mask.ravel()
+                        flat_array = param_array.ravel()
+                        indices = jnp.where(jnp.logical_not(flat_mask))
+                        p = flat_array[indices]
 
                         # Concatenate with existing prunable parameters
                         if p.size > 0: 
@@ -232,8 +237,8 @@ class Packnet():
 
         # Store the mask for the current task
         self.masks.append(mask)
-
-        return new_params
+        new_param_dict = {"params": new_params}
+        return new_param_dict
 
     def train_mask(self, grads): 
         '''
@@ -242,7 +247,7 @@ class Packnet():
         '''
         # check if there are any masks to apply
         if len(self.masks) == 0:
-            return
+            return {"params": grads}
         
         # Otherwise, collect previous masks and zero out those gradients 
         new_grads = {}
@@ -268,14 +273,18 @@ class Packnet():
             # Store the new gradients for the current layer
             new_grads[layer_name] = new_layer_grads
 
-        return new_grads
+        new_grad_dict = {"params": new_grads}
+        return new_grad_dict
 
     def fine_tune_mask(self, grads):
         '''
         Zeroes out the gradient of the pruned weights of the current task and previously fixed weights 
         This mask should be applied before each optimizer step during fine-tuning
         '''
-        assert len(self.masks) > self.env_counter, "Current task index exceeds available masks"
+        assert len(self.masks) > self.current_task, "Current task index exceeds available masks"
+
+        if len(self.masks) == 0:
+            return {"params": grads}
         
         # Get the mask with the current task's pruned weights
         current_mask = self.masks[self.current_task]
@@ -309,7 +318,8 @@ class Packnet():
             
             masked_grads[layer_name] = masked_layer_dict
         
-        return masked_grads    
+        new_grad_dict = {"params": masked_grads}
+        return new_grad_dict    
 
     def fix_biases(self, grads):
         '''
@@ -326,9 +336,9 @@ class Packnet():
         
             masked_grads[layer_name] = masked_layer_dict
 
-        return masked_grads
+        new_grad_dict = {"params": masked_grads}
+        return new_grad_dict
 
-    
     def apply_eval_mask(self, params, task_id):
         '''
         Applies the mask of a given task to the model to revert to that network state
@@ -354,9 +364,7 @@ class Packnet():
                 
             masked_params[layer_name] = masked_layer_dict
 
-        return masked_params
-
-                    
+        return masked_params                
         
     def mask_remaining_params(self, model):
         '''
@@ -383,6 +391,57 @@ class Packnet():
         return self.train_finetune_split[0] + self.train_finetune_split[1]
                     
     
+##########################################
+# TESTS TO SEE IF THE PACKNET CLASS WORKS
+##########################################
+
+# Create a small model
+
+# class SmallModel(nn.Module):
+#     action_dim: Sequence[int]
+#     activation: str = "tanh"
+
+#     @nn.compact
+#     def __call__(self, x):
+#         if self.activation == "relu":
+#             activation = nn.relu
+#         else:
+#             activation = nn.tanh
+
+#         # ACTOR  
+#         dense = nn.Dense(
+#             32, # number of neurons
+#             kernel_init=orthogonal(np.sqrt(2)), 
+#             bias_init=constant(0.0) # sets the bias initialization to a constant value of 0
+#         )(x) # applies a dense layer to the input x
+
+#         dense = activation(dense)
+
+#         dense = nn.Dense(
+#             self.action_dim, 
+#             kernel_init=orthogonal(0.01), 
+#             bias_init=constant(0.0)
+#         )(dense)
+
+#         return distrax.Categorical(logits=dense)
+
+# # Create a small model 
+# model = SmallModel(action_dim=2)
+# print(model)
+
+# # Initialize the model
+# rng = jax.random.PRNGKey(0)
+# rng, init_rng = jax.random.split(rng)
+# init_x = jnp.zeros([1,2,3,4,5,6])
+# params = model.init(init_rng, init_x)
+
+# # Create a Packnet object
+# packnet = Packnet(seq_length=3, prune_instructions=0.5)
+
+# # Prune the model
+# pruned_params = packnet.prune(params["params"], 0.5)
+# print(pruned_params)
+
 
 
 class Transition(NamedTuple):
@@ -416,6 +475,12 @@ class Config:
     env_name: str = "overcooked"
     alg_name: str = "ippo"
 
+    # Packnet settings
+    train_epochs: int = 8
+    finetune_epochs: int = 2
+    finetune_lr: float = 1e-4
+    finetune_timesteps: int = 8e4
+
     seq_length: int = 6
     strategy: str = "random"
     layouts: Optional[Sequence[str]] = field(default_factory=lambda: ["asymm_advantages", "smallest_kitchen", "cramped_room", "easy_layout", "square_arena", "no_cooperation"])
@@ -439,6 +504,7 @@ class Config:
     num_actors: int = 0
     num_updates: int = 0
     minibatch_size: int = 0
+    finetune_updates: int = 0
 
     
 ############################
@@ -810,6 +876,7 @@ def main():
     temp_env = envs[0]
     config.num_actors = temp_env.num_agents * config.num_envs
     config.num_updates = config.total_timesteps // config.num_steps // config.num_envs
+    config.finetune_updates = config.finetune_timesteps // config.num_steps // config.num_envs
     config.minibatch_size = (config.num_actors * config.num_steps) // config.num_minibatches
 
     def linear_schedule(count):
@@ -851,13 +918,18 @@ def main():
         tx=tx
     )
 
-    
-    def get_shape(x):
-        return x.shape if hasattr(x, "shape") else type(x)
+    # Initialize the Packnet class
+    packnet = Packnet(seq_length=config.seq_length, 
+                      prune_instructions=0.5,
+                      train_finetune_split=(config.train_epochs, config.finetune_epochs),
+                      prunable_layers=[nn.Dense])
 
-    # This returns a nested structure with each array replaced by its shape.
-    shapes = jax.tree_util.tree_map(get_shape, train_state.params)
-    print(shapes)
+    # def get_shape(x):
+    #     return x.shape if hasattr(x, "shape") else type(x)
+
+    # # This returns a nested structure with each array replaced by its shape.
+    # shapes = jax.tree_util.tree_map(get_shape, train_state.params)
+    # print(shapes)
 
     @partial(jax.jit, static_argnums=(2))
     def train_on_environment(rng, train_state, env, env_counter):
@@ -883,7 +955,7 @@ def main():
         
         # TRAIN 
         # @profile
-        def _update_step(runner_state, unused):
+        def _update_step(runner_state, unused, masking_fn):
             '''
             perform a single update step in the training loop
             @param runner_state: the carry state that contains all important training information
@@ -1015,14 +1087,14 @@ def main():
 
             # UPDATE NETWORK
             # @profile
-            def _update_epoch(update_state, unused):
+            def _update_epoch(update_state, unused, masking_fn):
                 '''
                 performs a single update epoch in the training loop
                 @param update_state: the current state of the update
                 returns the updated update_state and the total loss
                 '''
                 
-                def _update_minbatch(train_state, batch_info):
+                def _update_minibatch(train_state, batch_info, masking_fn):
                     '''
                     performs a single update minibatch in the training loop
                     @param train_state: the current state of the training
@@ -1030,7 +1102,7 @@ def main():
                     returns the updated train_state and the total loss
                     '''
                     # unpack the batch information
-                    traj_batch, advantages, targets = batch_info
+                    traj_batch, advantages, targets, = batch_info
                     
                     # @profile
                     def _loss_fn(params, traj_batch, gae, targets):
@@ -1083,12 +1155,14 @@ def main():
                     # call the grad_fn function to get the total loss and the gradients
                     total_loss, grads = grad_fn(train_state.params, traj_batch, advantages, targets)
 
-                    loss_information = total_loss, grads
+                    # Zero out the gradients of the pruned parameters
+                    grads = masking_fn(grads["params"])
+                    print("grads", grads)
 
                     # apply the gradients to the network
                     train_state = train_state.apply_gradients(grads=grads)
 
-                    # Of course we also need to add the network to the carry here
+                    loss_information = total_loss, grads
                     return train_state, loss_information
                 
                 
@@ -1124,17 +1198,13 @@ def main():
                 )
 
                 train_state, loss_information = jax.lax.scan(
-                    f=_update_minbatch, 
+                    f=lambda state, minibatch: _update_minibatch(state, minibatch, masking_fn), 
                     init=train_state,
                     xs=minibatches
                 )
                 
                 total_loss, grads = loss_information 
                 avg_grads = jax.tree_util.tree_map(lambda x: jnp.mean(x, axis=0), grads)
-
-                 # This returns a nested structure with each array replaced by its shape.
-                shapes = jax.tree_util.tree_map(get_shape, grads)
-                print("grad shapes", shapes)
 
                 update_state = (train_state, traj_batch, advantages, targets, rng)
                 return update_state, total_loss
@@ -1143,12 +1213,12 @@ def main():
             update_state = (train_state, traj_batch, advantages, targets, rng)
 
             update_state, loss_info = jax.lax.scan( 
-                f=_update_epoch, 
+                f= lambda state, _: _update_epoch(state, None, masking_fn), 
                 init=update_state, 
                 xs=None, 
                 length=config.update_epochs
             )
-
+        
             # unpack update_state
             train_state, traj_batch, advantages, targets, rng = update_state
 
@@ -1226,15 +1296,35 @@ def main():
 
         rng, train_rng = jax.random.split(rng)
 
-        # initialize a carrier that keeps track of the states and observations of the agents
+        # run the training loop for a number of updates
+        masking_fn = packnet.train_mask
         runner_state = (train_state, env_state, obsv, 0, train_rng)
-        
-        # apply the _update_step function a series of times, while keeping track of the state 
         runner_state, metric = jax.lax.scan(
-            f=_update_step, 
+            f=lambda state, _: _update_step(state, None, masking_fn), 
             init=runner_state, 
             xs=None, 
             length=config.num_updates
+        )
+
+        # after training, we prune the model
+        new_params = packnet.prune(train_state.params["params"], prune_quantile=0.8)
+        train_state = train_state.replace(params=new_params)
+        
+        # We fine-tune the model for a number of epochs
+        finetune_tx = optax.chain(
+            optax.clip_by_global_norm(config.max_grad_norm), 
+            optax.adam(learning_rate=config.finetune_lr, eps=1e-5)
+        )
+        train_state = train_state.replace(tx=finetune_tx)
+
+        # run the training loop for a number of epochs
+        masking_fn = packnet.fine_tune_mask
+        runner_state = (train_state, env_state, obsv, 0, train_rng)
+        runner_state, metric = jax.lax.scan(
+            f=lambda state, _: _update_step(state, None, masking_fn), 
+            init=runner_state, 
+            xs=None, 
+            length=config.finetune_epochs
         )
 
         # Return the runner state after the training loop, and the metric arrays
