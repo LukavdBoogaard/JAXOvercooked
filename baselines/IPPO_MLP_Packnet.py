@@ -131,8 +131,23 @@ class Packnet():
         
         self.PATH = None
         self.current_task = -1
-        self.masks = []  # 3-dimensions: task (list), layer (dict), parameter mask (tensor)
         self.mode = None
+
+        self.masks = None
+
+    def init_masks(self, params):
+        '''
+        Initializes the masks for the model
+        '''
+        masks = {}
+        for layer_name, layer_dict in params.items():
+            layer_mask = {}
+            for param_name, param_array in layer_dict.items():
+                layer_mask[param_name] = jnp.zeros((self.seq_length,) + param_array.shape, dtype=bool) # creates a (seq_length, param_array.shape) mask
+            masks[layer_name] = layer_mask
+        self.masks = masks
+    
+            
 
     def create_pruning_instructions(self):
         '''
@@ -162,6 +177,9 @@ class Packnet():
             if prunable_type.__name__ in layer_name:
                 return True
         return False
+
+    def get_prev_mask(self, layer_name, param_name):
+        pass
     
     def prune(self, params, prune_quantile):
         '''
@@ -170,6 +188,12 @@ class Packnet():
         @param prune_quantile: the quantile to prune
         returns the pruned model
         '''
+        # Create a combined mask from all previous tasks
+        if len(self.masks) == 0:
+            combined_mask = jax.tree_util.tree_map(lambda p: jnp.zeros_like(p, dtype=bool), params)
+        else:
+            combined_mask = jax.tree_util.tree_map(lambda *masks: jnp.logical_or.reduce(masks), *self.masks)
+
         # Create a list for all prunable parameters
         all_prunable = jnp.array([]) 
 
@@ -190,10 +214,7 @@ class Packnet():
                                 prev_mask = jnp.logical_or(prev_mask, task_mask[full_param_name])
 
                         # Get parameters not used by previous tasks
-                        flat_mask = prev_mask.ravel()
-                        flat_array = param_array.ravel()
-                        indices = jnp.where(jnp.logical_not(flat_mask))
-                        p = flat_array[indices]
+                        p = jnp.where(~prev_mask, param_array, 0)
 
                         # Concatenate with existing prunable parameters
                         if p.size > 0: 
