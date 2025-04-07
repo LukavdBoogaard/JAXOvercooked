@@ -20,9 +20,16 @@ source .venv/bin/activate
 .venv\Scripts\activate.bat
 ```
 
-
 Then, install the requirements: 
 ``` 
+pip install -r requirements.txt
+```
+(for Mac: first remove the [cuda12] in requirements.txt)
+
+Another option is to install with conda:
+```
+conda create -n jaxovercooked python=3.10
+conda activate jaxovercooked
 pip install -r requirements.txt
 ```
 
