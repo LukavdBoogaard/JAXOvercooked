@@ -3,8 +3,9 @@ Implementation of multiple Multi-Agent Reinforcement Learning (MARL) methods on 
 
 ![IPPO gif](./overcooked_cramped_room_new.gif)
 
-## IPPO Implementation
-To run the IPPO implementation, first create a virtual environment 
+
+## Install
+First create a virtual environment 
 ``` 
 python3.10 -m venv .venv
 ```
@@ -19,13 +20,21 @@ source .venv/bin/activate
 .venv\Scripts\activate.bat
 ```
 
-
 Then, install the requirements: 
 ``` 
 pip install -r requirements.txt
 ```
+(for Mac: first remove the [cuda12] in requirements.txt)
 
-After this, the IPPO implementation can be run from the base folder:
+Another option is to install with conda:
+```
+conda create -n jaxovercooked python=3.10
+conda activate jaxovercooked
+pip install -r requirements.txt
+```
+
+## Running IPPO
+After installing, the IPPO implementation can be run from the base folder:
 ```
 python -m baselines.IPPO_original
 python -m baselines.IPPO_continual
