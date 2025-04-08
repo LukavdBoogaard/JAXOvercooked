@@ -254,7 +254,6 @@ class Packnet():
             if prunable_type.__name__ in layer_name:
                 return True
         return False
-
     
     def prune(self, params, prune_quantile, state: PacknetState):
         '''
@@ -278,61 +277,51 @@ class Packnet():
         combined_mask = self.combine_masks(state.masks, state.current_task)
         
         # Create a list for all prunable parameters
-        all_prunable = jnp.array([]) 
-
+        all_prunable = jnp.array([])
         for layer_name, layer_dict in params.items():
-            # Check if the layer is prunable 
-            if self.layer_is_prunable(layer_name):
-                for param_name, param_array in layer_dict.items():
-                    # Make sure we don't prune the bias
-                    if "bias" in param_name:
-                        continue
-                    
+            for param_name, param_array in layer_dict.items():
+                if (self.layer_is_prunable(layer_name)) and ("bias" not in param_name):
                     # get the combined mask for this layer
-                    prev_mask_leaf = combined_mask[layer_name][param_name]   
+                    prev_mask_leaf = combined_mask[layer_name][param_name]
 
                     # Get parameters not used by previous tasks
-                    p = jnp.where(~prev_mask_leaf, param_array, 0)
+                    p = jnp.where(~prev_mask_leaf, param_array, jnp.nan)
 
                     # Concatenate with existing prunable parameters
                     if p.size > 0: 
                         all_prunable = jnp.concatenate([all_prunable.reshape(-1), p.reshape(-1)], axis=0)
-                        
-        cutoff = jnp.quantile(jnp.abs(all_prunable), prune_quantile)
 
+        cutoff = jnp.nanquantile(jnp.abs(all_prunable), prune_quantile)
         mask = {}
         new_params = {}
 
-        # Initialize the mask structure first
-        for layer_name in params.keys():
-            mask[layer_name] = {}
-
         for layer_name, layer_dict in params.items():
             new_layer = {}
+            mask_layer = {}
             for param_name, param_array in layer_dict.items():
                 if (self.layer_is_prunable(layer_name)) and ("bias" not in param_name):
-                    # Get the combined mask of all previous tasks for the current parameter array
-                    prev_mask_array = combined_mask[layer_name][param_name] 
+                    # get the params that are used by the previous tasks
+                    prev_mask_leaf = combined_mask[layer_name][param_name] 
 
-                    # keep only the parameters above the cutoff
-                    new_mask_array = jnp.abs(param_array) >= cutoff
-                    new_mask_array = jnp.logical_and(new_mask_array, jnp.logical_not(prev_mask_array))
-
+                    # Create new mask for the current parameter array
+                    new_mask_leaf = jnp.logical_and(
+                        jnp.abs(param_array) >= cutoff, 
+                        jnp.logical_not(prev_mask_leaf)
+                    )
                     # keep the fixed parameters and the parameters above the cutoff
-                    final_mask_array = jnp.logical_or(prev_mask_array, new_mask_array)
-                    new_param_array = jnp.where(final_mask_array, param_array, 0)
+                    complete_mask = jnp.logical_or(prev_mask_leaf, new_mask_leaf)
 
-                    # count the number of parameters that are pruned
-                    num_pruned = jnp.sum(jnp.logical_not(final_mask_array))
-                    print(f"Layer: {layer_name}, Param: {param_name}, #Pruned: {num_pruned}")
+                    # prune the parameters
+                    pruned_params = jnp.where(complete_mask, param_array, 0)
                     
-                    mask[layer_name][param_name] = new_mask_array
-                    new_layer[param_name] = new_param_array
+                    mask_layer[param_name] = complete_mask
+                    new_layer[param_name] = pruned_params
                 else:
-                    mask[layer_name][param_name] = jnp.zeros(param_array.shape, dtype=bool)
+                    mask_layer[param_name] = jnp.zeros(param_array.shape, dtype=bool)
                     new_layer[param_name] = param_array
             
             new_params[layer_name] = new_layer
+            mask[layer_name] = mask_layer
 
         masks = self.update_mask_tree(state.masks, mask, state.current_task)
         state = state.replace(masks=masks)
@@ -351,7 +340,8 @@ class Packnet():
             return grads
         
         def other_tasks(grads):
-            prev_mask = self.combine_masks(state.masks, state.current_task-1)
+            # get all weights allocated for previous tasks 
+            prev_mask = self.combine_masks(state.masks, state.current_task) 
             
             new_grads = {}
             for layer_name, layer_dict in grads.items():
@@ -393,7 +383,7 @@ class Packnet():
         
         def other_tasks():
             # Create a combined mask of the previous tasks and the current task
-            prev_mask = self.combine_masks(state.masks, state.current_task-1)
+            prev_mask = self.combine_masks(state.masks, state.current_task)
             current_mask = self.get_mask(state.masks, state.current_task)
             return current_mask, prev_mask
         
@@ -418,9 +408,9 @@ class Packnet():
                     combined_mask = jnp.logical_or(prev_mask_leaf, jnp.logical_not(current_mask_leaf))
                     # true for all weights that are pruned in the current task or fixed in previous tasks
 
-                    out = grad_array * jnp.logical_not(combined_mask)
+                    new_gradients = jnp.where(jnp.logical_not(combined_mask), grad_array, 0)
                     
-                    masked_layer_dict[param_name] = out
+                    masked_layer_dict[param_name] = new_gradients
                 else:
                     # keep bias gradients unchanged 
                     masked_layer_dict[param_name] = grad_array
@@ -480,7 +470,7 @@ class Packnet():
         Masks the remaining parameters of the model that are not pruned
         typically called after the last task's initial training phase
         '''
-        prev_mask = self.combine_masks(state.masks, state.current_task-1)
+        prev_mask = self.combine_masks(state.masks, state.current_task)
 
         mask = {}
 
