@@ -334,6 +334,8 @@ class Packnet():
         Zeroes out the gradients of the fixed weights of previous tasks. 
         This mask should be applied after backpropagation and before each optimizer step during training
         '''
+        print("in method train_mask")
+
         # check if there are any masks to apply
         def first_task(grads):
             # No previous tasks to fix
@@ -374,6 +376,8 @@ class Packnet():
         Zeroes out the gradient of the pruned weights of the current task and previously fixed weights 
         This mask should be applied before each optimizer step during fine-tuning
         '''
+
+        print("in method fine_tune_mask")
         
         def first_task():
             # No previous tasks to fix
@@ -424,6 +428,8 @@ class Packnet():
         '''
         fixes the gradients of the prunable bias parameters to 0
         '''
+        print("in method fix_biases")
+
         masked_grads = {}
         for layer_name, layer_dict in grads.items():
             masked_layer_dict = {}
@@ -603,63 +609,6 @@ class Packnet():
                             zero_params += jnp.sum(jnp.abs(param_array) < 1e-6)
                 
                 return zero_params / total_params if total_params > 0 else 0.0
-
-    def verify_mask_application(self, params, mask_tree, task_id):
-        """Verify previously masked parameters remain zeroed"""
-        total_violation = 0.0
-        total_elements = 0.0
-        
-        # Get combined mask for all tasks up to this point
-        combined_mask = self.combine_masks(mask_tree, task_id)
-        
-        for layer_name, layer_dict in params.items():
-            for param_name, param_array in layer_dict.items():
-                if "kernel" in param_name:
-                    mask = combined_mask[layer_name][param_name]
-                    # Use element-wise operations instead of boolean indexing
-                    # This counts elements that should be zero but aren't
-                    violations = jnp.sum(jnp.abs(param_array * mask) > 1e-6)
-                    masked_count = jnp.sum(mask)
-                    
-                    total_violation += violations
-                    total_elements += masked_count
-        
-        # Return compliance percentage (1.0 means perfect)
-        compliance = 1.0 - (total_violation / (total_elements + 1e-8))
-        return compliance
-                    
-###################################################
-#########    TESTS FOR PACKNET    #################
-###################################################
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -1453,15 +1402,9 @@ def main():
 
         
             sparsity = packnet.compute_sparsity(train_state.params["params"])
-            mask_compliance = packnet.verify_mask_application(
-                train_state.params["params"], 
-                packnet_state.masks, 
-                packnet_state.current_task
-            )
 
             # add the sparsity and mask compliance to the metric dictionary
             metric["PackNet/sparsity"] = sparsity
-            metric["PackNet/mask_compliance"] = mask_compliance
             metric["PackNet/current_task"] = packnet_state.current_task
 
 
@@ -1568,9 +1511,10 @@ def main():
 
         # handle the end of the finetune phase 
         new_grads, packnet_state = packnet.on_finetune_end(grads["params"], packnet_state)
+        
+        runner_state = (train_state, env_state, last_obs, update_step, new_grads, finetune_rng)
 
-
-        return runner_state, metric
+        return runner_state, packnet_state, metric
 
     def loop_over_envs(rng, train_state, envs, packnet_state):
         '''
@@ -1588,7 +1532,7 @@ def main():
 
         for env_rng, env in zip(env_rngs, envs):
             # Call the train_on_environment function - CHANGE THIS LINE:
-            runner_state, metrics = train_on_environment(env_rng, train_state, packnet_state, env, env_counter)
+            runner_state, packnet_state,  metrics = train_on_environment(env_rng, train_state, packnet_state, env, env_counter)
             
             # unpack the runner state
             train_state, env_state, last_obs, update_step, grads, rng = runner_state
