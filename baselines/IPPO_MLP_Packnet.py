@@ -334,7 +334,6 @@ class Packnet():
         Zeroes out the gradients of the fixed weights of previous tasks. 
         This mask should be applied after backpropagation and before each optimizer step during training
         '''
-        print("in method train_mask")
 
         # check if there are any masks to apply
         def first_task(grads):
@@ -376,8 +375,6 @@ class Packnet():
         Zeroes out the gradient of the pruned weights of the current task and previously fixed weights 
         This mask should be applied before each optimizer step during fine-tuning
         '''
-
-        print("in method fine_tune_mask")
         
         def first_task():
             # No previous tasks to fix
@@ -428,7 +425,6 @@ class Packnet():
         '''
         fixes the gradients of the prunable bias parameters to 0
         '''
-        print("in method fix_biases")
 
         masked_grads = {}
         for layer_name, layer_dict in grads.items():
@@ -481,13 +477,17 @@ class Packnet():
         mask = {}
 
         for layer_name, layer_dict in params.items():
-
             mask_layer = {}
             for param_name, param_array in layer_dict.items():
                 if self.layer_is_prunable(layer_name) and "bias" not in param_name:
                     # mask all the remaining weights
+                    print(f"Masking remaining weights for {layer_name}/{param_name}")
+                    print(f"Previous mask shape: {prev_mask[layer_name][param_name].shape}")
+
                     prev_mask_leaf = prev_mask[layer_name][param_name]
                     new_mask_leaf = jnp.logical_not(prev_mask_leaf)
+
+                    print(f"New mask shape: {new_mask_leaf.shape}")
 
                     mask_layer[param_name] = new_mask_leaf
                     
@@ -495,6 +495,9 @@ class Packnet():
                     mask_layer[param_name] = jnp.zeros(param_array.shape, dtype=bool)
 
             mask[layer_name] = mask_layer
+        
+        print("mask: ", mask)
+        print("prev_mask shape: ", prev_mask)
 
         masks = self.update_mask_tree(state.masks, mask, state.current_task)
         state = state.replace(masks=masks)
@@ -598,17 +601,17 @@ class Packnet():
         return self.train_finetune_split[0] + self.train_finetune_split[1]
     
     def compute_sparsity(self, params):
-                """Calculate percentage of zero weights in model"""
-                total_params = 0
-                zero_params = 0
-                
-                for layer_name, layer_dict in params.items():
-                    for param_name, param_array in layer_dict.items():
-                        if "kernel" in param_name:  # Only weight parameters
-                            total_params += param_array.size
-                            zero_params += jnp.sum(jnp.abs(param_array) < 1e-6)
-                
-                return zero_params / total_params if total_params > 0 else 0.0
+        """Calculate percentage of zero weights in model"""
+        total_params = 0
+        zero_params = 0
+        
+        for layer_name, layer_dict in params.items():
+            for param_name, param_array in layer_dict.items():
+                if "kernel" in param_name:  # Only weight parameters
+                    total_params += param_array.size
+                    zero_params += jnp.sum(jnp.abs(param_array) < 1e-6)
+        
+        return zero_params / total_params if total_params > 0 else 0.0
 
 
 
@@ -1143,7 +1146,7 @@ def main():
                 returns the updated runner state and the transition
                 '''
                 # Unpack the runner state
-                train_state, env_state, last_obs, update_step, grads, rng = runner_state
+                train_state, env_state, packnet_state, last_obs, update_step, grads, rng = runner_state
 
                 # split the random number generator for action selection
                 rng, _rng = jax.random.split(rng)
@@ -1192,7 +1195,7 @@ def main():
                     obs_batch
                 )
 
-                runner_state = (train_state, env_state, obsv, update_step, grads, rng)
+                runner_state = (train_state, env_state, packnet_state, obsv, update_step, grads, rng)
                 return runner_state, (transition, info)
             
             # Apply the _env_step function a series of times, while keeping track of the runner state
@@ -1204,7 +1207,7 @@ def main():
             )  
 
             # unpack the runner state that is returned after the scan function
-            train_state, env_state, last_obs, update_step, grads, rng = runner_state
+            train_state, env_state, packnet_state, last_obs, update_step, grads, rng = runner_state
 
             # create a batch of the observations that is compatible with the network
             last_obs_batch = batchify(last_obs, env.agents, config.num_actors)
@@ -1335,7 +1338,7 @@ def main():
                 
                 
                 # unpack the update_state (because of the scan function)
-                train_state, traj_batch, advantages, targets, rng = update_state
+                train_state, packnet_state, traj_batch, advantages, targets, rng = update_state
                 
                 # set the batch size and check if it is correct
                 batch_size = config.minibatch_size * config.num_minibatches
@@ -1373,11 +1376,11 @@ def main():
                 
                 total_loss, grads = loss_information 
                 avg_grads = jax.tree_util.tree_map(lambda x: jnp.mean(x, axis=0), grads)
-                update_state = (train_state, traj_batch, advantages, targets, rng)
+                update_state = (train_state, packnet_state, traj_batch, advantages, targets, rng)
                 return update_state, loss_information
 
             # create a tuple to be passed into the jax.lax.scan function
-            update_state = (train_state, traj_batch, advantages, targets, rng)
+            update_state = (train_state, packnet_state, traj_batch, advantages, targets, rng)
 
             update_state, loss_info = jax.lax.scan( 
                 f=_update_epoch, 
@@ -1387,7 +1390,7 @@ def main():
             )
 
             # unpack update_state
-            train_state, traj_batch, advantages, targets, rng = update_state
+            train_state, packnet_state, traj_batch, advantages, targets, rng = update_state
 
             # set the metric to be the information of the last update epoch
             metric = info
@@ -1406,6 +1409,7 @@ def main():
             # add the sparsity and mask compliance to the metric dictionary
             metric["PackNet/sparsity"] = sparsity
             metric["PackNet/current_task"] = packnet_state.current_task
+            metric["PackNet/train_mode"] = packnet_state.train_mode
 
 
             # add the general metrics to the metric dictionary
@@ -1469,7 +1473,7 @@ def main():
             grads = jax.tree_util.tree_map(lambda x: jnp.mean(x, axis=(0,1)), grads)
 
             rng = update_state[-1]
-            runner_state = (train_state, env_state, last_obs, update_step, grads, rng)
+            runner_state = (train_state, env_state, packnet_state, last_obs, update_step, grads, rng)
 
             return runner_state, metric
 
@@ -1477,7 +1481,7 @@ def main():
 
         # initialize a carrier that keeps track of the states and observations of the agents
         grads = jax.tree_util.tree_map(lambda x: jnp.zeros_like(x), train_state.params)
-        runner_state = (train_state, env_state, obsv, 0, grads, train_rng)
+        runner_state = (train_state, env_state, packnet_state, obsv, 0, grads, train_rng)
         
         # apply the _update_step function a series of times, while keeping track of the state 
         runner_state, metric = jax.lax.scan(
@@ -1487,9 +1491,13 @@ def main():
             length=config.num_updates
         )
 
-        # after training, we prune the model
+        # unpack the runner state
+        train_state, env_state, packnet_state, last_obs, update_step, grads, rng = runner_state
+
+        # Prune the model and update the parameters
         new_params, packnet_state = packnet.on_train_end(train_state.params["params"], packnet_state)
         train_state = train_state.replace(params=new_params)
+
 
         # We fine-tune the model for a number of epochs
         finetune_tx = optax.chain(
@@ -1498,9 +1506,8 @@ def main():
         )
         train_state = train_state.replace(tx=finetune_tx)
 
-        train_state, env_state, last_obs, update_step, grads, rng = runner_state
         rng, finetune_rng = jax.random.split(rng)
-        runner_state = (train_state, env_state, last_obs, update_step, grads, finetune_rng)
+        runner_state = (train_state, env_state, packnet_state, last_obs, update_step, grads, finetune_rng)
 
         runner_state, metric = jax.lax.scan(
             f=_update_step,
@@ -1511,10 +1518,11 @@ def main():
 
         # handle the end of the finetune phase 
         new_grads, packnet_state = packnet.on_finetune_end(grads["params"], packnet_state)
-        
-        runner_state = (train_state, env_state, last_obs, update_step, new_grads, finetune_rng)
 
-        return runner_state, packnet_state, metric
+        # add the gradients and the packnet_state to the new runner state
+        runner_state = (train_state, env_state, packnet_state, last_obs, update_step, new_grads, finetune_rng)
+
+        return runner_state, metric
 
     def loop_over_envs(rng, train_state, envs, packnet_state):
         '''
@@ -1532,10 +1540,10 @@ def main():
 
         for env_rng, env in zip(env_rngs, envs):
             # Call the train_on_environment function - CHANGE THIS LINE:
-            runner_state, packnet_state,  metrics = train_on_environment(env_rng, train_state, packnet_state, env, env_counter)
+            runner_state, metrics = train_on_environment(env_rng, train_state, packnet_state, env, env_counter)
             
             # unpack the runner state
-            train_state, env_state, last_obs, update_step, grads, rng = runner_state
+            train_state, env_state, packnet_state, last_obs, update_step, grads, rng = runner_state
 
             # save the model
             path = f"checkpoints/overcooked/{run_name}/model_env_{env_counter}"
