@@ -223,8 +223,7 @@ class Packnet():
             returns the mask of the given task
             '''
             return leaf[task_id]
-        return jax.tree_util.tree_map(slice_mask_leaf, mask_tree)
-            
+        return jax.tree_util.tree_map(slice_mask_leaf, mask_tree)        
 
     def create_pruning_instructions(self):
         '''
@@ -235,9 +234,9 @@ class Packnet():
         if not isinstance(self.prune_instructions, list):
             # Check if the pruning instruction is a percentage 
             assert 0 < self.prune_instructions < 1, (
-                "Pruning instructions should be a list of percentages"
+                "Pruning instructions should be a percentage"
                 )
-            # Create a list of pruning instructions for each task
+            # Create a list of pruning instructions for all tasks 
             self.prune_instructions = [self.prune_instructions] * (self.seq_length-1)
 
         assert len(self.prune_instructions) == self.seq_length-1, (
@@ -292,6 +291,7 @@ class Packnet():
                         all_prunable = jnp.concatenate([all_prunable.reshape(-1), p.reshape(-1)], axis=0)
 
         cutoff = jnp.nanquantile(jnp.abs(all_prunable), prune_quantile)
+        jax.debug.print("Cutoff: {cutoff}", cutoff=cutoff)
         mask = {}
         new_params = {}
 
@@ -314,7 +314,7 @@ class Packnet():
                     # prune the parameters
                     pruned_params = jnp.where(complete_mask, param_array, 0)
                     
-                    mask_layer[param_name] = complete_mask
+                    mask_layer[param_name] = new_mask_leaf
                     new_layer[param_name] = pruned_params
                 else:
                     mask_layer[param_name] = jnp.zeros(param_array.shape, dtype=bool)
@@ -354,7 +354,7 @@ class Packnet():
                         
                         prev_mask_leaf = prev_mask[layer_name][param_name]
 
-                        new_layer_grads[param_name] = grad_array * jnp.logical_not(prev_mask_leaf)
+                        new_layer_grads[param_name] = jnp.where(prev_mask_leaf, 0, grad_array)
                     else:
                         new_layer_grads[param_name] = grad_array
 
@@ -394,6 +394,9 @@ class Packnet():
             other_tasks
         )
 
+        jax.debug.print("Current mask: {current_mask}", current_mask=current_mask)
+        jax.debug.print("Previous mask: {prev_mask}", prev_mask=prev_mask)
+
         masked_grads = {}
 
         for layer_name, layer_dict in grads.items():
@@ -405,11 +408,13 @@ class Packnet():
                     prev_mask_leaf = prev_mask[layer_name][param_name] 
                     current_mask_leaf = current_mask[layer_name][param_name]
 
-                    # Fix the gradients of the pruned weights of the current task, and the fixed weights of previous tasks
-                    combined_mask = jnp.logical_or(prev_mask_leaf, jnp.logical_not(current_mask_leaf))
-                    # true for all weights that are pruned in the current task or fixed in previous tasks
+                    # # Fix the gradients of the pruned weights of the current task, and the fixed weights of previous tasks
+                    # combined_mask = jnp.logical_and(prev_mask_leaf, jnp.logical_not(current_mask_leaf))
+                    # # true for all weights that are pruned in the current task or fixed in previous tasks
 
-                    new_gradients = jnp.where(jnp.logical_not(combined_mask), grad_array, 0)
+                    # jax.debug.print("Combined mask: {combined_mask}", combined_mask=combined_mask)
+
+                    new_gradients = jnp.where(current_mask_leaf, grad_array, 0)
                     
                     masked_layer_dict[param_name] = new_gradients
                 else:
@@ -421,24 +426,31 @@ class Packnet():
 
         return masked_grads
 
-    def fix_biases(self, grads):
+    def fix_biases(self, grads, state: PacknetState):
         '''
         fixes the gradients of the prunable bias parameters to 0
         '''
+        def after_first_task(grads):
+            masked_grads = {}
+            for layer_name, layer_dict in grads.items():
+                masked_layer_dict = {}
+                for param_name, grad_array in layer_dict.items():
+                    if self.layer_is_prunable(layer_name) and "bias" in param_name:
+                        masked_layer_dict[param_name] = jnp.zeros(grad_array.shape)
+                    else:
+                        masked_layer_dict[param_name] = grad_array
+            
+                masked_grads[layer_name] = masked_layer_dict
 
-        masked_grads = {}
-        for layer_name, layer_dict in grads.items():
-            masked_layer_dict = {}
-            for param_name, grad_array in layer_dict.items():
-                if self.layer_is_prunable(layer_name) and "bias" in param_name:
-                    masked_layer_dict[param_name] = jnp.zeros(grad_array.shape)
-                else:
-                    masked_layer_dict[param_name] = grad_array
+            new_grad_dict = masked_grads
+            return new_grad_dict
         
-            masked_grads[layer_name] = masked_layer_dict
-
-        new_grad_dict = masked_grads
-        return new_grad_dict
+        def first_task(grads):
+            # No previous tasks to fix
+            return grads
+        
+        grads =  jax.lax.cond(state.current_task == 0, first_task, after_first_task, grads)
+        return grads
 
     def apply_eval_mask(self, params, task_id, state: PacknetState):
         '''
@@ -480,14 +492,9 @@ class Packnet():
             mask_layer = {}
             for param_name, param_array in layer_dict.items():
                 if self.layer_is_prunable(layer_name) and "bias" not in param_name:
-                    # mask all the remaining weights
-                    print(f"Masking remaining weights for {layer_name}/{param_name}")
-                    print(f"Previous mask shape: {prev_mask[layer_name][param_name].shape}")
 
                     prev_mask_leaf = prev_mask[layer_name][param_name]
                     new_mask_leaf = jnp.logical_not(prev_mask_leaf)
-
-                    print(f"New mask shape: {new_mask_leaf.shape}")
 
                     mask_layer[param_name] = new_mask_leaf
                     
@@ -495,9 +502,6 @@ class Packnet():
                     mask_layer[param_name] = jnp.zeros(param_array.shape, dtype=bool)
 
             mask[layer_name] = mask_layer
-        
-        print("mask: ", mask)
-        print("prev_mask shape: ", prev_mask)
 
         masks = self.update_mask_tree(state.masks, mask, state.current_task)
         state = state.replace(masks=masks)
@@ -506,7 +510,6 @@ class Packnet():
         new_param_dict = params
 
         return new_param_dict, state
-
 
     def on_train_end(self, params, state: PacknetState):
         '''
@@ -537,33 +540,27 @@ class Packnet():
         new_params = {"params": new_params}
         return new_params, state
     
-    def on_finetune_end(self, grads, state: PacknetState):
+    def on_finetune_end(self, state: PacknetState):
         '''
         Handles the end of the finetuning phase on a task
         '''
         state = state.replace(current_task=state.current_task+1, train_mode=True)
         
-        def first_task_biases(grads):
-            return self.fix_biases(grads)
+        # def first_task_biases(grads):
+        #     return self.fix_biases(grads)
         
-        def other_tasks(grads):
-            return grads
+        # def other_tasks(grads):
+        #     return grads
         
-        # apply the first task biases if we are on the first task
-        new_gradients = jax.lax.cond(
-            state.current_task == 1,
-            first_task_biases, 
-            other_tasks, 
-            grads
-            )
-        new_gradients = {"params": new_gradients}
-        return new_gradients, state
-    
-    # def on_init_end(self, state: PacknetState):
-    #     '''
-    #     Handles the end of the initialization phase
-    #     '''
-    #     return state.replace(mode="train")
+        # # apply the first task biases if we are on the first task
+        # new_gradients = jax.lax.cond(
+        #     state.current_task == 1,
+        #     first_task_biases, 
+        #     other_tasks, 
+        #     grads
+        #     )
+        # new_gradients = {"params": new_gradients}
+        return state
 
     def on_backwards_end(self, grads, state: PacknetState):
         '''
@@ -586,14 +583,9 @@ class Packnet():
             finetune, 
             grads
         )
+        # fix the biases of the gradients
+        new_grads = self.fix_biases(new_grads, state)
 
-        # after the first task, we also want to keep our biases fixed
-        new_grads = jax.lax.cond(
-            state.current_task > 0,
-            lambda x: self.fix_biases(x),
-            lambda x: x,
-            new_grads
-        )
         new_gradients = {"params": new_grads}
         return new_gradients
 
@@ -632,7 +624,7 @@ class Config:
     lr: float = 3e-4
     num_envs: int = 16
     num_steps: int = 128
-    total_timesteps: float = 8e6
+    total_timesteps: float = 5e6
     update_epochs: int = 8
     num_minibatches: int = 8
     gamma: float = 0.99
@@ -650,14 +642,14 @@ class Config:
     train_epochs: int = 8
     finetune_epochs: int = 2
     finetune_lr: float = 1e-4
-    finetune_timesteps: int = 8e4
+    finetune_timesteps: int = 8e5
 
     seq_length: int = 3
     strategy: str = "random"
     layouts: Optional[Sequence[str]] = field(default_factory=lambda: ["asymm_advantages", "smallest_kitchen", "cramped_room", "easy_layout", "square_arena", "no_cooperation"])
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
-    log_interval: int = 75 # log every 200 calls to update step
+    log_interval: int = 75 
     eval_num_steps: int = 1000 # number of steps to evaluate the model
     eval_num_episodes: int = 5 # number of episodes to evaluate the model
     
@@ -1047,7 +1039,9 @@ def main():
     temp_env = envs[0]
     config.num_actors = temp_env.num_agents * config.num_envs
     config.num_updates = config.total_timesteps // config.num_steps // config.num_envs
+    print(f"num_updates: {config.num_updates}")
     config.finetune_updates = config.finetune_timesteps // config.num_steps // config.num_envs
+    print(f"finetune_updates: {config.finetune_updates}")
     config.minibatch_size = (config.num_actors * config.num_steps) // config.num_minibatches
 
     def linear_schedule(count):
@@ -1418,7 +1412,9 @@ def main():
             metric["General/learning_rate"] = linear_schedule(update_step * config.num_minibatches * config.update_epochs)
 
             # Losses section
-            total_loss, (value_loss, loss_actor, entropy) = loss_info[0]
+            # unpack the loss information
+            loss_components, grads = loss_info
+            total_loss, (value_loss, loss_actor, entropy) = loss_components
             metric["Losses/total_loss"] = total_loss.mean()
             metric["Losses/value_loss"] = value_loss.mean()
             metric["Losses/actor_loss"] = loss_actor.mean()
@@ -1442,21 +1438,38 @@ def main():
             def evaluate_and_log(rng, update_step):
                 rng, eval_rng = jax.random.split(rng)
                 train_state_eval = jax.tree_util.tree_map(lambda x: x.copy(), train_state)
+                grads_eval = jax.tree_util.tree_map(lambda x: x.copy(), grads)
 
                 def log_metrics(metric, update_step):
                     evaluations = evaluate_model(train_state_eval, network, eval_rng)
                     for i, evaluation in enumerate(evaluations):
                         metric[f"Evaluation/{config.layout_name[i]}"] = evaluation
+
+                    # Extract parameters 
+                    params = jax.tree_util.tree_map(lambda x: x, train_state_eval.params["params"])
+                    grads = jax.tree_util.tree_map(lambda x: x, grads_eval["params"])
                     
                     def callback(args):
-                        metric, update_step, env_counter = args
+                        metric, update_step, env_counter, params, grads = args
                         update_step = int(update_step)
                         env_counter = int(env_counter)
                         real_step = (env_counter-1) * config.num_updates + update_step
                         for key, value in metric.items():
                             writer.add_scalar(key, value, real_step)
+                        for layer, dict in params.items():
+                            for layer_name, param_array in dict.items():
+                                writer.add_histogram(
+                                    tag=f"weights/{layer}/{layer_name}", 
+                                    values=jnp.array(param_array), 
+                                    global_step=real_step,
+                                    bins=100)
+                                writer.add_histogram(
+                                    tag=f"grads/{layer}/{layer_name}", 
+                                    values=jnp.array(grads[layer][layer_name]), 
+                                    global_step=real_step,
+                                    bins=100)
 
-                    jax.experimental.io_callback(callback, None, (metric, update_step, env_counter))
+                    jax.experimental.io_callback(callback, None, (metric, update_step, env_counter, params, grads))
                     return None
                 
                 def do_not_log(metric, update_step):
@@ -1494,9 +1507,9 @@ def main():
         # unpack the runner state
         train_state, env_state, packnet_state, last_obs, update_step, grads, rng = runner_state
 
-        # Prune the model and update the parameters
-        new_params, packnet_state = packnet.on_train_end(train_state.params["params"], packnet_state)
-        train_state = train_state.replace(params=new_params)
+        # # Prune the model and update the parameters
+        # new_params, packnet_state = packnet.on_train_end(train_state.params["params"], packnet_state)
+        # train_state = train_state.replace(params=new_params)
 
 
         # We fine-tune the model for a number of epochs
@@ -1513,14 +1526,14 @@ def main():
             f=_update_step,
             init=runner_state, 
             xs=None, 
-            length=config.finetune_epochs
+            length=config.finetune_updates
         )
 
         # handle the end of the finetune phase 
-        new_grads, packnet_state = packnet.on_finetune_end(grads["params"], packnet_state)
+        packnet_state = packnet.on_finetune_end(packnet_state)
 
         # add the gradients and the packnet_state to the new runner state
-        runner_state = (train_state, env_state, packnet_state, last_obs, update_step, new_grads, finetune_rng)
+        runner_state = (train_state, env_state, packnet_state, last_obs, update_step, grads, finetune_rng)
 
         return runner_state, metric
 
