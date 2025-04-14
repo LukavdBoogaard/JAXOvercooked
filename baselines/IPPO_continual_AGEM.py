@@ -1,6 +1,3 @@
-# import os
-# os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-
 import os
 from datetime import datetime
 from typing import Sequence, NamedTuple, Any, Optional, List
@@ -9,7 +6,6 @@ import distrax
 import flax
 import flax.linen as nn
 import jax
-import jax.experimental
 import jax.numpy as jnp
 import numpy as np
 import optax
@@ -18,7 +14,6 @@ from flax import struct
 from flax.core.frozen_dict import freeze, unfreeze
 from flax.linen.initializers import constant, orthogonal
 from flax.training.train_state import TrainState
-from gymnax.wrappers.purerl import LogWrapper
 
 from jax_marl.environments.env_selection import generate_sequence
 from jax_marl.environments.overcooked_environment import overcooked_layouts
@@ -35,69 +30,132 @@ import tyro
 from tensorboardX import SummaryWriter
 
 
-# Enable compile logging
+# Enable compile logging if desired
 # jax.log_compiles(True)
 
+
+def choose_head(out: jnp.ndarray, num_heads: int, env_idx: int) -> jnp.ndarray:
+    # out has shape (batch, base_dim * num_heads)
+    batch = out.shape[0]
+    base_dim = out.shape[1] // num_heads
+    out = out.reshape(batch, num_heads, base_dim)
+    return out[:, env_idx, :]
+
+
 class ActorCritic(nn.Module):
-    '''
-    Class to define the actor-critic networks used in IPPO. Each agent has its own actor-critic network
-    '''
-    action_dim: Sequence[int]
+    action_dim: int
     activation: str = "tanh"
+    use_multihead: bool = False
+    num_tasks: int = 1
+    shared_backbone: bool = False
 
-    @nn.compact
-    def __call__(self, x):
+    def setup(self):
         if self.activation == "relu":
-            activation = nn.relu
+            self.activation_fn = nn.relu
         else:
-            activation = nn.tanh
+            self.activation_fn = nn.tanh
 
-        # ACTOR
-        actor_mean = nn.Dense(
-            128,  # number of neurons
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0)  # sets the bias initialization to a constant value of 0
-        )(x)  # applies a dense layer to the input x
+        if self.shared_backbone:
+            # New architecture: shared trunk and multihead logic
+            self.fc1 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0), name="common_dense1")
+            self.fc2 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0), name="common_dense2")
+            self.fc3 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0), name="common_dense3")
+            self.critic_fc1 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+                                       name="critic_dense1")
+            self.critic_fc2 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+                                       name="critic_dense2")
+            self.critic_fc3 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+                                       name="critic_dense3")
+            actor_head_size = self.action_dim * (self.num_tasks if self.use_multihead else 1)
+            critic_head_size = 1 * (self.num_tasks if self.use_multihead else 1)
+            self.actor_head = nn.Dense(actor_head_size, kernel_init=orthogonal(0.01), bias_init=constant(0.0),
+                                       name="actor_head")
+            self.critic_head = nn.Dense(critic_head_size, kernel_init=orthogonal(1.0), bias_init=constant(0.0),
+                                        name="critic_head")
+        else:
+            # Separate trunk: each branch is its own network
 
-        actor_mean = activation(actor_mean)  # applies the activation function to the output of the dense layer
+            # Actor branch
+            self.actor_dense1 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+                                         name="actor_dense1")
+            self.actor_dense2 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+                                         name="actor_dense2")
+            self.actor_dense3 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+                                         name="actor_dense3")
+            # If using multihead, output dimension is action_dim*num_tasks.
+            actor_out_dim = self.action_dim * self.num_tasks if self.use_multihead else self.action_dim
+            self.actor_out = nn.Dense(actor_out_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0),
+                                      name="actor_head")
 
-        actor_mean = nn.Dense(
-            128,
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0)
-        )(actor_mean)
+            # Critic branch
+            self.critic_dense1 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+                                          name="critic_dense1")
+            self.critic_dense2 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+                                          name="critic_dense2")
+            self.critic_dense3 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+                                          name="critic_dense3")
+            critic_out_dim = 1 * self.num_tasks if self.use_multihead else 1
+            self.critic_out = nn.Dense(critic_out_dim, kernel_init=orthogonal(1.0), bias_init=constant(0.0),
+                                       name="critic_head")
 
-        actor_mean = activation(actor_mean)
+    def __call__(self, x, env_idx=0):
 
-        actor_mean = nn.Dense(
-            self.action_dim,
-            kernel_init=orthogonal(0.01),
-            bias_init=constant(0.0)
-        )(actor_mean)
+        if self.shared_backbone:
+            x = self.fc1(x)
+            x = self.activation_fn(x)
+            x = self.fc2(x)
+            x = self.activation_fn(x)
+            x = self.fc3(x)
+            x = self.activation_fn(x)
+            if self.use_multihead:
+                # Concatenate and then select the correct head
+                actor_concat = self.actor_head(x)
+                actor_logits = choose_head(actor_concat, self.num_tasks, env_idx)
+            else:
+                actor_logits = self.actor_head(x)
+            pi = distrax.Categorical(logits=actor_logits)
+            v = self.critic_fc1(x)
+            v = self.activation_fn(v)
+            v = self.critic_fc2(v)
+            v = self.activation_fn(v)
+            v = self.critic_fc3(v)
+            v = self.activation_fn(v)
+            if self.use_multihead:
+                critic_concat = self.critic_head(v)
+                v = choose_head(critic_concat, self.num_tasks, env_idx)
+            else:
+                v = self.critic_head(v)
+            v = jnp.squeeze(v, axis=-1)
+            return pi, v
+        else:
+            # Actor branch: separate trunk
+            actor = self.actor_dense1(x)
+            actor = self.activation_fn(actor)
+            actor = self.actor_dense2(actor)
+            actor = self.activation_fn(actor)
+            actor = self.actor_dense3(actor)
+            actor = self.activation_fn(actor)
+            actor_all = self.actor_out(actor)
+            if self.use_multihead:
+                actor_logits = choose_head(actor_all, self.num_tasks, env_idx)
+            else:
+                actor_logits = actor_all
+            pi = distrax.Categorical(logits=actor_logits)
 
-        pi = distrax.Categorical(
-            logits=actor_mean)  # creates a categorical distribution over all actions (the logits are the output of the actor network)
-
-        # CRITIC
-        critic = nn.Dense(
-            128, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
-        )(x)
-
-        critic = activation(critic)
-
-        critic = nn.Dense(
-            128, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
-        )(critic)
-
-        critic = activation(critic)
-
-        critic = nn.Dense(1, kernel_init=orthogonal(1.0), bias_init=constant(0.0))(
-            critic
-        )
-
-        # returns the policy (actor) and state-value (critic) networks
-        value = jnp.squeeze(critic, axis=-1)
-        return pi, value  # squeezed to remove any unnecessary dimensions
+            # Critic branch: separate trunk
+            critic = self.critic_dense1(x)
+            critic = self.activation_fn(critic)
+            critic = self.critic_dense2(critic)
+            critic = self.activation_fn(critic)
+            critic = self.critic_dense3(critic)
+            critic = self.activation_fn(critic)
+            critic_all = self.critic_out(critic)
+            if self.use_multihead:
+                value = choose_head(critic_all, self.num_tasks, env_idx)
+            else:
+                value = critic_all
+            value = jnp.squeeze(value, axis=-1)
+            return pi, value
 
 
 class Transition(NamedTuple):
@@ -123,6 +181,13 @@ class AGEMMemory:
     values: jnp.ndarray
 
 
+def make_task_onehot(task_idx: int, num_tasks: int) -> jnp.ndarray:
+    """
+    Returns a one-hot vector of length `num_tasks` with a 1 at `task_idx`.
+    """
+    return jnp.eye(num_tasks, dtype=jnp.float32)[task_idx]
+
+
 @dataclass
 class Config:
     lr: float = 3e-4
@@ -138,19 +203,27 @@ class Config:
     vf_coef: float = 0.5
     max_grad_norm: float = 0.5
     reward_shaping_horizon: float = 2.5e6
+    explore_fraction: float = 0.0
     activation: str = "tanh"
     env_name: str = "overcooked"
-    alg_name: str = "ippo"
-    max_memory_size: int = 1000
+    alg_name: str = "IPPO"
+    use_task_id: bool = False
+    use_multihead: bool = False
+    shared_backbone: bool = False
+    max_memory_size: int = 10000
 
+    # Environment
     seq_length: int = 6
     strategy: str = "random"
     layouts: Optional[Sequence[str]] = field(
-        default_factory=lambda: ["asymm_advantages", "smallest_kitchen", "cramped_room", "easy_layout", "square_arena",
-                                 "no_cooperation"])
+        default_factory=lambda: [
+            "asymm_advantages", "smallest_kitchen", "cramped_room",
+            "easy_layout", "square_arena", "no_cooperation"
+        ]
+    )
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
-    log_interval: int = 75  # log every 200 calls to update step
+    log_interval: int = 75  # log every n calls to update step
     eval_num_steps: int = 1000  # number of steps to evaluate the model
     eval_num_episodes: int = 5  # number of episodes to evaluate the model
     gif_len: int = 300
@@ -171,6 +244,11 @@ class Config:
     minibatch_size: int = 0
 
 
+############################
+###### AGEM FUNCTIONS ######
+############################
+
+
 def init_agem_memory(max_memory_size: int, obs_dim: int):
     return AGEMMemory(
         obs=jnp.zeros((max_memory_size, obs_dim)),
@@ -182,25 +260,36 @@ def init_agem_memory(max_memory_size: int, obs_dim: int):
     )
 
 
-def agem_project(g_new, g_mem):
+def agem_project(grads_ppo, grads_mem):
     """
     Implements the AGEM projection:
       If g_new^T g_mem < 0:
          g_new := g_new - (g_new^T g_mem / ||g_mem||^2) * g_mem
     """
-    dot_g = sum([jnp.vdot(gn, gm) for gn, gm in zip(jax.tree_util.tree_leaves(g_new),
-                                                    jax.tree_util.tree_leaves(g_mem))])
-    dot_mem = sum([jnp.vdot(gm, gm2) for gm, gm2 in zip(jax.tree_util.tree_leaves(g_mem),
-                                                        jax.tree_util.tree_leaves(g_mem))])
+    dot_g = sum([jnp.vdot(gn, gm) for gn, gm in zip(jax.tree_util.tree_leaves(grads_ppo),
+                                                    jax.tree_util.tree_leaves(grads_mem))])
+    dot_mem = sum([jnp.vdot(gm, gm2) for gm, gm2 in zip(jax.tree_util.tree_leaves(grads_mem),
+                                                        jax.tree_util.tree_leaves(grads_mem))])
 
     def project_fn(g_new):
         # Scale factor
         alpha = dot_g / (dot_mem + 1e-12)
         # Sub each leaf: g_new := g_new - alpha*g_mem
-        return jax.tree_util.tree_map(lambda gn, gm: gn - alpha * gm, g_new, g_mem)
+        return jax.tree_util.tree_map(lambda gn, gm: gn - alpha * gm, g_new, grads_mem)
 
-    g_new_proj = jax.lax.cond(dot_g < 0.0, project_fn, lambda x: x, g_new)
-    return g_new_proj
+    grads_projected = jax.lax.cond(
+        dot_g < 0.0,
+        project_fn,
+        lambda x: x,
+        grads_ppo
+    )
+    stats = {
+        "agem/dot_g": dot_g,
+        "agem/dot_mem": dot_mem,
+        "agem/alpha": dot_g / (dot_mem + 1e-12),
+        "agem/is_projected": (dot_g < 0.0),
+    }
+    return grads_projected, stats
 
 
 def sample_memory(agem_mem: AGEMMemory, sample_size: int, rng: jax.random.PRNGKey):
@@ -214,8 +303,8 @@ def sample_memory(agem_mem: AGEMMemory, sample_size: int, rng: jax.random.PRNGKe
     return obs, actions, log_probs, advs, targets, vals
 
 
-def compute_memory_gradient(params, clip_eps,
-                            vf_coef, ent_coef,
+def compute_memory_gradient(network, params,
+                            clip_eps, vf_coef, ent_coef,
                             mem_obs, mem_actions,
                             mem_advs, mem_log_probs,
                             mem_targets, mem_values):
@@ -244,11 +333,16 @@ def compute_memory_gradient(params, clip_eps,
         entropy = jnp.mean(pi.entropy())
 
         total_loss = actor_loss + vf_coef * critic_loss - ent_coef * entropy
-        return total_loss
+        return total_loss, (critic_loss, actor_loss, entropy)
 
-    # Get grads
-    (_, grads) = jax.value_and_grad(loss_fn)(params)
-    return grads
+    (total_loss, (v_loss, a_loss, ent)), grads = jax.value_and_grad(loss_fn, has_aux=True)(params)
+    stats = {
+        "agem/ppo_total_loss": total_loss,
+        "agem/ppo_value_loss": v_loss,
+        "agem/ppo_actor_loss": a_loss,
+        "agem/ppo_entropy": ent
+    }
+    return grads, stats
 
 
 def update_agem_memory(agem_mem: AGEMMemory,
@@ -318,29 +412,10 @@ def unbatchify(x: jnp.ndarray, agent_list, num_envs, num_actors):
     return {a: x[i] for i, a in enumerate(agent_list)}
 
 
-def calculate_sparsity(params, threshold=1e-5):
-    """
-    Calculate the percentage of parameters that are close to zero
-    """
-    # Flatten the params into a single array
-    flat_params, _ = jax.tree_util.tree_flatten(params)
-
-    # Concatenate all weights into one large array
-    all_weights = jnp.concatenate([jnp.ravel(p) for p in flat_params])
-
-    # Count weights below threshold
-    num_small_weights = jnp.sum(jnp.abs(all_weights) < threshold)
-    total_weights = all_weights.size
-
-    # Compute percentage of small weights
-    sparsity_percentage = 100 * (num_small_weights / total_weights)
-
-    return sparsity_percentage
-
-
 ############################
 ##### MAIN FUNCTION    #####
 ############################
+
 
 def main():
     # set the device to the first available GPU
@@ -352,19 +427,18 @@ def main():
     config = tyro.cli(Config)
 
     # generate a sequence of tasks
-    config.env_kwargs, config.layout_name = generate_sequence(
-        sequence_length=config.seq_length,
-        strategy=config.strategy,
-        layout_names=config.layouts,
-        seed=config.seed
-    )
+    seq_length = config.seq_length
+    strategy = config.strategy
+    layouts = config.layouts
+    config.env_kwargs, config.layout_name = generate_sequence(seq_length, strategy, layout_names=layouts,
+                                                              seed=config.seed)
 
     for layout_config in config.env_kwargs:
         layout_name = layout_config["layout"]
         layout_config["layout"] = overcooked_layouts[layout_name]
 
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    run_name = f'{config.alg_name}_seq{config.seq_length}_{config.strategy}_{timestamp}'
+    run_name = f'{config.alg_name}_EWC_seq{config.seq_length}_{config.strategy}_{timestamp}'
     exp_dir = os.path.join("runs", run_name)
 
     # Initialize WandB
@@ -384,7 +458,7 @@ def main():
     # Set up Tensorboard
     writer = SummaryWriter(exp_dir)
 
-    # add the hyperparameters to the tensorboard
+    # Add the hyperparameters to the tensorboard
     rows = []
     for key, value in vars(config).items():
         value_str = str(value).replace("\n", "<br>")
@@ -395,11 +469,12 @@ def main():
     markdown = f"|param|value|\n|-|-|\n{table_body}"
     writer.add_text("hyperparameters", markdown)
 
+    # pad the observation space
     def pad_observation_space():
         '''
-        Function that pads the observation space of all environments to be the same size by adding extra walls to the outside.
-        This way, the observation space of all environments is the same, and compatible with the network
-        returns the padded environments
+        Pads the observation space of the environment to be compatible with the network
+        @param envs: the environment
+        returns the padded observation space
         '''
         envs = []
         for env_args in config.env_kwargs:
@@ -493,8 +568,8 @@ def main():
 
         return padded_envs
 
-    @partial(jax.jit, static_argnums=(1))
-    def evaluate_model(train_state, network, key):
+    @partial(jax.jit, static_argnums=(2))
+    def evaluate_model(train_state, key, env_idx):
         '''
         Evaluates the model by running 10 episodes on all environments and returns the average reward
         @param train_state: the current state of the training
@@ -502,7 +577,7 @@ def main():
         returns the average reward
         '''
 
-        def run_episode_while(env, key_r, network_params, max_steps=1000):
+        def run_episode_while(env, key_r, max_steps=1000):
             """
             Run a single episode using jax.lax.while_loop
             """
@@ -521,7 +596,7 @@ def main():
                 @param state: the current state of the loop
                 returns a boolean indicating whether the loop should continue
                 '''
-                return jnp.logical_and(jnp.logical_not(state.done), state.step_count < max_steps)
+                return jnp.logical_and(~state.done, state.step_count < max_steps)
 
             def body_fun(state: EvalState):
                 '''
@@ -529,14 +604,21 @@ def main():
                 @param state: the current state of the loop
                 returns the updated state
                 '''
-                # Unpack the state
-                key, state_env, obs, _, total_reward, step_count = state
 
-                # split the key into keys to sample actions and step the environment
+                key, state_env, obs, _, total_reward, step_count = state
                 key, key_a0, key_a1, key_s = jax.random.split(key, 4)
 
-                # Flatten observations
-                flat_obs = {k: v.flatten() for k, v in obs.items()}
+                # ***Create a batched copy for the network only.***
+                # For each agent, expand dims to get shape (1, H, W, C) then flatten to (1, -1)
+                batched_obs = {}
+                for agent, v in obs.items():
+                    v_b = jnp.expand_dims(v, axis=0)  # now (1, H, W, C)
+                    v_flat = jnp.reshape(v_b, (v_b.shape[0], -1))
+                    if config.use_task_id:
+                        onehot = make_task_onehot(env_idx, config.seq_length)  # shape (seq_length,)
+                        onehot = jnp.expand_dims(onehot, axis=0)  # (1, seq_length)
+                        v_flat = jnp.concatenate([v_flat, onehot], axis=1)
+                    batched_obs[agent] = v_flat
 
                 def select_action(train_state, rng, obs):
                     '''
@@ -547,12 +629,14 @@ def main():
                     returns the action
                     '''
                     network_apply = train_state.apply_fn
-                    pi, value = network_apply(network_params, obs)
-                    return pi.sample(seed=rng), value
+                    params = train_state.params
+                    pi, value = network_apply(params, obs, env_idx=env_idx)
+                    action = jnp.squeeze(pi.sample(seed=rng), axis=0)
+                    return action, value
 
                 # Get action distributions
-                action_a1, _ = select_action(train_state, key_a0, flat_obs["agent_0"])
-                action_a2, _ = select_action(train_state, key_a1, flat_obs["agent_1"])
+                action_a1, _ = select_action(train_state, key_a0, batched_obs["agent_0"])
+                action_a2, _ = select_action(train_state, key_a1, batched_obs["agent_1"])
 
                 # Sample actions
                 actions = {
@@ -563,13 +647,13 @@ def main():
                 # Environment step
                 next_obs, next_state, reward, done_step, info = env.step(key_s, state_env, actions)
                 done = done_step["__all__"]
-                reward = reward["agent_0"]
+                reward = reward["agent_0"]  # Common reward
                 total_reward += reward
                 step_count += 1
 
                 return EvalState(key, next_state, next_obs, done, total_reward, step_count)
 
-            # Initialize the key and first state
+            # Initialize
             key, key_s = jax.random.split(key_r)
             obs, state = env.reset(key_s)
             init_state = EvalState(key, state, obs, False, 0.0, 0)
@@ -590,9 +674,9 @@ def main():
 
         for env in envs:
             env = make(config.env_name, layout=env)  # Create the environment
-            network_params = train_state.params
+
             # Run k episodes
-            all_rewards = jax.vmap(lambda k: run_episode_while(env, k, network_params, config.eval_num_steps))(
+            all_rewards = jax.vmap(lambda k: run_episode_while(env, k, config.eval_num_steps))(
                 jax.random.split(key, config.eval_num_episodes)
             )
 
@@ -601,78 +685,13 @@ def main():
 
         return all_avg_rewards
 
-    def get_rollout_for_visualization():
-        '''
-        Simulates the environment using the network
-        @param train_state: the current state of the training
-        @param config: the configuration of the training
-        returns the state sequence
-        '''
-
-        # Add the padding
-        envs = pad_observation_space()
-
-        state_sequences = []
-        for env_layout in envs:
-            env = make(config.env_name, layout=env_layout)
-
-            key = jax.random.PRNGKey(0)
-            key, key_r, key_a = jax.random.split(key, 3)
-
-            done = False
-
-            obs, state = env.reset(key_r)
-            state_seq = [state]
-            rewards = []
-            shaped_rewards = []
-            while not done:
-                key, key_a0, key_a1, key_s = jax.random.split(key, 4)
-
-                # Get the action space for each agent (assuming it's uniform and doesn't depend on the agent_id)
-                action_space_0 = env.action_space()  # Assuming the method needs to be called
-                action_space_1 = env.action_space()  # Same as above since action_space is uniform
-
-                # Sample actions for each agent
-                action_0 = sample_discrete_action(key_a0, action_space_0).item()  # Ensure it's a Python scalar
-                action_1 = sample_discrete_action(key_a1, action_space_1).item()
-
-                actions = {
-                    "agent_0": action_0,
-                    "agent_1": action_1
-                }
-
-                # STEP ENV
-                obs, state, reward, done, info = env.step(key_s, state, actions)
-                done = done["__all__"]
-                rewards.append(reward["agent_0"])
-                shaped_rewards.append(info["shaped_reward"]["agent_0"])
-
-                state_seq.append(state)
-            state_sequences.append(state_seq)
-
-        return state_sequences
-
-    def visualize_environments():
-        '''
-        Visualizes the environments using the OvercookedVisualizer
-        @param config: the configuration of the training
-        returns None
-        '''
-        state_sequences = get_rollout_for_visualization()
-        visualizer = OvercookedVisualizer()
-        # animate all environments in the sequence
-        for i, env in enumerate(state_sequences):
-            visualizer.animate(state_seq=env, agent_view_size=5,
-                               filename=f"~/JAXOvercooked/environment_layouts/env_{config.layouts[i]}.gif")
-
-        return None
-
-    # padd all environments
+    # step 1: make sure all envs are the same size and create the environments
     padded_envs = pad_observation_space()
 
     envs = []
-    for env_layout in padded_envs:
-        env = make(config.env_name, layout=env_layout)
+    for i, env_layout in enumerate(padded_envs):
+        # TODO config.layouts[i] doesn't work for a random order
+        env = make(config.env_name, layout=env_layout, layout_name=config.layouts[i])
         env = LogWrapper(env, replace_info=False)
         envs.append(env)
 
@@ -697,16 +716,23 @@ def main():
     rew_shaping_anneal = optax.linear_schedule(
         init_value=1.,
         end_value=0.,
-        transition_steps=config.reward_shaping_horizon
+        transition_steps=config.total_timesteps
     )
 
-    global network
-    network = ActorCritic(temp_env.action_space().n, activation=config.activation)
+    # global network
+    network = ActorCritic(temp_env.action_space().n, activation=config.activation, use_multihead=config.use_multihead,
+                          num_tasks=config.seq_length, shared_backbone=config.shared_backbone)
+
+    obs_dim = np.prod(temp_env.observation_space().shape)
+
+    # Add the task ID one-hot of length seq_length
+    if config.use_task_id:
+        obs_dim += config.seq_length
 
     # Initialize the network
     rng = jax.random.PRNGKey(config.seed)
     rng, network_rng = jax.random.split(rng)
-    init_x = jnp.zeros(env.observation_space().shape).flatten()
+    init_x = jnp.zeros((1, obs_dim,))
     network_params = network.init(network_rng, init_x)
 
     # Initialize the optimizer
@@ -726,16 +752,19 @@ def main():
     )
 
     @partial(jax.jit, static_argnums=(2))
-    def train_on_environment(rng, train_state, env_index, agem_mem):
+    def train_on_environment(rng, train_state, env_idx, agem_mem):
         '''
         Trains the network using IPPO
         @param rng: random number generator
         returns the runner state and the metrics
         '''
 
-        env = envs[env_index]
+        env = envs[env_idx]
 
-        print("Training on environment")
+        print(f"Training on environment {env_idx}: {env.name}")
+
+        # How many steps to explore the environment with random actions
+        exploration_steps = int(config.explore_fraction * config.total_timesteps)
 
         # reset the learning rate and the optimizer
         tx = optax.chain(
@@ -768,32 +797,46 @@ def main():
                 returns the updated runner state and the transition
                 '''
                 # Unpack the runner state
-                train_state, env_state, last_obs, update_step, rng, traj_batch, advantages, targets = runner_state
-
+                train_state, env_state, last_obs, update_step, steps_for_env, rng, traj_batch, advantages, targets = runner_state
 
                 # SELECT ACTION
                 # split the random number generator for action selection
                 rng, _rng = jax.random.split(rng)
 
                 # prepare the observations for the network
-                obs_batch = batchify(last_obs, env.agents, config.num_actors)
+                obs_batch = batchify(last_obs, env.agents, config.num_actors)  # (num_actors, obs_dim)
                 # print("obs_shape", obs_batch.shape)
 
+                if config.use_task_id:
+                    # Build a one-hot for env_idx of the sequence length and append it to each row.
+                    onehot = make_task_onehot(env_idx, config.seq_length)
+                    # Broadcast this so we can concat across the batch dimension e.g. shape (num_actors, seq_length)
+                    onehot_batch = jnp.tile(onehot, (obs_batch.shape[0], 1))
+                    # Now concat
+                    obs_batch = jnp.concatenate([obs_batch, onehot_batch], axis=1)
+
                 # apply the policy network to the observations to get the suggested actions and their values
-                pi, value = network.apply(train_state.params, obs_batch)
+                pi, value = network.apply(train_state.params, obs_batch, env_idx=env_idx)
 
-                # sample the actions from the policy distribution
-                action = pi.sample(seed=_rng)
+                # Decide whether to explore randomly or use the policy
+                policy_action = pi.sample(seed=_rng)
+                random_action = jax.random.randint(_rng, (config.num_actors,), 0, env.action_space().n)
+                explore = (steps_for_env < exploration_steps)
+
+                # Expand bool to match the shape of action arrays:
+                mask = jnp.repeat(jnp.array([explore]), config.num_actors)
+                action = jnp.where(mask, random_action, policy_action)
+
                 log_prob = pi.log_prob(action)
-
-                # format the actions to be compatible with the environment
-                env_act = unbatchify(action, env.agents, config.num_envs, env.num_agents)
-                env_act = {k: v.flatten() for k, v in env_act.items()}
 
                 # STEP ENV
                 # split the random number generator for stepping the environment
                 rng, _rng = jax.random.split(rng)
                 rng_step = jax.random.split(_rng, config.num_envs)
+
+                # format the actions to be compatible with the environment
+                env_act = unbatchify(action, env.agents, config.num_envs, env.num_agents)
+                env_act = {k: v.flatten() for k, v in env_act.items()}
 
                 # simultaniously step all environments with the selected actions (parallelized over the number of environments with vmap)
                 obsv, env_state, reward, done, info = jax.vmap(env.step, in_axes=(0, 0, 0))(
@@ -820,11 +863,15 @@ def main():
                     obs_batch
                 )
 
-                runner_state = (train_state, env_state, obsv, update_step, rng, traj_batch, advantages, targets)
+                # Increment steps_for_env by the number of parallel envs
+                steps_for_env = steps_for_env + config.num_envs
+                info["explore"] = jnp.ones((config.num_envs,), dtype=jnp.float32) * jnp.float32(explore)
+
+                runner_state = (train_state, env_state, obsv, update_step, steps_for_env, rng, traj_batch, advantages, targets)
                 return runner_state, (transition, info)
 
             # Apply the _env_step function a series of times, while keeping track of the runner state
-            runner_state, (transition, info) = jax.lax.scan(
+            runner_state, (traj_batch, info) = jax.lax.scan(
                 f=_env_step,
                 init=runner_state,
                 xs=None,
@@ -832,13 +879,18 @@ def main():
             )
 
             # unpack the runner state that is returned after the scan function
-            train_state, env_state, last_obs, update_step, rng, traj_batch, advantages, targets = runner_state
+            train_state, env_state, last_obs, update_step, steps_for_env, rng, traj_batch, advantages, targets = runner_state
 
             # create a batch of the observations that is compatible with the network
             last_obs_batch = batchify(last_obs, env.agents, config.num_actors)
 
+            if config.use_task_id:
+                onehot = make_task_onehot(env_idx, config.seq_length)
+                onehot_batch = jnp.tile(onehot, (last_obs_batch.shape[0], 1))
+                last_obs_batch = jnp.concatenate([last_obs_batch, onehot_batch], axis=1)
+
             # apply the network to the batch of observations to get the value of the last state
-            _, last_val = network.apply(train_state.params, last_obs_batch)
+            _, last_val = network.apply(train_state.params, last_obs_batch, env_idx=env_idx)
 
             # this returns the value network for the last observation batch
 
@@ -917,7 +969,7 @@ def main():
                         returns the total loss and the value loss, actor loss, and entropy
                         '''
                         # apply the network to the observations in the trajectory batch
-                        pi, value = network.apply(params, traj_batch.obs)
+                        pi, value = network.apply(params, traj_batch.obs, env_idx=env_idx)
                         log_prob = pi.log_prob(traj_batch.action)
 
                         # calculate critic loss
@@ -945,11 +997,9 @@ def main():
                         loss_actor = loss_actor.mean()  # calculate the mean of the actor loss
                         entropy = pi.entropy().mean()  # calculate the entropy of the policy
 
-                        total_loss = (
-                                loss_actor
-                                + config.vf_coef * value_loss
-                                - config.ent_coef * entropy
-                        )
+                        total_loss = (loss_actor
+                                      + config.vf_coef * value_loss
+                                      - config.ent_coef * entropy)
                         return total_loss, (value_loss, loss_actor, entropy)
 
                     # returns a function with the same parameters as loss_fn that calculates the gradient of the loss function
@@ -960,53 +1010,67 @@ def main():
                         train_state.params, traj_batch, advantages, targets
                     )
 
-                    # 1) Sample from memory
-                    rng, sample_rng = jax.random.split(rng)
-                    # Pick a random sample from AGEM memory (10 transitions by default)
-                    mem_obs, mem_actions, mem_log_probs, mem_advs, mem_targets, mem_values = sample_memory(agem_mem, 10, sample_rng)
+                    def do_agem(_):
+                        # 1) Sample from memory
+                        rng_1, sample_rng = jax.random.split(rng)
+                        # Pick a random sample from AGEM memory
+                        mem_obs, mem_actions, mem_log_probs, mem_advs, mem_targets, mem_values = sample_memory(agem_mem,
+                                                                                                               128,
+                                                                                                               sample_rng)
+                        # 2) Compute memory gradient
+                        grads_mem, grads_stats = compute_memory_gradient(
+                            network, train_state.params,
+                            config.clip_eps, config.vf_coef, config.ent_coef,
+                            mem_obs, mem_actions, mem_log_probs,
+                            mem_advs, mem_targets, mem_values
+                        )
 
-                    # 2) Compute memory gradient
-                    grads_mem = compute_memory_gradient(
-                        train_state.params, config.clip_eps,
-                        config.vf_coef, config.ent_coef,
-                        mem_obs, mem_actions, mem_log_probs,
-                        mem_advs, mem_targets, mem_values
+                        # 3) Project new grads
+                        grads_proj, agem_stats = agem_project(grads_new, grads_mem)
+
+                        # 4) Apply the projected gradient
+                        new_ts = train_state.apply_gradients(grads=grads_proj)
+
+                        # Return the new train_state plus logging stats
+                        final_stats = {**grads_stats, **agem_stats}
+                        return new_ts, final_stats
+
+                    def do_plain(_):
+                        # No memory logic
+                        new_ts = train_state.apply_gradients(grads=grads_new)
+                        # Return empty AGEM stats
+                        return (new_ts, {
+                            "agem/dot_g": 0.0,
+                            "agem/dot_mem": 0.0,
+                            "agem/alpha": 0.0,
+                            "agem/is_projected": False,
+                            "agem/ppo_total_loss": 0.0,
+                            "agem/ppo_value_loss": 0.0,
+                            "agem/ppo_actor_loss": 0.0,
+                            "agem/ppo_entropy": 0.0
+                        })
+
+                    # Branch *inside* JAX via lax.cond (env_index > 0 => do_agem, else do_plain)
+                    (new_train_state, agem_stats) = jax.lax.cond(
+                        env_idx > 0,
+                        do_agem,
+                        do_plain,
+                        operand=None
                     )
 
-                    # --- Gather AGEM diagnostics ---
-                    # Dot products:
-                    dot_g = sum(jnp.vdot(gn, gm) for gn, gm in zip(jax.tree_util.tree_leaves(grads_new),
-                                                                   jax.tree_util.tree_leaves(grads_mem)))
-                    dot_mem = sum(jnp.vdot(gm, gm2) for gm, gm2 in zip(jax.tree_util.tree_leaves(grads_mem),
-                                                                       jax.tree_util.tree_leaves(grads_mem)))
-
-                    alpha = dot_g / (dot_mem + 1e-12)
-                    # We'll see if dot_g is negative => projection
-                    is_projected = dot_g < 0.0
-
-                    # 3. Project
-                    grads_projected = agem_project(grads_new, grads_mem)
-
-                    # 4. Apply projected gradient
-                    train_state = train_state.apply_gradients(grads=grads_projected)
-
                     # Pack all relevant results for logging
-                    info_dict = {
+                    ppo_stats = {
                         "total_loss": total_loss,
                         "value_loss": value_loss,
                         "actor_loss": actor_loss,
                         "entropy": entropy,
-                        "agem/dot_g": dot_g,
-                        "agem/dot_mem": dot_mem,
-                        "agem/alpha": alpha,
-                        "agem/is_projected": is_projected,
                     }
+                    final_stats = {**ppo_stats, **agem_stats}
 
-                    # Of course we also need to add the network to the carry here
-                    return (train_state, rng), info_dict
+                    return (new_train_state, rng), final_stats
 
                 # unpack the update_state (because of the scan function)
-                train_state, env_state, last_obs, update_step, rng, traj_batch, advantages, targets = runner_state
+                train_state, traj_batch, advantages, targets, steps_for_env, rng = update_state
 
                 # set the batch size and check if it is correct
                 batch_size = config.minibatch_size * config.num_minibatches
@@ -1042,31 +1106,14 @@ def main():
                     xs=minibatches
                 )
 
-
-                def reduce_mean(dicts):
-                    """Given an array of dictionary items, average each one across the minibatch dimension."""
-                    # If info_array is an array of dicts, we can do a tree_map
-                    # but typically we do something like:
-                    out = {}
-                    for k in dicts[0].keys():
-                        # gather all values along axis=0
-                        vals = jnp.stack([d[k] for d in dicts], axis=0)
-                        out[k] = jnp.mean(vals)
-                    return out
-
                 # epoch_info = reduce_mean(info_array)  # average across the minibatches
                 epoch_metrics = {k: jnp.mean(v, axis=0) for k, v in info_array.items()}
 
-                # total_loss, grads, agem_metrics = loss_information
-                # mean_dot_g = jnp.mean(jax.tree_util.tree_map(lambda d: d["agem/dot_g"], agem_metrics))
-                # frac_projected = jnp.mean(jax.tree_util.tree_map(lambda d: d["agem/is_projected"], agem_metrics))
-                # avg_grads = jax.tree_util.tree_map(lambda x: jnp.mean(x, axis=0), grads)
-
-                update_state = (train_state, traj_batch, advantages, targets, rng)
+                update_state = (train_state, traj_batch, advantages, targets, steps_for_env, rng)
                 return update_state, epoch_metrics
 
             # create a tuple to be passed into the jax.lax.scan function
-            update_state = (train_state, traj_batch, advantages, targets, rng)
+            update_state = (train_state, traj_batch, advantages, targets, steps_for_env, rng)
 
             update_state, epoch_info = jax.lax.scan(
                 f=_update_epoch,
@@ -1076,28 +1123,28 @@ def main():
             )
 
             # unpack update_state
-            train_state, traj_batch, advantages, targets, rng = update_state
-
-            # set the metric to be the information of the last update epoch
+            train_state, traj_batch, advantages, targets, steps_for_env, rng = update_state
             metric = info
-
-            # calculate the current timestep
             current_timestep = update_step * config.num_steps * config.num_envs
 
-            # average the metric
+            # update the metric with the current timestep
             metric = jax.tree_util.tree_map(lambda x: x.mean(), metric)
 
+            # General section
+            # Update the step counter
             update_step = update_step + 1
+            mean_explore = jnp.mean(info["explore"])
 
-            # add the general metrics to the metric dictionary
+            metric["General/env_index"] = env_idx
+            metric["General/explore"] = mean_explore
             metric["General/update_step"] = update_step
+            metric["General/steps_for_env"] = steps_for_env
             metric["General/env_step"] = update_step * config.num_steps * config.num_envs
             metric["General/learning_rate"] = linear_schedule(
                 update_step * config.num_minibatches * config.update_epochs)
-            metric["General/sparsity"] = calculate_sparsity(train_state.params)
 
             # Losses section
-            # total_loss, (value_loss, loss_actor, entropy) = loss_info
+            # total_loss, (value_loss, loss_actor, entropy, ewc_loss) = loss_info
             # metric["Losses/total_loss"] = total_loss.mean()
             # metric["Losses/value_loss"] = value_loss.mean()
             # metric["Losses/actor_loss"] = loss_actor.mean()
@@ -1106,7 +1153,7 @@ def main():
             # Rewards section
             metric["General/shaped_reward_agent0"] = metric["shaped_reward"]["agent_0"]
             metric["General/shaped_reward_agent1"] = metric["shaped_reward"]["agent_1"]
-            metric.pop("shaped_reward", None)
+            metric.pop('shaped_reward', None)
             metric["General/shaped_reward_annealed_agent0"] = metric[
                                                                   "General/shaped_reward_agent0"] * rew_shaping_anneal(
                 current_timestep)
@@ -1120,7 +1167,7 @@ def main():
 
             # Merge the epoch info into the metric
             for key, val in epoch_info.items():
-                metric[key] = val
+                metric[key] = val.mean()
 
             # Evaluation section
             for i in range(len(config.layout_name)):
@@ -1131,7 +1178,7 @@ def main():
                 train_state_eval = jax.tree_util.tree_map(lambda x: x.copy(), train_state)
 
                 def log_metrics(metric, update_step):
-                    evaluations = evaluate_model(train_state_eval, network, eval_rng)
+                    evaluations = evaluate_model(train_state_eval, eval_rng, env_idx)
                     for i, evaluation in enumerate(evaluations):
                         metric[f"Evaluation/{config.layout_name[i]}"] = evaluation
 
@@ -1143,7 +1190,7 @@ def main():
                         for key, value in metric.items():
                             writer.add_scalar(key, value, real_step)
 
-                    jax.experimental.io_callback(callback, None, (metric, update_step, env_index))
+                    jax.experimental.io_callback(callback, None, (metric, update_step, env_idx + 1))
                     return None
 
                 def do_not_log(metric, update_step):
@@ -1155,7 +1202,7 @@ def main():
             evaluate_and_log(rng=rng, update_step=update_step)
 
             rng = update_state[-1]
-            runner_state = (train_state, env_state, last_obs, update_step, rng, traj_batch, advantages, targets)
+            runner_state = (train_state, env_state, last_obs, update_step, steps_for_env, rng, traj_batch, advantages, targets)
 
             return runner_state, metric
 
@@ -1166,19 +1213,19 @@ def main():
 
         # Create dummy rollout data for one time step for each actor:
         initial_traj_batch = Transition(
-            done    = jnp.zeros((config.num_steps, config.num_actors)),
-            action  = jnp.zeros((config.num_steps, config.num_actors)),
-            value   = jnp.zeros((config.num_steps, config.num_actors)),
-            reward  = jnp.zeros((config.num_steps, config.num_actors)),
-            log_prob= jnp.zeros((config.num_steps, config.num_actors)),
-            obs     = jnp.zeros((config.num_steps, config.num_actors, OBS_DIM))
+            done=jnp.zeros((config.num_steps, config.num_actors)),
+            action=jnp.zeros((config.num_steps, config.num_actors)),
+            value=jnp.zeros((config.num_steps, config.num_actors)),
+            reward=jnp.zeros((config.num_steps, config.num_actors)),
+            log_prob=jnp.zeros((config.num_steps, config.num_actors)),
+            obs=jnp.zeros((config.num_steps, config.num_actors, OBS_DIM))
         )
 
         initial_advantages = jnp.zeros((config.num_steps, config.num_actors))
-        initial_targets    = jnp.zeros((config.num_steps, config.num_actors))
+        initial_targets = jnp.zeros((config.num_steps, config.num_actors))
 
         # initialize a carrier that keeps track of the states and observations of the agents
-        runner_state = (train_state, env_state, obsv, 0, train_rng, initial_traj_batch, initial_advantages, initial_targets)
+        runner_state = (train_state, env_state, obsv, 0, 0, train_rng, initial_traj_batch, initial_advantages, initial_targets)
 
         # apply the _update_step function a series of times, while keeping track of the state
         runner_state, _ = jax.lax.scan(
@@ -1188,7 +1235,7 @@ def main():
             length=config.num_updates
         )
 
-        train_state, env_state, last_obs, update_step, rng, traj_batch, advantages, targets = runner_state
+        train_state, env_state, last_obs, update_step, steps_for_env, rng, traj_batch, advantages, targets = runner_state
 
         # get the shape
         B = config.num_steps * config.num_actors
@@ -1223,27 +1270,19 @@ def main():
 
         visualizer = OvercookedVisualizer()
 
-        # counter for the environment
-        env_counter = 1
-
+        runner_state = None
         for i, (env_rng, _) in enumerate(zip(sub_rngs, envs)):
             (train_state, rng, agem_mem) = train_on_environment(env_rng, train_state, i, agem_mem)
-
-            # unpack the runner state
-            # train_state, env_state, last_obs, update_step, rng, agem_mem, traj_batch, advantages, targets = runner_state
 
             # Generate & log a GIF after finishing task i
             states = record_gif_of_episode(config, train_state, envs[i], network, env_idx=i, max_steps=config.gif_len)
             visualizer.animate(states, agent_view_size=5, task_idx=i, task_name=envs[i].name, exp_dir=exp_dir)
 
             # save the model
-            path = f"checkpoints/overcooked/{run_name}/model_env_{env_counter}"
+            path = f"checkpoints/overcooked/EWC/{run_name}/model_env_{i + 1}"
             save_params(path, train_state)
 
-            # update the environment counter
-            env_counter += 1
-
-        return train_state, rng, agem_mem
+        return runner_state
 
     def save_params(path, train_state):
         '''
@@ -1263,6 +1302,7 @@ def main():
 
     # Run the model
     rng, train_rng = jax.random.split(rng)
+
     # apply the loop_over_envs function to the environments
     loop_over_envs(train_rng, train_state, envs, agem_mem)
 
@@ -1287,12 +1327,16 @@ def record_gif_of_episode(config, train_state, env, network, env_idx=0, max_step
                 obs_b = obs_v
             # Flatten the nonbatch dimensions.
             flattened = jnp.reshape(obs_b, (obs_b.shape[0], -1))
+            if config.use_task_id:
+                onehot = make_task_onehot(env_idx, config.seq_length)  # (seq_length,)
+                onehot = jnp.expand_dims(onehot, axis=0)  # (1, seq_length)
+                flattened = jnp.concatenate([flattened, onehot], axis=1)
             flat_obs[agent_id] = flattened
 
         actions = {}
         act_keys = jax.random.split(rng, env.num_agents)
         for i, agent_id in enumerate(env.agents):
-            pi, _ = network.apply(train_state.params, flat_obs[agent_id])
+            pi, _ = network.apply(train_state.params, flat_obs[agent_id], env_idx=env_idx)
             actions[agent_id] = jnp.squeeze(pi.sample(seed=act_keys[i]), axis=0)
 
         rng, key_step = jax.random.split(rng)
@@ -1304,12 +1348,6 @@ def record_gif_of_episode(config, train_state, env, network, env_idx=0, max_step
         states.append(state)
 
     return states
-
-
-def sample_discrete_action(key, action_space):
-    """Samples a discrete action based on the action space provided."""
-    num_actions = action_space.n
-    return jax.random.randint(key, (1,), 0, num_actions)
 
 
 if __name__ == "__main__":
