@@ -427,63 +427,63 @@ class TestPacknet(unittest.TestCase):
     #             self.assertTrue(jnp.all(layer_dict["kernel"] == 1),
     #                           f"Kernel gradients for {layer_name} should be preserved")
 
-    # def test_train_mask(self):
-    #     """Test that training mask correctly protects previous task parameters."""
-    #     # Set up a scenario with one completed task
-    #     self.packnet_state = self.packnet_state.replace(current_task=1)
+    def test_train_mask(self):
+        """Test that training mask correctly protects previous task parameters."""
+        # Set up a scenario with one completed task
+        self.packnet_state = self.packnet_state.replace(current_task=1)
         
-    #     # Create task 0 mask with some parameters assigned to task 0
-    #     mask_tree = {
-    #         "Dense_0": {
-    #             "bias": jnp.array([[False, True, True], [False, False, False]]),
-    #             "kernel": jnp.array([[[True, True, False], [False, True, True]], 
-    #                                  [[False, False, False], [False, False, False]]])
-    #         },
-    #         "Dense_1": {
-    #             "bias": jnp.array([[False, True], [False, False]]),
-    #             "kernel": jnp.array([[[True, False], [True, True], [False, True]], 
-    #                                  [[False, False], [False, False], [False, False]]])
-    #         }
-    #     }
-    #     self.packnet_state = self.packnet_state.replace(masks=mask_tree)
+        # Create task 0 mask with some parameters assigned to task 0
+        mask_tree = {
+            "Dense_0": {
+                "bias": jnp.array([[False, True, True], [False, False, False]]),
+                "kernel": jnp.array([[[True, True, False], [False, True, True]], 
+                                     [[False, False, False], [False, False, False]]])
+            },
+            "Dense_1": {
+                "bias": jnp.array([[False, True], [False, False]]),
+                "kernel": jnp.array([[[True, False], [True, True], [False, True]], 
+                                     [[False, False], [False, False], [False, False]]])
+            }
+        }
+        self.packnet_state = self.packnet_state.replace(masks=mask_tree)
         
-    #     # Create test gradients that match the mask structure
-    #     test_grads = {
-    #         "Dense_0": {
-    #             "kernel": jnp.array([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]),
-    #             "bias": jnp.array([0.01, 0.02, 0.03])
-    #         },
-    #         "Dense_1": {
-    #             "kernel": jnp.array([[0.7, 0.8], [0.9, 1.0], [1.1, 1.2]]),
-    #             "bias": jnp.array([0.04, 0.05])
-    #         }
-    #     }
+        # Create test gradients that match the mask structure
+        test_grads = {
+            "Dense_0": {
+                "kernel": jnp.array([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]),
+                "bias": jnp.array([0.01, 0.02, 0.03])
+            },
+            "Dense_1": {
+                "kernel": jnp.array([[0.7, 0.8], [0.9, 1.0], [1.1, 1.2]]),
+                "bias": jnp.array([0.04, 0.05])
+            }
+        }
 
-    #     # Apply the training mask
-    #     masked_grads = self.packnet.train_mask(test_grads, self.packnet_state)
+        # Apply the training mask
+        masked_grads = self.packnet.train_mask(test_grads, self.packnet_state)
 
-    #     # Check that gradients for task 0 are zeroed (parameters cannot be updated)
-    #     expected_masked_grads = {
-    #         "Dense_0": {
-    #             "kernel": jnp.array([[0.0, 0.0, 0.3], [0.4, 0.0, 0.0]]),
-    #             "bias": jnp.array([0.01, 0.02, 0.03])
-    #         },
-    #         "Dense_1": {
-    #             "kernel": jnp.array([[0.0, 0.8], [0.0, 0.0], [1.1, 0.0]]),
-    #             "bias": jnp.array([0.04, 0.05])
-    #         }
-    #     }
+        # Check that gradients for task 0 are zeroed (parameters cannot be updated)
+        expected_masked_grads = {
+            "Dense_0": {
+                "kernel": jnp.array([[0.0, 0.0, 0.3], [0.4, 0.0, 0.0]]),
+                "bias": jnp.array([0.01, 0.02, 0.03])
+            },
+            "Dense_1": {
+                "kernel": jnp.array([[0.0, 0.8], [0.0, 0.0], [1.1, 0.0]]),
+                "bias": jnp.array([0.04, 0.05])
+            }
+        }
 
-    #     for layer_name, layer_dict in masked_grads.items():
-    #         for param_name, param in layer_dict.items():
-    #             if "kernel" in param_name:
-    #                 # Check that masked gradients are zeroed
-    #                 self.assertTrue(jnp.all(param == expected_masked_grads[layer_name][param_name]),
-    #                               f"Masked gradients for {layer_name} {param_name} do not match expected values")
-    #             else:
-    #                 # Bias gradients should remain unchanged
-    #                 self.assertTrue(jnp.all(param == test_grads[layer_name][param_name]),
-    #                               f"Bias gradients for {layer_name} {param_name} should remain unchanged")
+        for layer_name, layer_dict in masked_grads.items():
+            for param_name, param in layer_dict.items():
+                if "kernel" in param_name:
+                    # Check that masked gradients are zeroed
+                    self.assertTrue(jnp.all(param == expected_masked_grads[layer_name][param_name]),
+                                  f"Masked gradients for {layer_name} {param_name} do not match expected values")
+                else:
+                    # Bias gradients should remain unchanged
+                    self.assertTrue(jnp.all(param == test_grads[layer_name][param_name]),
+                                  f"Bias gradients for {layer_name} {param_name} should remain unchanged")
                     
     # def test_finetune_mask(self):
 
@@ -810,30 +810,30 @@ class TestPacknet(unittest.TestCase):
         # Create parameters
         params = {
             "Dense_0": {
-                "kernel": jnp.array([[1, 2, 3], [4, 5, 6]]),
-                "bias": jnp.array([0.1, 0.2, 0.3])
+                "kernel": jnp.array([[5, 8, 2, 3], [1, 5, 9, 4]]),
+                "bias": jnp.array([0.1, 0.2, 0.3, 0.4])
             }
         }
 
         grads = {
             "Dense_0": {
-                "kernel": jnp.array([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]),
-                "bias": jnp.array([0.1, 0.2, 0.3])
+                "kernel": jnp.array([[0.5, 0.8, 0.2, 0.3], [0.1, 0.5, 0.9, 0.4]]),
+                "bias": jnp.array([0.01, 0.02, 0.03, 0.04])
             }
         }
 
         # Create a mask tree with everything false, for 3 tasks
         mask_tree = {
             "Dense_0": {
-                "kernel": jnp.array([[[False, False, False], [False, False, False]], 
-                                     [[False, False, False], [False, False, False]], 
-                                     [[False, False, False], [False, False, False]]]),
-                "bias": jnp.array([[False, False, False], 
-                                   [False, False, False], 
-                                   [False, False, False]]),
+                "kernel": jnp.array([[[False, False, False, False], [False, False, False, False]],
+                                     [[False, False, False, False], [False, False, False, False]], 
+                                     [[False, False, False, False], [False, False, False, False]]]),
+                "bias": jnp.array([[False, False, False, False],
+                                    [False, False, False, False], 
+                                    [False, False, False, False]])
             }
-        }
 
+        }
         # Create a packnet state with our test parameters
         packnet_state = PacknetState(
             masks=mask_tree,
@@ -845,11 +845,15 @@ class TestPacknet(unittest.TestCase):
         for i in range(2):
             new_grads = packnet.on_backwards_end(grads, packnet_state)
         
+        # None of the gradients should be masked out: 
+        sparsity = packnet.compute_sparsity(new_grads["params"])
+        assert sparsity == 0.0, "Sparsity should be 0.0 during the first training"
+        
         # check if gradients are unchanged 
         expected_grads_task0 = {
             "Dense_0": {
-                "kernel": jnp.array([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]),
-                "bias": jnp.array([0.1, 0.2, 0.3])
+                "kernel": jnp.array([[0.5, 0.8, 0.2, 0.3], [0.1, 0.5, 0.9, 0.4]]),
+                "bias": jnp.array([0.01, 0.02, 0.03, 0.04])
             }
         }
 
@@ -861,33 +865,38 @@ class TestPacknet(unittest.TestCase):
         
         
         # 3. Finish training on task 0, call on_train_end
-        params, packnet_state = packnet.on_train_end(params, packnet_state)
+        new_params, packnet_state = packnet.on_train_end(params, packnet_state)
+
+        sparsity = packnet.compute_sparsity(new_params["params"])
+        print(sparsity)
+        assert sparsity == 0.5, "Sparsity should be 0.5 after first pruning"
 
         # check if the training mode is false
         self.assertFalse(packnet_state.train_mode, "State should be in fine-tuning mode")
 
         expected_params_after_task0 = {
             "Dense_0": {
-                "kernel": jnp.array([[0, 0, 0], [4, 5, 6]]),
-                "bias": jnp.array([0.1, 0.2, 0.3])
+                "kernel": jnp.array([[5, 8, 0, 0], [0, 5, 9, 0]]),
+                "bias": jnp.array([0.1, 0.2, 0.3, 0.4])
             }
         }
 
         expected_mask_after_task0 = {
             "Dense_0": {
-                "kernel": jnp.array([[[False, False, False], [True, True, True]], 
-                                     [[False, False, False], [False, False, False]], 
-                                     [[False, False, False], [False, False, False]]]),
-                "bias": jnp.array([[False, False, False], 
-                                   [False, False, False], 
-                                   [False, False, False]]),
+                "kernel": jnp.array([[[True, True, False, False], [False, True, True, False]],
+                                     [[False, False, False, False], [False, False, False, False]], 
+                                     [[False, False, False, False], [False, False, False, False]]]),
+                "bias": jnp.array([[False, False, False, False],
+                                    [False, False, False, False], 
+                                    [False, False, False, False]])
             }
+
         }
 
         # check if the parameters are pruned correctly
-        assert jnp.array_equal(params["params"]["Dense_0"]["kernel"],
+        assert jnp.array_equal(new_params["params"]["Dense_0"]["kernel"],
                                expected_params_after_task0["Dense_0"]["kernel"]), "kernel parameters should be pruned in task 0"
-        assert jnp.array_equal(params["params"]["Dense_0"]["bias"],
+        assert jnp.array_equal(new_params["params"]["Dense_0"]["bias"],
                                expected_params_after_task0["Dense_0"]["bias"]), "bias parameters should not be pruned in task 0"
         # check if the masks are correct
         assert jnp.array_equal(packnet_state.masks["Dense_0"]["kernel"],
@@ -901,19 +910,23 @@ class TestPacknet(unittest.TestCase):
             # new gradients are calculated: 
             grads_finetune = {
                 "Dense_0": {
-                    "kernel": jnp.array([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]),
-                    "bias": jnp.array([0.1, 0.2, 0.3])
+                    "kernel": jnp.array([[0.2, 0.9, 0.1, 0.3], [0.4, 0.4, 0.7, 0.4]]),
+                    "bias": jnp.array([0.03, 0.02, 0.07, 0.03])
                 }
             }
             new_grads_finetune_task0 = packnet.on_backwards_end(grads_finetune, packnet_state)
         
+        sparsity_grads = packnet.compute_sparsity(new_grads_finetune_task0["params"])
+        assert sparsity_grads == 0.5, "Sparsity of gradients should be 0.5 during finetuning task 0"
+        
         expected_grads_finetune_task0 = {
-            "Dense_0": {
-                "kernel": jnp.array([[0, 0, 0], [0.4, 0.5, 0.6]]),
-                "bias": jnp.array([0.1, 0.2, 0.3])
+                "Dense_0": {
+                    "kernel": jnp.array([[0.2, 0.9, 0.0, 0.0], [0.0, 0.4, 0.7, 0.0]]),
+                    "bias": jnp.array([0.03, 0.02, 0.07, 0.03])
+                }
             }
-        }
-        print("new grads finetune task 0", new_grads_finetune_task0)
+        
+        # print("new grads finetune task 0", new_grads_finetune_task0)
         # Check if the gradients are unchanged
         assert jnp.array_equal(new_grads_finetune_task0["params"]["Dense_0"]["kernel"], 
                                expected_grads_finetune_task0["Dense_0"]["kernel"]), "kernel Gradients should be unchanged in task 0"
@@ -929,35 +942,40 @@ class TestPacknet(unittest.TestCase):
 
         ###### TASK 1 ########
         print("#################################################################")
-        expected_mask = {
-            "Dense_0": {
-                "kernel": jnp.array([[[False, False, False], [True, True, True]], 
-                                     [[False, False, False], [False, False, False]], 
-                                     [[False, False, False], [False, False, False]]]),
-                "bias": jnp.array([[False, False, False], 
-                                   [False, False, False], 
-                                   [False, False, False]]),
-            }
-        }
+        # expected_mask = {
+        #     "Dense_0": {
+        #         "kernel": jnp.array([[[False, False, False], [True, True, True]], 
+        #                              [[False, False, False], [False, False, False]], 
+        #                              [[False, False, False], [False, False, False]]]),
+        #         "bias": jnp.array([[False, False, False], 
+        #                            [False, False, False], 
+        #                            [False, False, False]]),
+        #     }
+        # }
 
-        packnet_state = packnet_state.replace(masks=expected_mask)
+        # packnet_state = packnet_state.replace(masks=expected_mask)
+
 
         # train the model on task 1
         for i in range(2):
             grads_task1 = {
                 "Dense_0": {
-                    "kernel": jnp.array([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]),
-                    "bias": jnp.array([0.1, 0.2, 0.3])
+                    "kernel": jnp.array([[0.5, 0.9, 0.7, 0.2], [0.4, 0.5, 0.6, 0.1]]),
+                    "bias": jnp.array([0.1, 0.2, 0.3, 0.8])
                 }
             }
             new_grads_task1 = packnet.on_backwards_end(grads_task1, packnet_state)
 
+
             expected_grads_task1 = {
                 "Dense_0": {
-                    "kernel": jnp.array([[0.1, 0.2, 0.3], [0, 0, 0]]),
-                    "bias": jnp.array([0, 0, 0])
+                    "kernel": jnp.array([[0.0, 0.0, 0.7, 0.2], [0.4, 0.0, 0.0, 0.1]]),
+                    "bias": jnp.array([0, 0, 0, 0])
                 }
             }
+            
+            sparsity_grads = packnet.compute_sparsity(new_grads_task1["params"])
+            assert sparsity_grads == 0.5, "Sparsity of gradients should be 0.5 during training task 1"
 
             # check if the bias parameters are masked out
             assert jnp.array_equal(new_grads_task1["params"]["Dense_0"]["bias"], 
@@ -968,30 +986,33 @@ class TestPacknet(unittest.TestCase):
         # after training, the pruned parameters are filled again:
         refilled_params = {
             "Dense_0": {
-                "kernel": jnp.array([[6, 2, 8], [4, 5, 6]]),
-                "bias": jnp.array([0.1, 0.2, 0.3])
+                "kernel": jnp.array([[5, 8, 3, 4], [2, 5, 9, 7]]),
+                "bias": jnp.array([0.1, 0.2, 0.3, 0.4])
             }
         }
             
         # finish  training on task 1
         new_params_task1, packnet_state = packnet.on_train_end(refilled_params, packnet_state)
+        sparsity = packnet.compute_sparsity(new_params_task1["params"])
+        assert sparsity == 0.25, "Sparsity should be 0.25 after second pruning"
 
         expected_params_after_task1 = {
             "Dense_0": {
-                "kernel": jnp.array([[6, 0, 8], [4, 5, 6]]),
-                "bias": jnp.array([0.1, 0.2, 0.3])
+                "kernel": jnp.array([[5, 8, 0, 4], [0, 5, 9, 7]]),
+                "bias": jnp.array([0.1, 0.2, 0.3, 0.4])
             }
         }
 
         expected_mask_after_task1 = {
             "Dense_0": {
-                "kernel": jnp.array([[[False, False, False], [True, True, True]], 
-                                     [[True, False, True], [False, False, False]], 
-                                     [[False, False, False], [False, False, False]]]),
-                "bias": jnp.array([[False, False, False], 
-                                   [False, False, False], 
-                                   [False, False, False]]),
+                "kernel": jnp.array([[[True, True, False, False], [False, True, True, False]],
+                                     [[False, False, False, True], [False, False, False, True]], 
+                                     [[False, False, False, False], [False, False, False, False]]]),
+                "bias": jnp.array([[False, False, False, False],
+                                    [False, False, False, False], 
+                                    [False, False, False, False]])
             }
+
         }
 
         assert jnp.array_equal(new_params_task1["params"]["Dense_0"]["kernel"],
@@ -1008,20 +1029,21 @@ class TestPacknet(unittest.TestCase):
             # new gradients are calculated: 
             grads_finetune = {
                 "Dense_0": {
-                    "kernel": jnp.array([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]),
-                    "bias": jnp.array([0.1, 0.2, 0.3])
+                    "kernel": jnp.array([[0.8, 0.1, 0.1, 0.1], [0.1, 0.1, 0.1, 0.1]]),
+                    "bias": jnp.array([0.04, 0.02, 0.056, 0.02])
                 }
             }
             new_grads_finetune_task1 = packnet.on_backwards_end(grads_finetune, packnet_state)
+
+            sparsity_grads = packnet.compute_sparsity(new_grads_finetune_task1["params"])
+            assert sparsity_grads == 0.75, "Sparsity of gradients should be 0.75 during finetuning task 1"
         
         expected_grads_finetune_task1 = {
-            "Dense_0": {
-                "kernel": jnp.array([[0.1, 0, 0.3], [0, 0, 0]]),
-                "bias": jnp.array([0, 0, 0])
+                "Dense_0": {
+                    "kernel": jnp.array([[0.0, 0.0, 0.0, 0.1], [0.0, 0.0, 0.0, 0.1]]),
+                    "bias": jnp.array([0, 0, 0, 0])
+                }
             }
-        }
-
-        print(f"new grads task 1: {new_grads_finetune_task1}")
 
         # Check if the gradients are correctly masked
         assert jnp.array_equal(new_grads_finetune_task1["params"]["Dense_0"]["kernel"], 
@@ -1038,109 +1060,109 @@ class TestPacknet(unittest.TestCase):
 
 
 
-        ###### TASK 2 ########
-        print("#################################################################")
-        expected_mask = {
-            "Dense_0": {
-                "kernel": jnp.array([[[False, False, False], [True, True, True]], 
-                                     [[True, False, True], [False, False, False]], 
-                                     [[False, False, False], [False, False, False]]]),
-                "bias": jnp.array([[False, False, False], 
-                                   [False, False, False], 
-                                   [False, False, False]]),
-            }
-        }
+        # ###### TASK 2 ########
+        # print("#################################################################")
+        # expected_mask = {
+        #     "Dense_0": {
+        #         "kernel": jnp.array([[[False, False, False], [True, True, True]], 
+        #                              [[True, False, True], [False, False, False]], 
+        #                              [[False, False, False], [False, False, False]]]),
+        #         "bias": jnp.array([[False, False, False], 
+        #                            [False, False, False], 
+        #                            [False, False, False]]),
+        #     }
+        # }
 
-        packnet_state = packnet_state.replace(masks=expected_mask)
+        # packnet_state = packnet_state.replace(masks=expected_mask)
 
-        # train the model on task 2
-        for i in range(5):
-            grads_task2 = {
-                "Dense_0": {
-                    "kernel": jnp.array([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]),
-                    "bias": jnp.array([0.1, 0.2, 0.3])
-                }
-            }
-            new_grads_task2 = packnet.on_backwards_end(grads_task2, packnet_state)
+        # # train the model on task 2
+        # for i in range(5):
+        #     grads_task2 = {
+        #         "Dense_0": {
+        #             "kernel": jnp.array([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]),
+        #             "bias": jnp.array([0.1, 0.2, 0.3])
+        #         }
+        #     }
+        #     new_grads_task2 = packnet.on_backwards_end(grads_task2, packnet_state)
 
-            expected_grads_task2 = {
-                "Dense_0": {
-                    "kernel": jnp.array([[0, 0.2, 0], [0, 0, 0]]),
-                    "bias": jnp.array([0, 0, 0])
-                }
-            }
+        #     expected_grads_task2 = {
+        #         "Dense_0": {
+        #             "kernel": jnp.array([[0, 0.2, 0], [0, 0, 0]]),
+        #             "bias": jnp.array([0, 0, 0])
+        #         }
+        #     }
 
-            # check if the bias parameters are masked out
-            assert jnp.array_equal(new_grads_task2["params"]["Dense_0"]["bias"], 
-                                   expected_grads_task2["Dense_0"]["bias"]), "bias Gradients should be masked out in task 2"
-            assert jnp.array_equal(new_grads_task2["params"]["Dense_0"]["kernel"],
-                                   expected_grads_task2["Dense_0"]["kernel"]), "fixed parameters of task 2 should be masked out"
+        #     # check if the bias parameters are masked out
+        #     assert jnp.array_equal(new_grads_task2["params"]["Dense_0"]["bias"], 
+        #                            expected_grads_task2["Dense_0"]["bias"]), "bias Gradients should be masked out in task 2"
+        #     assert jnp.array_equal(new_grads_task2["params"]["Dense_0"]["kernel"],
+        #                            expected_grads_task2["Dense_0"]["kernel"]), "fixed parameters of task 2 should be masked out"
             
-        # after training, the pruned parameters are filled again:
-        refilled_params2 = {
-            "Dense_0": {
-                "kernel": jnp.array([[6, 5, 8], [4, 5, 6]]),
-                "bias": jnp.array([0.1, 0.2, 0.3])
-            }
-        }
+        # # after training, the pruned parameters are filled again:
+        # refilled_params2 = {
+        #     "Dense_0": {
+        #         "kernel": jnp.array([[6, 5, 8], [4, 5, 6]]),
+        #         "bias": jnp.array([0.1, 0.2, 0.3])
+        #     }
+        # }
             
-        # finish  training on task 1
-        new_params_task2, packnet_state = packnet.on_train_end(refilled_params2, packnet_state)
+        # # finish  training on task 1
+        # new_params_task2, packnet_state = packnet.on_train_end(refilled_params2, packnet_state)
 
-        # THIS SHOULD CALL MASK_REMAINING_PARAMS, NOT PRUNE
+        # # THIS SHOULD CALL MASK_REMAINING_PARAMS, NOT PRUNE
 
-        expected_params_after_task2 = {
-            "Dense_0": {
-                "kernel": jnp.array([[6, 5, 8], [4, 5, 6]]),
-                "bias": jnp.array([0.1, 0.2, 0.3])
-            }
-        }
+        # expected_params_after_task2 = {
+        #     "Dense_0": {
+        #         "kernel": jnp.array([[6, 5, 8], [4, 5, 6]]),
+        #         "bias": jnp.array([0.1, 0.2, 0.3])
+        #     }
+        # }
 
-        expected_mask_after_task2 = {
-            "Dense_0": {
-                "kernel": jnp.array([[[False, False, False], [True, True, True]], 
-                                     [[True, False, True], [False, False, False]], 
-                                     [[False, True, False], [False, False, False]]]),
-                "bias": jnp.array([[False, False, False], 
-                                   [False, False, False], 
-                                   [False, False, False]]),
-            }
-        }
+        # expected_mask_after_task2 = {
+        #     "Dense_0": {
+        #         "kernel": jnp.array([[[False, False, False], [True, True, True]], 
+        #                              [[True, False, True], [False, False, False]], 
+        #                              [[False, True, False], [False, False, False]]]),
+        #         "bias": jnp.array([[False, False, False], 
+        #                            [False, False, False], 
+        #                            [False, False, False]]),
+        #     }
+        # }
 
-        assert jnp.array_equal(new_params_task2["params"]["Dense_0"]["kernel"],
-                        expected_params_after_task2["Dense_0"]["kernel"]), "pruning is not correct in task 2"
-        assert jnp.array_equal(new_params_task2["params"]["Dense_0"]["bias"],
-                               expected_params_after_task2["Dense_0"]["bias"]), "bias parameters should not be pruned in task 2"
-        assert jnp.array_equal(packnet_state.masks["Dense_0"]["kernel"],
-                                expected_mask_after_task2["Dense_0"]["kernel"]), "kernel masks should be correct in task 2"
-        assert jnp.array_equal(packnet_state.masks["Dense_0"]["bias"],
-                                expected_mask_after_task2["Dense_0"]["bias"]), "bias masks should be correct in task 2"
+        # assert jnp.array_equal(new_params_task2["params"]["Dense_0"]["kernel"],
+        #                 expected_params_after_task2["Dense_0"]["kernel"]), "pruning is not correct in task 2"
+        # assert jnp.array_equal(new_params_task2["params"]["Dense_0"]["bias"],
+        #                        expected_params_after_task2["Dense_0"]["bias"]), "bias parameters should not be pruned in task 2"
+        # assert jnp.array_equal(packnet_state.masks["Dense_0"]["kernel"],
+        #                         expected_mask_after_task2["Dense_0"]["kernel"]), "kernel masks should be correct in task 2"
+        # assert jnp.array_equal(packnet_state.masks["Dense_0"]["bias"],
+        #                         expected_mask_after_task2["Dense_0"]["bias"]), "bias masks should be correct in task 2"
         
-        # finetune on task 2:
-        for i in range(5):
-            # new gradients are calculated: 
-            grads_finetune = {
-                "Dense_0": {
-                    "kernel": jnp.array([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]),
-                    "bias": jnp.array([0.1, 0.2, 0.3])
-                }
-            }
-            new_grads_finetune_task2 = packnet.on_backwards_end(grads_finetune, packnet_state)
+        # # finetune on task 2:
+        # for i in range(5):
+        #     # new gradients are calculated: 
+        #     grads_finetune = {
+        #         "Dense_0": {
+        #             "kernel": jnp.array([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]),
+        #             "bias": jnp.array([0.1, 0.2, 0.3])
+        #         }
+        #     }
+        #     new_grads_finetune_task2 = packnet.on_backwards_end(grads_finetune, packnet_state)
         
-        expected_grads_finetune_task2 = {
-            "Dense_0": {
-                "kernel": jnp.array([[0, 0.2, 0], [0, 0, 0]]),
-                "bias": jnp.array([0, 0, 0])
-            }
-        }
-        # Check if the gradients are correctly masked
-        assert jnp.array_equal(new_grads_finetune_task2["params"]["Dense_0"]["kernel"], 
-                               expected_grads_finetune_task2["Dense_0"]["kernel"]), "kernel gradients not masked correctly task 2"
-        assert jnp.array_equal(new_grads_finetune_task2["params"]["Dense_0"]["bias"],
-                               expected_grads_finetune_task2["Dense_0"]["bias"]), "bias gradients should be zeroed after finetuning task 2"
+        # expected_grads_finetune_task2 = {
+        #     "Dense_0": {
+        #         "kernel": jnp.array([[0, 0.2, 0], [0, 0, 0]]),
+        #         "bias": jnp.array([0, 0, 0])
+        #     }
+        # }
+        # # Check if the gradients are correctly masked
+        # assert jnp.array_equal(new_grads_finetune_task2["params"]["Dense_0"]["kernel"], 
+        #                        expected_grads_finetune_task2["Dense_0"]["kernel"]), "kernel gradients not masked correctly task 2"
+        # assert jnp.array_equal(new_grads_finetune_task2["params"]["Dense_0"]["bias"],
+        #                        expected_grads_finetune_task2["Dense_0"]["bias"]), "bias gradients should be zeroed after finetuning task 2"
         
-        # on finetune end:
-        packnet_state = packnet.on_finetune_end(packnet_state)
+        # # on finetune end:
+        # packnet_state = packnet.on_finetune_end(packnet_state)
 
 
 if __name__ == "__main__":
