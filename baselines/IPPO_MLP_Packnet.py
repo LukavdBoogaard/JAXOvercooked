@@ -291,7 +291,6 @@ class Packnet():
                         all_prunable = jnp.concatenate([all_prunable.reshape(-1), p.reshape(-1)], axis=0)
 
         cutoff = jnp.nanquantile(jnp.abs(all_prunable), prune_quantile)
-        jax.debug.print("Cutoff: {cutoff}", cutoff=cutoff)
         mask = {}
         new_params = {}
 
@@ -393,9 +392,6 @@ class Packnet():
             first_task,
             other_tasks
         )
-
-        jax.debug.print("Current mask: {current_mask}", current_mask=current_mask)
-        jax.debug.print("Previous mask: {prev_mask}", prev_mask=prev_mask)
 
         masked_grads = {}
 
@@ -601,9 +597,13 @@ class Packnet():
             for param_name, param_array in layer_dict.items():
                 if "kernel" in param_name:  # Only weight parameters
                     total_params += param_array.size
-                    zero_params += jnp.sum(jnp.abs(param_array) < 1e-6)
+                    zero_params += jnp.sum(jnp.abs(param_array) == 0)
         
-        return zero_params / total_params if total_params > 0 else 0.0
+        # print(f"Total params: {total_params}, Zero params: {zero_params}")
+        
+        sparsity = zero_params / total_params if total_params > 0 else 1
+        sparsity = jnp.round(sparsity, 4)
+        return sparsity
 
 
 
@@ -624,7 +624,7 @@ class Config:
     lr: float = 3e-4
     num_envs: int = 16
     num_steps: int = 128
-    total_timesteps: float = 5e6
+    total_timesteps: float = 4e6
     update_epochs: int = 8
     num_minibatches: int = 8
     gamma: float = 0.99
@@ -642,15 +642,15 @@ class Config:
     train_epochs: int = 8
     finetune_epochs: int = 2
     finetune_lr: float = 1e-4
-    finetune_timesteps: int = 8e5
+    finetune_timesteps: int = 2e5
 
     seq_length: int = 3
     strategy: str = "random"
     layouts: Optional[Sequence[str]] = field(default_factory=lambda: ["asymm_advantages", "smallest_kitchen", "cramped_room", "easy_layout", "square_arena", "no_cooperation"])
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
-    log_interval: int = 75 
-    eval_num_steps: int = 1000 # number of steps to evaluate the model
+    log_interval: int = 50
+    eval_num_steps: int = 400 # number of steps to evaluate the model
     eval_num_episodes: int = 5 # number of episodes to evaluate the model
     
     anneal_lr: bool = False
@@ -1061,17 +1061,40 @@ def main():
 
     network = ActorCritic(temp_env.action_space().n, activation=config.activation)
 
+     # Initialize the Packnet class
+    packnet = Packnet(seq_length=config.seq_length, 
+                      prune_instructions=0.1,
+                      train_finetune_split=(config.train_epochs, config.finetune_epochs),
+                      prunable_layers=[nn.Dense])
+    
+    
+
+
     # Initialize the network
     rng = jax.random.PRNGKey(config.seed)
     rng, network_rng = jax.random.split(rng)
     init_x = jnp.zeros(env.observation_space().shape).flatten()
     network_params = network.init(network_rng, init_x)
+    # calculate sparsity
+    sparsity = packnet.compute_sparsity(network_params["params"])
+    print(f"Sparsity: {sparsity}")
+
+    # Initialize the Packnet state
+    packnet_state = PacknetState(
+        masks=packnet.init_mask_tree(network_params["params"]),
+        current_task=0,
+        train_mode=True
+    )
 
     # Initialize the optimizer
     tx = optax.chain(
         optax.clip_by_global_norm(config.max_grad_norm), 
         optax.adam(learning_rate=linear_schedule if config.anneal_lr else config.lr, eps=1e-5)
     )
+    # tx = optax.chain(
+    #     optax.clip_by_global_norm(config.max_grad_norm), 
+    #     optax.sgd(learning_rate=linear_schedule if config.anneal_lr else config.lr, momentum=0.0)
+    # )
 
     # jit the apply function
     network.apply = jax.jit(network.apply)
@@ -1083,19 +1106,9 @@ def main():
         tx=tx
     )
 
-    # Initialize the Packnet class
-    packnet = Packnet(seq_length=config.seq_length, 
-                      prune_instructions=0.5,
-                      train_finetune_split=(config.train_epochs, config.finetune_epochs),
-                      prunable_layers=[nn.Dense])
-    
-    # Initialize the Packnet state
-    packnet_state = PacknetState(
-        masks=packnet.init_mask_tree(network_params["params"]),
-        current_task=0,
-        train_mode=True
-    )
+ 
 
+   
     # def get_shape(x):
     #     return x.shape if hasattr(x, "shape") else type(x)
 
@@ -1117,6 +1130,12 @@ def main():
         optax.clip_by_global_norm(config.max_grad_norm), 
             optax.adam(learning_rate=linear_schedule if config.anneal_lr else config.lr, eps=1e-5)
         )
+        train_state = train_state.replace(tx=tx)
+
+        # tx = optax.chain(
+        #     optax.clip_by_global_norm(config.max_grad_norm), 
+        #     optax.sgd(learning_rate=linear_schedule if config.anneal_lr else config.lr, momentum=0.0)
+        # )
         train_state = train_state.replace(tx=tx)
         
         # Initialize and reset the environment 
@@ -1322,11 +1341,18 @@ def main():
                     # call the grad_fn function to get the total loss and the gradients
                     total_loss, grads = grad_fn(train_state.params, traj_batch, advantages, targets)
 
-                    loss_information = total_loss, grads
 
                     # apply the gradients to the network
                     grads = packnet.on_backwards_end(grads["params"], packnet_state)
+                    loss_information = total_loss, grads
+                    sparsity_params = packnet.compute_sparsity(train_state.params["params"])
+                    sparsity_grads = packnet.compute_sparsity(grads["params"])
+                    # jax.debug.print("sparsity before apply gradients. params:\t\t {a} \t\tgrads: {b}\t\tcurrent_task: {c}\t\ttraining: {d}", a=sparsity_params, b=sparsity_grads, c=packnet_state.current_task, d=packnet_state.train_mode)
+
                     train_state = train_state.apply_gradients(grads=grads)
+                    sparsity_params = packnet.compute_sparsity(train_state.params["params"])
+                    sparsity_grads = packnet.compute_sparsity(grads["params"])
+                    # jax.debug.print("sparsity before apply gradients. params:\t\t {a} \t\tgrads: {b}\t\tcurrent_task: {c}\t\ttraining: {d}", a=sparsity_params, b=sparsity_grads, c=packnet_state.current_task, d=packnet_state.train_mode)
                     
                     return train_state, loss_information
                 
@@ -1369,7 +1395,12 @@ def main():
                 )
                 
                 total_loss, grads = loss_information 
-                avg_grads = jax.tree_util.tree_map(lambda x: jnp.mean(x, axis=0), grads)
+                sparsity = packnet.compute_sparsity(grads["params"])
+                # jax.lax.cond(jnp.logical_not(packnet_state.train_mode),
+                #                 lambda x: jax.debug.print(
+                #                             "sparsity of gradients after update_minibatch {sparsity}", sparsity=x),
+                #                 lambda x: None,
+                #                 sparsity)
                 update_state = (train_state, packnet_state, traj_batch, advantages, targets, rng)
                 return update_state, loss_information
 
@@ -1383,6 +1414,14 @@ def main():
                 length=config.update_epochs
             )
 
+            total_loss, grads = loss_info
+            sparsity = packnet.compute_sparsity(grads["params"])
+            # jax.lax.cond(jnp.logical_not(packnet_state.train_mode),
+            #                 lambda x: jax.debug.print(
+            #                             "sparsity of gradients after update_epoch {sparsity}", sparsity=x),
+            #                 lambda x: None,
+            #                 sparsity)
+
             # unpack update_state
             train_state, packnet_state, traj_batch, advantages, targets, rng = update_state
 
@@ -1391,56 +1430,54 @@ def main():
 
             # calculate the current timestep
             current_timestep = update_step*config.num_steps * config.num_envs
-            
-            # average the metric
-            metric = jax.tree_util.tree_map(lambda x: x.mean(), metric)
-
             update_step = update_step + 1
-
-        
-            sparsity = packnet.compute_sparsity(train_state.params["params"])
-
-            # add the sparsity and mask compliance to the metric dictionary
-            metric["PackNet/sparsity"] = sparsity
-            metric["PackNet/current_task"] = packnet_state.current_task
-            metric["PackNet/train_mode"] = packnet_state.train_mode
-
-
-            # add the general metrics to the metric dictionary
-            metric["General/update_step"] = update_step
-            metric["General/env_step"] = update_step * config.num_steps * config.num_envs
-            metric["General/learning_rate"] = linear_schedule(update_step * config.num_minibatches * config.update_epochs)
-
-            # Losses section
-            # unpack the loss information
-            loss_components, grads = loss_info
-            total_loss, (value_loss, loss_actor, entropy) = loss_components
-            metric["Losses/total_loss"] = total_loss.mean()
-            metric["Losses/value_loss"] = value_loss.mean()
-            metric["Losses/actor_loss"] = loss_actor.mean()
-            metric["Losses/entropy"] = entropy.mean()
-
-            # Rewards section
-            metric["General/shaped_reward_agent0"] = metric["shaped_reward"]["agent_0"]
-            metric["General/shaped_reward_agent1"] = metric["shaped_reward"]["agent_1"]
-            metric.pop("shaped_reward", None)
-            metric["General/shaped_reward_annealed_agent0"] = metric["General/shaped_reward_agent0"] * rew_shaping_anneal(current_timestep)
-            metric["General/shaped_reward_annealed_agent1"] = metric["General/shaped_reward_agent1"] * rew_shaping_anneal(current_timestep)
-
-            # Advantages and Targets section
-            metric["Advantage_Targets/advantages"] = advantages.mean()
-            metric["Advantage_Targets/targets"] = targets.mean()
-
-            # Evaluation section
-            for i in range(len(config.layout_name)):
-                metric[f"Evaluation/{config.layout_name[i]}"] = jnp.nan
-
+            
             def evaluate_and_log(rng, update_step):
                 rng, eval_rng = jax.random.split(rng)
                 train_state_eval = jax.tree_util.tree_map(lambda x: x.copy(), train_state)
                 grads_eval = jax.tree_util.tree_map(lambda x: x.copy(), grads)
 
                 def log_metrics(metric, update_step):
+                     # average the metric
+                    metric = jax.tree_util.tree_map(lambda x: x.mean(), metric)
+                
+                    sparsity = packnet.compute_sparsity(train_state.params["params"])
+
+                    # add the sparsity and mask compliance to the metric dictionary
+                    metric["PackNet/sparsity"] = sparsity
+                    metric["PackNet/current_task"] = packnet_state.current_task
+                    metric["PackNet/train_mode"] = packnet_state.train_mode
+
+
+                    # add the general metrics to the metric dictionary
+                    metric["General/update_step"] = update_step
+                    metric["General/env_step"] = update_step * config.num_steps * config.num_envs
+                    metric["General/learning_rate"] = linear_schedule(update_step * config.num_minibatches * config.update_epochs)
+
+                    # Losses section
+                    # unpack the loss information
+                    loss_components, grads = loss_info
+                    total_loss, (value_loss, loss_actor, entropy) = loss_components
+                    metric["Losses/total_loss"] = total_loss.mean()
+                    metric["Losses/value_loss"] = value_loss.mean()
+                    metric["Losses/actor_loss"] = loss_actor.mean()
+                    metric["Losses/entropy"] = entropy.mean()
+
+                    # Rewards section
+                    metric["General/shaped_reward_agent0"] = metric["shaped_reward"]["agent_0"]
+                    metric["General/shaped_reward_agent1"] = metric["shaped_reward"]["agent_1"]
+                    metric.pop("shaped_reward", None)
+                    metric["General/shaped_reward_annealed_agent0"] = metric["General/shaped_reward_agent0"] * rew_shaping_anneal(current_timestep)
+                    metric["General/shaped_reward_annealed_agent1"] = metric["General/shaped_reward_agent1"] * rew_shaping_anneal(current_timestep)
+
+                    # Advantages and Targets section
+                    metric["Advantage_Targets/advantages"] = advantages.mean()
+                    metric["Advantage_Targets/targets"] = targets.mean()
+
+                    # Evaluation section
+                    for i in range(len(config.layout_name)):
+                        metric[f"Evaluation/{config.layout_name[i]}"] = jnp.nan
+
                     evaluations = evaluate_model(train_state_eval, network, eval_rng)
                     for i, evaluation in enumerate(evaluations):
                         metric[f"Evaluation/{config.layout_name[i]}"] = evaluation
@@ -1477,13 +1514,19 @@ def main():
                 
                 jax.lax.cond((update_step % config.log_interval) == 0, log_metrics, do_not_log, metric, update_step)
             
-
             # Evaluate the model and log the metrics
             evaluate_and_log(rng=rng, update_step=update_step)
 
             # unpack the loss information
             total_loss, grads = loss_info
             grads = jax.tree_util.tree_map(lambda x: jnp.mean(x, axis=(0,1)), grads)
+
+            sparsity = packnet.compute_sparsity(grads["params"])
+            # jax.lax.cond(jnp.logical_not(packnet_state.train_mode),
+            #                 lambda x: jax.debug.print(
+            #                             "sparsity of gradients after logging {sparsity}", sparsity=x),
+            #                 lambda x: None,
+            #                 sparsity)
 
             rng = update_state[-1]
             runner_state = (train_state, env_state, packnet_state, last_obs, update_step, grads, rng)
@@ -1508,16 +1551,19 @@ def main():
         train_state, env_state, packnet_state, last_obs, update_step, grads, rng = runner_state
 
         # # Prune the model and update the parameters
-        # new_params, packnet_state = packnet.on_train_end(train_state.params["params"], packnet_state)
-        # train_state = train_state.replace(params=new_params)
+        new_params, packnet_state = packnet.on_train_end(train_state.params["params"], packnet_state)
+        sparsity = packnet.compute_sparsity(new_params["params"])
+        jax.debug.print(
+            "Sparsity after pruning: {sparsity}", sparsity=sparsity)
+        train_state = train_state.replace(params=new_params)
 
 
-        # We fine-tune the model for a number of epochs
-        finetune_tx = optax.chain(
-            optax.clip_by_global_norm(config.max_grad_norm), 
-            optax.adam(learning_rate=config.finetune_lr, eps=1e-5)
-        )
-        train_state = train_state.replace(tx=finetune_tx)
+        # # We fine-tune the model for a number of epochs
+        # finetune_tx = optax.chain(
+        #     optax.clip_by_global_norm(config.max_grad_norm), 
+        #     optax.adam(learning_rate=config.finetune_lr, eps=1e-5)
+        # )
+        # train_state = train_state.replace(tx=finetune_tx)
 
         rng, finetune_rng = jax.random.split(rng)
         runner_state = (train_state, env_state, packnet_state, last_obs, update_step, grads, finetune_rng)
@@ -1528,9 +1574,13 @@ def main():
             xs=None, 
             length=config.finetune_updates
         )
+        sparsity = packnet.compute_sparsity(runner_state[0].params["params"])
+        jax.debug.print(
+            "Sparsity after finetuning: {sparsity}", sparsity=sparsity)
 
         # handle the end of the finetune phase 
         packnet_state = packnet.on_finetune_end(packnet_state)
+        
 
         # add the gradients and the packnet_state to the new runner state
         runner_state = (train_state, env_state, packnet_state, last_obs, update_step, grads, finetune_rng)
