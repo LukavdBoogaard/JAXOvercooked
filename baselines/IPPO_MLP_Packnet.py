@@ -558,7 +558,7 @@ class Packnet():
         # new_gradients = {"params": new_gradients}
         return state
 
-    def on_backwards_end(self, grads, state: PacknetState):
+    def on_backwards_end(self, grads, state: PacknetState, train_state, params_copy):
         '''
         Handles the end of the backwards pass
         '''
@@ -579,11 +579,38 @@ class Packnet():
             finetune, 
             grads
         )
+
         # fix the biases of the gradients
         new_grads = self.fix_biases(new_grads, state)
 
-        new_gradients = {"params": new_grads}
-        return new_gradients
+        # apply these gradients to the model
+        train_state = train_state.apply_gradients(grads={"params": new_grads})
+
+        # the parameters that are masked must now be set to the old parameter
+        # loop over the parameters and change them to the old parameter copy if the gradient is 0
+        def reset_params(param_leaf, param_copy_leaf, grad_leaf):
+            """
+            Resets the parameters to the old parameters if the gradient is 0,
+            to counteract the possible momentum that is still present in the update
+            """
+            return jnp.where(grad_leaf == 0, param_copy_leaf, param_leaf)
+        
+        # Extract the inner parameter dictionaries to match structures
+        inner_params = train_state.params["params"]
+        inner_params_copy = params_copy["params"]
+        
+        # apply the reset function to all parameters
+        new_params = jax.tree_util.tree_map(reset_params, inner_params, inner_params_copy, new_grads)
+
+        # delete the copy
+        del params_copy
+
+        new_params = {"params": new_params}
+
+        # update the parameters of the model
+        train_state = train_state.replace(params=new_params)
+
+        return train_state, {"params": new_grads}
 
     def get_total_epochs(self):
         return self.train_finetune_split[0] + self.train_finetune_split[1]
@@ -1063,7 +1090,7 @@ def main():
 
      # Initialize the Packnet class
     packnet = Packnet(seq_length=config.seq_length, 
-                      prune_instructions=0.1,
+                      prune_instructions=0.6,
                       train_finetune_split=(config.train_epochs, config.finetune_epochs),
                       prunable_layers=[nn.Dense])
     
@@ -1341,17 +1368,23 @@ def main():
                     # call the grad_fn function to get the total loss and the gradients
                     total_loss, grads = grad_fn(train_state.params, traj_batch, advantages, targets)
 
+                    # Create a copy of the parameters
+                    params_copy = train_state.params.copy()
 
-                    # apply the gradients to the network
-                    grads = packnet.on_backwards_end(grads["params"], packnet_state)
-                    loss_information = total_loss, grads
-                    sparsity_params = packnet.compute_sparsity(train_state.params["params"])
-                    sparsity_grads = packnet.compute_sparsity(grads["params"])
+                    # Mask the gradients 
+                    train_state, new_grads = packnet.on_backwards_end(grads["params"], packnet_state, train_state, params_copy)
+
+                    # # apply the gradients to the parameters
+                    # train_state = train_state.apply_gradients(grads=grads)
+
+
+                    loss_information = total_loss, new_grads
+                    # sparsity_params = packnet.compute_sparsity(train_state.params["params"])
+                    # sparsity_grads = packnet.compute_sparsity(grads["params"])
                     # jax.debug.print("sparsity before apply gradients. params:\t\t {a} \t\tgrads: {b}\t\tcurrent_task: {c}\t\ttraining: {d}", a=sparsity_params, b=sparsity_grads, c=packnet_state.current_task, d=packnet_state.train_mode)
 
-                    train_state = train_state.apply_gradients(grads=grads)
-                    sparsity_params = packnet.compute_sparsity(train_state.params["params"])
-                    sparsity_grads = packnet.compute_sparsity(grads["params"])
+                    # sparsity_params = packnet.compute_sparsity(train_state.params["params"])
+                    # sparsity_grads = packnet.compute_sparsity(grads["params"])
                     # jax.debug.print("sparsity before apply gradients. params:\t\t {a} \t\tgrads: {b}\t\tcurrent_task: {c}\t\ttraining: {d}", a=sparsity_params, b=sparsity_grads, c=packnet_state.current_task, d=packnet_state.train_mode)
                     
                     return train_state, loss_information
