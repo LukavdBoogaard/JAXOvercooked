@@ -328,99 +328,114 @@ class Packnet():
         new_param_dict = new_params
         return new_param_dict, state
 
-    def train_mask(self, grads, state: PacknetState): 
+    def train_mask(self, state: PacknetState, train_state, params_copy): 
         '''
         Zeroes out the gradients of the fixed weights of previous tasks. 
         This mask should be applied after backpropagation and before each optimizer step during training
         '''
 
         # check if there are any masks to apply
-        def first_task(grads):
+        def first_task():
             # No previous tasks to fix
-            return grads
+            current_mask = self.get_mask(state.masks, state.current_task)
+            return prev_mask
         
-        def other_tasks(grads):
+        def other_tasks():
             # get all weights allocated for previous tasks 
             prev_mask = self.combine_masks(state.masks, state.current_task) 
             
-            new_grads = {}
-            for layer_name, layer_dict in grads.items():
-                # Create a new dictionary for the adapted gradients
-                new_layer_grads = {}
+            # new_grads = {}
+            # for layer_name, layer_dict in grads.items():
+            #     # Create a new dictionary for the adapted gradients
+            #     new_layer_grads = {}
 
-                for param_name, grad_array in layer_dict.items():
-                    if (self.layer_is_prunable(layer_name)) and ("bias" not in param_name):
+            #     for param_name, grad_array in layer_dict.items():
+            #         if (self.layer_is_prunable(layer_name)) and ("bias" not in param_name):
                         
-                        prev_mask_leaf = prev_mask[layer_name][param_name]
+            #             prev_mask_leaf = prev_mask[layer_name][param_name]
 
-                        new_layer_grads[param_name] = jnp.where(prev_mask_leaf, 0, grad_array)
-                    else:
-                        new_layer_grads[param_name] = grad_array
+            #             new_layer_grads[param_name] = jnp.where(prev_mask_leaf, 0, grad_array)
+            #         else:
+            #             new_layer_grads[param_name] = grad_array
 
-                new_grads[layer_name] = new_layer_grads
+            #     new_grads[layer_name] = new_layer_grads
                 
-            return new_grads
+            return prev_mask
         
-        gradients = jax.lax.cond(
+        prev_mask = jax.lax.cond(
             state.current_task == 0,
             first_task,
             other_tasks,
-            grads
         )
-        return gradients
 
-    def fine_tune_mask(self, grads, state: PacknetState):
+        def reset_params_train(param_leaf, param_copy_leaf, mask_leaf):
+            """
+            Resets the parameters to the old parameters if the parameter is fixed,
+            to counteract the possible momentum that is still present in the update
+            """
+            # if the parameter is fixed (True), set it to the old parameter
+            return jnp.where(mask_leaf, param_copy_leaf, param_leaf)
+        
+        # Extract the inner parameter dictionaries to match structures
+        inner_params = train_state.params["params"]
+        inner_params_copy = params_copy["params"]
+        
+        # apply the reset function to all parameters
+        new_params = jax.tree_util.tree_map(reset_params_train, inner_params, inner_params_copy, prev_mask)
+
+        return new_params
+
+    def fine_tune_mask(self, state: PacknetState, train_state, params_copy):
         '''
         Zeroes out the gradient of the pruned weights of the current task and previously fixed weights 
         This mask should be applied before each optimizer step during fine-tuning
         '''
         
-        def first_task():
-            # No previous tasks to fix
-            current_mask = self.get_mask(state.masks, state.current_task)
-            prev_mask = jax.tree_util.tree_map(lambda x: jnp.zeros(x.shape, dtype=bool), current_mask)
-            return current_mask, prev_mask
+        current_mask = self.get_mask(state.masks, state.current_task)
+
+        def reset_params_finetune(param_leaf, param_copy_leaf, mask_leaf):
+            """
+            Resets the parameters to the old parameters if the parameter is fixed,
+            to counteract the possible momentum that is still present in the update
+            """
+            # if the parameter is pruned (False), set it to the old parameter
+            return jnp.where(mask_leaf, param_leaf, param_copy_leaf)
         
-        def other_tasks():
-            # Create a combined mask of the previous tasks and the current task
-            prev_mask = self.combine_masks(state.masks, state.current_task)
-            current_mask = self.get_mask(state.masks, state.current_task)
-            return current_mask, prev_mask
+        # Extract the inner parameter dictionaries to match structures
+        inner_params = train_state.params["params"]
+        inner_params_copy = params_copy["params"]
         
-        current_mask, prev_mask = jax.lax.cond(
-            state.current_task == 0,
-            first_task,
-            other_tasks
-        )
+        # apply the reset function to all parameters
+        new_params = jax.tree_util.tree_map(reset_params_finetune, inner_params, inner_params_copy, current_mask)
 
-        masked_grads = {}
+        return new_params
 
-        for layer_name, layer_dict in grads.items():
-            masked_layer_dict = {}
-            for param_name, grad_array in layer_dict.items():
-                if (self.layer_is_prunable(layer_name)) and ("bias" not in param_name):
+        # masked_grads = {}
+
+        # for layer_name, layer_dict in grads.items():
+        #     masked_layer_dict = {}
+        #     for param_name, grad_array in layer_dict.items():
+        #         if (self.layer_is_prunable(layer_name)) and ("bias" not in param_name):
                     
-                    # Get the masks for the current and previous tasks
-                    prev_mask_leaf = prev_mask[layer_name][param_name] 
-                    current_mask_leaf = current_mask[layer_name][param_name]
+        #             # Get the masks for the current and previous tasks
+        #             prev_mask_leaf = prev_mask[layer_name][param_name] 
+        #             current_mask_leaf = current_mask[layer_name][param_name]
 
-                    # # Fix the gradients of the pruned weights of the current task, and the fixed weights of previous tasks
-                    # combined_mask = jnp.logical_and(prev_mask_leaf, jnp.logical_not(current_mask_leaf))
-                    # # true for all weights that are pruned in the current task or fixed in previous tasks
+        #             # # Fix the gradients of the pruned weights of the current task, and the fixed weights of previous tasks
+        #             # combined_mask = jnp.logical_and(prev_mask_leaf, jnp.logical_not(current_mask_leaf))
+        #             # # true for all weights that are pruned in the current task or fixed in previous tasks
 
-                    # jax.debug.print("Combined mask: {combined_mask}", combined_mask=combined_mask)
+        #             # jax.debug.print("Combined mask: {combined_mask}", combined_mask=combined_mask)
 
-                    new_gradients = jnp.where(current_mask_leaf, grad_array, 0)
+        #             new_gradients = jnp.where(current_mask_leaf, grad_array, 0)
                     
-                    masked_layer_dict[param_name] = new_gradients
-                else:
-                    # keep bias gradients unchanged 
-                    masked_layer_dict[param_name] = grad_array
+        #             masked_layer_dict[param_name] = new_gradients
+        #         else:
+        #             # keep bias gradients unchanged 
+        #             masked_layer_dict[param_name] = grad_array
             
-            # Store the masked gradients for the current layer
-            masked_grads[layer_name] = masked_layer_dict
-
-        return masked_grads
+        #     # Store the masked gradients for the current layer
+        #     masked_grads[layer_name] = masked_layer_dict
 
     def fix_biases(self, grads, state: PacknetState):
         '''
@@ -558,26 +573,26 @@ class Packnet():
         # new_gradients = {"params": new_gradients}
         return state
 
-    def on_backwards_end(self, grads, state: PacknetState, train_state, params_copy):
+    def on_backwards_end(self, state: PacknetState, train_state, params_copy):
         '''
         Handles the end of the backwards pass
         '''
-        def finetune(grads):
+        def finetune():
             '''
             Applies the finetune mask to the gradients
             '''
-            return self.fine_tune_mask(grads, state)
-        def train(grads):
+            return self.fine_tune_mask(state, train_state, params_copy)
+        
+        def train():
             '''
             Applies the train mask to the gradients
             '''
-            return self.train_mask(grads, state)   
+            return self.train_mask(state, train_state, params_copy)   
         
         new_grads = jax.lax.cond(
             state.train_mode, 
             train, 
-            finetune, 
-            grads
+            finetune
         )
 
         # fix the biases of the gradients
@@ -585,25 +600,6 @@ class Packnet():
 
         # apply these gradients to the model
         train_state = train_state.apply_gradients(grads={"params": new_grads})
-
-        # the parameters that are masked must now be set to the old parameter
-        # loop over the parameters and change them to the old parameter copy if the gradient is 0
-        def reset_params(param_leaf, param_copy_leaf, grad_leaf):
-            """
-            Resets the parameters to the old parameters if the gradient is 0,
-            to counteract the possible momentum that is still present in the update
-            """
-            return jnp.where(grad_leaf == 0, param_copy_leaf, param_leaf)
-        
-        # Extract the inner parameter dictionaries to match structures
-        inner_params = train_state.params["params"]
-        inner_params_copy = params_copy["params"]
-        
-        # apply the reset function to all parameters
-        new_params = jax.tree_util.tree_map(reset_params, inner_params, inner_params_copy, new_grads)
-
-        # delete the copy
-        del params_copy
 
         new_params = {"params": new_params}
 
@@ -629,7 +625,6 @@ class Packnet():
         # print(f"Total params: {total_params}, Zero params: {zero_params}")
         
         sparsity = zero_params / total_params if total_params > 0 else 1
-        sparsity = jnp.round(sparsity, 4)
         return sparsity
 
 
@@ -651,7 +646,7 @@ class Config:
     lr: float = 3e-4
     num_envs: int = 16
     num_steps: int = 128
-    total_timesteps: float = 4e6
+    total_timesteps: float = 5e6
     update_epochs: int = 8
     num_minibatches: int = 8
     gamma: float = 0.99
@@ -669,7 +664,7 @@ class Config:
     train_epochs: int = 8
     finetune_epochs: int = 2
     finetune_lr: float = 1e-4
-    finetune_timesteps: int = 2e5
+    finetune_timesteps: int = 8e5
 
     seq_length: int = 3
     strategy: str = "random"
@@ -1090,11 +1085,9 @@ def main():
 
      # Initialize the Packnet class
     packnet = Packnet(seq_length=config.seq_length, 
-                      prune_instructions=0.6,
+                      prune_instructions=0.8,
                       train_finetune_split=(config.train_epochs, config.finetune_epochs),
                       prunable_layers=[nn.Dense])
-    
-    
 
 
     # Initialize the network
@@ -1473,11 +1466,18 @@ def main():
                 def log_metrics(metric, update_step):
                      # average the metric
                     metric = jax.tree_util.tree_map(lambda x: x.mean(), metric)
+                    loss_components, grads = loss_info
                 
                     sparsity = packnet.compute_sparsity(train_state.params["params"])
+                    sparsity_grads = packnet.compute_sparsity(grads["params"])
+
+                    combined_mask = packnet.combine_masks(packnet_state.masks, packnet_state.current_task)
+                    sparsity_masks = packnet.compute_sparsity(combined_mask)
 
                     # add the sparsity and mask compliance to the metric dictionary
                     metric["PackNet/sparsity"] = sparsity
+                    metric["PackNet/sparsity_grads"] = sparsity_grads
+                    metric["PackNet/sparsity_masks"] = sparsity_masks
                     metric["PackNet/current_task"] = packnet_state.current_task
                     metric["PackNet/train_mode"] = packnet_state.train_mode
 
@@ -1488,8 +1488,6 @@ def main():
                     metric["General/learning_rate"] = linear_schedule(update_step * config.num_minibatches * config.update_epochs)
 
                     # Losses section
-                    # unpack the loss information
-                    loss_components, grads = loss_info
                     total_loss, (value_loss, loss_actor, entropy) = loss_components
                     metric["Losses/total_loss"] = total_loss.mean()
                     metric["Losses/value_loss"] = value_loss.mean()

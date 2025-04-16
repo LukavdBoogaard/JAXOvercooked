@@ -1181,7 +1181,7 @@ def main():
 
      # Initialize the Packnet class
     packnet = Packnet(seq_length=config.seq_length, 
-                      prune_instructions=0.9,
+                      prune_instructions=0.1,
                       train_finetune_split=(config.train_epochs, config.finetune_epochs),
                       prunable_layers=[nn.Dense])
     
@@ -1193,8 +1193,6 @@ def main():
     rng, actor_rng, critic_rng = jax.random.split(rng, 3)
 
     init_x = jnp.zeros(temp_env.observation_space().shape).flatten()
-    print("INIT_X", init_x.shape)
-    action_flatten = jnp.zeros((config.num_actors, 2), dtype=jnp.float32)
     actor_params = actor.init(actor_rng, init_x)
     critic_params = critic.init(critic_rng, init_x)
 
@@ -1595,8 +1593,10 @@ def main():
                      # average the metric
                     metric = jax.tree_util.tree_map(lambda x: x.mean(), metric)
                     sparsity_actor = packnet.compute_sparsity(actor_train_state_eval.params["params"])
+                    sparsity_grads = packnet.compute_sparsity(grads_eval["params"])
                     # add the sparsity and mask compliance to the metric dictionary
                     metric["PackNet/sparsity_actor"] = sparsity_actor
+                    metric["PackNet/sparsity_grads"] = sparsity_grads
                     metric["PackNet/current_task"] = packnet_state.current_task
                     metric["PackNet/train_mode"] = packnet_state.train_mode
 
@@ -1696,11 +1696,11 @@ def main():
 
         # # Prune the model and update the parameters
         actor_train_state, critic_train_state = train_states
-        new_actor_params, packnet_state = packnet.on_train_end(actor_train_state.params["params"], packnet_state)
-        sparsity = packnet.compute_sparsity(new_actor_params["params"])
-        jax.debug.print(
-            "Sparsity after pruning: {sparsity}", sparsity=sparsity)
-        actor_train_state = actor_train_state.replace(params=new_actor_params)
+        # new_actor_params, packnet_state = packnet.on_train_end(actor_train_state.params["params"], packnet_state)
+        # sparsity = packnet.compute_sparsity(new_actor_params["params"])
+        # jax.debug.print(
+        #     "Sparsity after pruning: {sparsity}", sparsity=sparsity)
+        # actor_train_state = actor_train_state.replace(params=new_actor_params)
 
         rng, finetune_rng = jax.random.split(rng)
         runner_state = (train_states, env_state, packnet_state, last_obs, update_step, actor_grads, finetune_rng)
@@ -1712,13 +1712,13 @@ def main():
             length=config.finetune_updates
         )
 
-        actor_train_state = runner_state[0][0]
-        sparsity = packnet.compute_sparsity(actor_train_state.params["params"])
-        jax.debug.print(
-            "Sparsity after finetuning: {sparsity}", sparsity=sparsity)
+        # actor_train_state = runner_state[0][0]
+        # sparsity = packnet.compute_sparsity(actor_train_state.params["params"])
+        # jax.debug.print(
+        #     "Sparsity after finetuning: {sparsity}", sparsity=sparsity)
 
-        # handle the end of the finetune phase 
-        packnet_state = packnet.on_finetune_end(packnet_state)
+        # # handle the end of the finetune phase 
+        # packnet_state = packnet.on_finetune_end(packnet_state)
         
 
         # add the gradients and the packnet_state to the new runner state
