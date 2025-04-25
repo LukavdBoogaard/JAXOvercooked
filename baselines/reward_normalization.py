@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 import tyro
 from tensorboardX import SummaryWriter
 from pathlib import Path
+import yaml
 
 # Enable compile logging
 # jax.log_compiles(True)
@@ -121,7 +122,7 @@ class Config:
     lr: float = 3e-4
     num_envs: int = 16
     num_steps: int = 256
-    total_timesteps: float = 8e5
+    total_timesteps: float = 8e6
     update_epochs: int = 8
     num_minibatches: int = 8
     gamma: float = 0.99
@@ -135,14 +136,14 @@ class Config:
     env_name: str = "overcooked"
     alg_name: str = "reward_normalization"
 
-    seq_length: int = 3
+    seq_length: int = 21
     strategy: str = "random"
-    layouts: Optional[Sequence[str]] = field(default_factory=lambda: ["asymm_advantages", "smallest_kitchen", "cramped_room", "easy_layout", "square_arena", "no_cooperation"])
+    layouts: Optional[Sequence[str]] = None
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
-    log_interval: int = 75 # log every 200 calls to update step
+    log_interval: int = 50 # log every 200 calls to update step
     eval_num_steps: int = 1000 # number of steps to evaluate the model
-    eval_num_episodes: int = 5 # number of episodes to evaluate the model
+    eval_num_episodes: int = 20 # number of episodes to evaluate the model
     
     anneal_lr: bool = False
     seed: int = 30
@@ -513,9 +514,11 @@ def main():
         visualizer = OvercookedVisualizer()
         # animate all environments in the sequence
         for i, env in enumerate(state_sequences):
-            visualizer.animate(state_seq=env, agent_view_size=5, filename=f"~/JAXOvercooked/environment_layouts/env_{config.layouts[i]}.gif")
+            visualizer.animate(state_seq=env, agent_view_size=5, task_idx=i, task_name=env, exp_dir=f"~/JAXOvercooked/environment_layouts")
 
         return None
+
+    # visualize_environments()
     
     # padd all environments
     padded_envs = pad_observation_space()
@@ -907,10 +910,6 @@ def main():
                 train_state_eval = jax.tree_util.tree_map(lambda x: x.copy(), train_state)
 
                 def log_metrics(metric, update_step):
-                    # evaluations = evaluate_model(train_state_eval, network, eval_rng)
-                    # for i, evaluation in enumerate(evaluations):
-                    #     metric[f"Evaluation/{config.layout_name[i]}"] = evaluation
-                    
                     def callback(args):
                         metric, update_step, env_counter = args
                         update_step = int(update_step)
@@ -954,41 +953,58 @@ def main():
 
 
     def loop_over_envs(rng, train_state, envs):
-        '''
-        Loops over the environments and trains the network
-        @param rng: random number generator
-        @param train_state: the current state of the training
-        @param envs: the environments
-        returns the runner state and the metrics
-        '''
-        # split the random number generator for training on the environments
-        rng, *env_rngs = jax.random.split(rng, len(envs)+1)
+        rngs = jax.random.split(rng, len(envs) + 1)
+        main_rng = rngs[0]
+        sub_rngs = rngs[1:]
+        visualizer = OvercookedVisualizer()
 
-        # counter for the environment 
+        runner_state = None
         env_counter = 1
 
         environment_returns = {}
 
-        for env_rng, env in zip(env_rngs, envs):
-            runner_state, metrics = train_on_environment(env_rng, train_state, env, env_counter)
+        for i, (r, _) in enumerate(zip(sub_rngs, envs)):
+            # --- Train on environment i using the *current* ewc_state ---
+            runner_state, metrics = train_on_environment(r, train_state, env, env_counter)
+            train_state = runner_state[0]
 
-            # unpack the runner state
-            train_state, env_state, last_obs, update_step, rng = runner_state
+            env_name = config.layout_name[env_counter-1]
 
-            print(config.layout_name[env_counter-1])
+            print(env_name)
             print(padded_envs[env_counter-1])
 
             # Evaluate the model 
             avg_rewards, max_rewards = evaluate_model(train_state, network, rng, padded_envs[env_counter-1])
 
             print('average rewards: ', avg_rewards)
-            environment_returns[f"{config.layout_name[env_counter-1]}"] = {
-                "avg_rewards": jnp.mean(jnp.array(avg_rewards)), 
-                "max_rewards": jnp.mean(jnp.array(max_rewards))
+            environment_returns[env_name] = {
+                "avg_rewards": float(jnp.mean(jnp.array(avg_rewards))), 
+                "max_rewards": float(jnp.mean(jnp.array(max_rewards)))
             }
             
             print(environment_returns)
 
+            current_folder = "/home/lvdenboogaard/JAXOvercooked"
+            save_path = f"{current_folder}/practical_baseline.yaml"
+
+            # load existing data from the yaml 
+            existing_data = {}
+            if os.path.exists(save_path):
+                with open(save_path, "r") as f:
+                    try:
+                        existing_data = yaml.safe_load(f) or {}
+                    except yaml.YAMLError: 
+                        existing_data = {}
+
+            existing_data.update(environment_returns)
+
+            # Write back the complete updated data
+            with open(save_path, "w") as f:
+                yaml.dump(existing_data, f)
+            
+            # Generate & log a GIF after finishing task i
+            states = record_gif_of_episode(train_state, envs[i], network)
+            visualizer.animate(states, agent_view_size=5, task_idx=i, task_name=envs[i].name, exp_dir=exp_dir)
 
             # save the model
             path = f"checkpoints/overcooked/{run_name}/model_env_{env_counter}"
@@ -1021,6 +1037,30 @@ def main():
     # apply the loop_over_envs function to the environments
     runner_state = loop_over_envs(train_rng, train_state, envs)
     
+def record_gif_of_episode(train_state, env, network, max_steps=300):
+    rng = jax.random.PRNGKey(0)
+    rng, env_rng = jax.random.split(rng)
+    obs, state = env.reset(env_rng)
+    done = False
+    step_count = 0
+    states = [state]
+
+    while not done and step_count < max_steps:
+        flat_obs = {k: v.flatten() for k, v in obs.items()}
+        act_keys = jax.random.split(rng, env.num_agents)
+        actions = {}
+        for i, agent_id in enumerate(env.agents):
+            pi, _ = network.apply(train_state.params, flat_obs[agent_id])
+            actions[agent_id] = pi.sample(seed=act_keys[i])
+
+        rng, key_step = jax.random.split(rng)
+        next_obs, next_state, reward, done_info, info = env.step(key_step, state, actions)
+        done = done_info["__all__"]
+        obs, state = next_obs, next_state
+        step_count += 1
+        states.append(state)
+
+    return states
 
 def sample_discrete_action(key, action_space):
     """Samples a discrete action based on the action space provided."""
