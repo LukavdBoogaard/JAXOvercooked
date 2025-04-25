@@ -10,8 +10,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 from dotenv import load_dotenv
-from flax import struct
-from flax.core.frozen_dict import freeze, unfreeze, FrozenDict
+from flax.core.frozen_dict import freeze, unfreeze
 from flax.linen.initializers import constant, orthogonal
 from flax.training.train_state import TrainState
 
@@ -47,63 +46,115 @@ class ActorCritic(nn.Module):
     activation: str = "tanh"
     use_multihead: bool = False
     num_tasks: int = 1
+    shared_backbone: bool = False
 
     def setup(self):
-        # Shared trunk layers:
         if self.activation == "relu":
             self.activation_fn = nn.relu
         else:
             self.activation_fn = nn.tanh
 
-        self.fc1 = nn.Dense(64, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0), name="common_dense1")
-        self.fc2 = nn.Dense(64, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0), name="common_dense2")
+        if self.shared_backbone:
+            # New architecture: shared trunk and multihead logic
+            self.fc1 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0), name="common_dense1")
+            self.fc2 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0), name="common_dense2")
+            self.fc3 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0), name="common_dense3")
+            self.critic_fc1 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+                                       name="critic_dense1")
+            self.critic_fc2 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+                                       name="critic_dense2")
+            self.critic_fc3 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+                                       name="critic_dense3")
+            actor_head_size = self.action_dim * (self.num_tasks if self.use_multihead else 1)
+            critic_head_size = 1 * (self.num_tasks if self.use_multihead else 1)
+            self.actor_head = nn.Dense(actor_head_size, kernel_init=orthogonal(0.01), bias_init=constant(0.0),
+                                       name="actor_head")
+            self.critic_head = nn.Dense(critic_head_size, kernel_init=orthogonal(1.0), bias_init=constant(0.0),
+                                        name="critic_head")
+        else:
+            # Separate trunk: each branch is its own network
 
-        # Critic trunk (separate for critic)
-        self.critic_fc1 = nn.Dense(64, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
-                                   name="critic_dense1")
-        self.critic_fc2 = nn.Dense(64, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
-                                   name="critic_dense2")
+            # Actor branch
+            self.actor_dense1 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+                                         name="actor_dense1")
+            self.actor_dense2 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+                                         name="actor_dense2")
+            self.actor_dense3 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+                                         name="actor_dense3")
+            # If using multihead, output dimension is action_dim*num_tasks.
+            actor_out_dim = self.action_dim * self.num_tasks if self.use_multihead else self.action_dim
+            self.actor_out = nn.Dense(actor_out_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0),
+                                      name="actor_head")
 
-        # Actor and critic heads
-        actor_head_size = self.action_dim
-        critic_head_size = 1
-        if self.use_multihead:
-            actor_head_size *= self.num_tasks
-            critic_head_size *= self.num_tasks
-        self.actor_head = nn.Dense(actor_head_size, kernel_init=orthogonal(0.01),
-                                   bias_init=constant(0.0), name="actor_head")
-        self.critic_head = nn.Dense(critic_head_size, kernel_init=orthogonal(1.0), bias_init=constant(0.0),
-                                    name="critic_head")
+            # Critic branch
+            self.critic_dense1 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+                                          name="critic_dense1")
+            self.critic_dense2 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+                                          name="critic_dense2")
+            self.critic_dense3 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+                                          name="critic_dense3")
+            critic_out_dim = 1 * self.num_tasks if self.use_multihead else 1
+            self.critic_out = nn.Dense(critic_out_dim, kernel_init=orthogonal(1.0), bias_init=constant(0.0),
+                                       name="critic_head")
 
     def __call__(self, x, env_idx=0):
-        # Shared trunk for both actor and critic
-        x = self.fc1(x)
-        x = self.activation_fn(x)
-        x = self.fc2(x)
-        x = self.activation_fn(x)
 
-        if self.use_multihead:
-            # Produce a concatenated actor output, then splice:
-            actor_concat = self.actor_head(x)  # shape: (batch, action_dim * num_tasks)
-            actor_logits = choose_head(actor_concat, self.num_tasks, env_idx)
+        if self.shared_backbone:
+            x = self.fc1(x)
+            x = self.activation_fn(x)
+            x = self.fc2(x)
+            x = self.activation_fn(x)
+            x = self.fc3(x)
+            x = self.activation_fn(x)
+            if self.use_multihead:
+                # Concatenate and then select the correct head
+                actor_concat = self.actor_head(x)
+                actor_logits = choose_head(actor_concat, self.num_tasks, env_idx)
+            else:
+                actor_logits = self.actor_head(x)
+            pi = distrax.Categorical(logits=actor_logits)
+            v = self.critic_fc1(x)
+            v = self.activation_fn(v)
+            v = self.critic_fc2(v)
+            v = self.activation_fn(v)
+            v = self.critic_fc3(v)
+            v = self.activation_fn(v)
+            if self.use_multihead:
+                critic_concat = self.critic_head(v)
+                v = choose_head(critic_concat, self.num_tasks, env_idx)
+            else:
+                v = self.critic_head(v)
+            v = jnp.squeeze(v, axis=-1)
+            return pi, v
         else:
-            actor_logits = self.actor_head(x)
+            # Actor branch: separate trunk
+            actor = self.actor_dense1(x)
+            actor = self.activation_fn(actor)
+            actor = self.actor_dense2(actor)
+            actor = self.activation_fn(actor)
+            actor = self.actor_dense3(actor)
+            actor = self.activation_fn(actor)
+            actor_all = self.actor_out(actor)
+            if self.use_multihead:
+                actor_logits = choose_head(actor_all, self.num_tasks, env_idx)
+            else:
+                actor_logits = actor_all
+            pi = distrax.Categorical(logits=actor_logits)
 
-        pi = distrax.Categorical(logits=actor_logits)
-
-        # Critic trunk:
-        v = self.critic_fc1(x)
-        v = self.activation_fn(v)
-        v = self.critic_fc2(v)
-        v = self.activation_fn(v)
-        if self.use_multihead:
-            critic_concat = self.critic_head(v)  # shape: (batch, 1 * num_tasks)
-            v = choose_head(critic_concat, self.num_tasks, env_idx)
-        else:
-            v = self.critic_head(v)
-
-        v = jnp.squeeze(v, axis=-1)
-        return pi, v
+            # Critic branch: separate trunk
+            critic = self.critic_dense1(x)
+            critic = self.activation_fn(critic)
+            critic = self.critic_dense2(critic)
+            critic = self.activation_fn(critic)
+            critic = self.critic_dense3(critic)
+            critic = self.activation_fn(critic)
+            critic_all = self.critic_out(critic)
+            if self.use_multihead:
+                value = choose_head(critic_all, self.num_tasks, env_idx)
+            else:
+                value = critic_all
+            value = jnp.squeeze(value, axis=-1)
+            return pi, value
 
 
 class Transition(NamedTuple):
@@ -119,41 +170,52 @@ class Transition(NamedTuple):
     # info: jnp.ndarray # additional information
 
 
+from flax.core.frozen_dict import FrozenDict
+from flax import struct
+
+
 @struct.dataclass
-class CLState:
+class MASState:
     old_params: FrozenDict
-    reg_weights: FrozenDict
+    importance: FrozenDict
+    reg_weights: FrozenDict  # a mask: ones for parameters to regularize, zeros otherwise
 
 
 def copy_params(params):
     return jax.tree_util.tree_map(lambda x: x.copy(), params)
 
 
-def init_cl_state(params: FrozenDict, regularize_critic: bool = False) -> CLState:
-    """Initialize old_params = current params, reg_weights = all 1 (or 0 if skipping critic)."""
+def init_cl_state(params: FrozenDict, regularize_critic: bool, regularize_heads: bool) -> MASState:
+    """
+    Initialize old_params with the current parameters, importance with zeros.
+    """
     old_params = copy_params(params)
-    reg_weights = build_reg_weights(params, regularize_critic)
-    return CLState(old_params=old_params, reg_weights=reg_weights)
+    reg_weights = build_reg_weights(params, regularize_critic, regularize_heads)
+    importance = jax.tree_map(lambda x: jnp.zeros_like(x), old_params)
+    return MASState(old_params=old_params, importance=importance, reg_weights=reg_weights)
 
 
-def update_cl_state(cl_state: CLState, new_params: FrozenDict) -> CLState:
+def update_mas_state(mas_state: MASState,
+                     new_params: FrozenDict,
+                     new_importance: FrozenDict) -> MASState:
     """
-    When starting a new task, overwrite old_params with new_params.
-    Keep the same reg_weights. (Do not accumulate from earlier tasks.)
+    After finishing task i, store a snapshot of the new parameters and the new importance values.
     """
-    return CLState(
+    return MASState(
         old_params=copy_params(new_params),
-        reg_weights=cl_state.reg_weights
+        importance=new_importance,
+        reg_weights=mas_state.reg_weights
     )
 
 
-def build_reg_weights(params: FrozenDict, regularize_critic: bool = False) -> FrozenDict:
+def build_reg_weights(params: FrozenDict, regularize_critic: bool = False, regularize_heads: bool = True) -> FrozenDict:
     def _assign_reg_weight(path, x):
         # Join the keys in the path to a string.
         path_str = "/".join(str(key) for key in path)
         # Exclude head parameters: do not regularize if parameter is in actor_head or critic_head.
-        if "actor_head" in path_str or "critic_head" in path_str:
-            return jnp.zeros_like(x)
+        if not regularize_heads:
+            if "actor_head" in path_str or "critic_head" in path_str:
+                return jnp.zeros_like(x)
         # If we're not regularizing the critic, then exclude any parameter from critic branches.
         if not regularize_critic and "critic" in path_str.lower():
             return jnp.zeros_like(x)
@@ -163,80 +225,148 @@ def build_reg_weights(params: FrozenDict, regularize_critic: bool = False) -> Fr
     return jax.tree_util.tree_map_with_path(_assign_reg_weight, params)
 
 
-def compute_l2_reg_loss(params: FrozenDict,
-                        cl_state: CLState,
-                        seq_idx: int,
-                        cl_reg_coef: float) -> jnp.ndarray:
-    """L2 regularization vs. a single old_params, scaled by cl_reg_coef if seq_idx>0."""
+def compute_mas_importance(
+        config,
+        train_state,
+        env,
+        network,
+        env_idx=0,
+        key: jax.random.PRNGKey = jax.random.PRNGKey(0),
+        max_episodes=5,
+        max_steps=500,
+        normalize_importance=False
+):
+    """
+    Perform rollouts and compute MAS importance by averaging the squared gradients of
+    the output’s L2 norm. That is, for each state x, we compute
+        L = 1/2 * ||f_\theta(x)||^2
+    then accumulate (dL/dθ)^2 across steps/states.
+    """
 
-    def _tree_loss(new_p, old_p, w):
-        diff = new_p - old_p
-        return jnp.sum(w * diff ** 2)
-
-    # If seq_idx == 0, no penalty:
-    coef = jnp.where(seq_idx > 0, cl_reg_coef, 0.0)
-
-    loss_tree = jax.tree_util.tree_map(
-        lambda p, op, w: _tree_loss(p, op, w),
-        params, cl_state.old_params, cl_state.reg_weights
+    # Initialize importance accumulation to zeros
+    importance_init = jax.tree_util.tree_map(
+        lambda x: jnp.zeros_like(x),
+        train_state.params
     )
-    total_reg_loss = jax.tree_util.tree_reduce(lambda acc, x: acc + x, loss_tree, 0.0)
 
-    # Count how many are actually being penalized (where reg_weights != 0).
-    def _count_params(p, w):
-        return jnp.sum(w)  # ignoring partial matches
+    def l2_norm_output(params, obs_dict):
+        # We'll sum over all agents the 1/2 * || f_\theta(obs) ||^2.
+        # You can pick what "output" means: maybe just the policy logits,
+        # or the value function, or both. Here, let's do policy logits + value.
+        total_loss = 0.0
+        for agent_id, obs_val in obs_dict.items():
+            pi, v = network.apply(params, obs_val, env_idx=env_idx)
+            # Example: L2 norm of the concatenation of logits and the value.
+            # shape: (1, action_dim + 1)
+            # sum of squares / 2
+            logits_and_v = jnp.concatenate([pi.logits, jnp.expand_dims(v, -1)], axis=-1)
+            l2 = 0.5 * jnp.sum(logits_and_v**2)
+            total_loss += l2
+        return total_loss
 
-    count_tree = jax.tree_util.tree_map(_count_params, params, cl_state.reg_weights)
-    param_count = jax.tree_util.tree_reduce(lambda acc, x: acc + x, count_tree, 0.0)
-    param_count = jnp.maximum(param_count, 1.0)
+    def single_episode_importance(rng_ep, importance_accum):
+        rng, rng_reset = jax.random.split(rng_ep)
+        obs, state = env.reset(rng_reset)
+        done = False
+        step_count = 0
 
-    return coef * (total_reg_loss / param_count)
+        while (not done) and (step_count < max_steps):
+            # Prepare obs for all agents as a batch
+            flat_obs = {}
+            for agent_id, obs_v in obs.items():
+                expected_shape = env.observation_space().shape
+                if obs_v.ndim == len(expected_shape):
+                    obs_v = jnp.expand_dims(obs_v, axis=0)  # (1, ...)
+                v_b = jnp.reshape(obs_v, (obs_v.shape[0], -1))  # make it (1, obs_dim)
+                # If we use task_id
+                if config.use_task_id:
+                    onehot = make_task_onehot(env_idx, config.seq_length)
+                    onehot = jnp.expand_dims(onehot, axis=0)
+                    v_b = jnp.concatenate([v_b, onehot], axis=1)
+                flat_obs[agent_id] = v_b
+
+            # Optional: step environment with some policy actions
+            # (not necessary for importance computation, but you'd do it for exploring states)
+
+            # Grad wrt L2 norm of the outputs
+            def mas_loss_fn(p):
+                return l2_norm_output(p, flat_obs)
+
+            grads = jax.grad(mas_loss_fn)(train_state.params)
+            grads_sqr = jax.tree_util.tree_map(lambda g: g**2, grads)
+            # Accumulate
+            importance_accum = jax.tree_util.tree_map(
+                lambda acc, gs: acc + gs, importance_accum, grads_sqr
+            )
+
+            # Step environment or break if done
+            rng, rng_step = jax.random.split(rng)
+            actions = {}
+            for i, agent_id in enumerate(env.agents):
+                pi, _v = network.apply(train_state.params, flat_obs[agent_id], env_idx=env_idx)
+                actions[agent_id] = jnp.squeeze(pi.sample(seed=rng_step), axis=0)
+
+            next_obs, next_state, reward, done_info, _info = env.step(rng_step, state, actions)
+            done = done_info["__all__"]
+            obs, state = next_obs, next_state
+            step_count += 1
+
+        return importance_accum, step_count
+
+    # Main loop
+    importance_accum = importance_init
+    total_steps = 0
+    rngs = jax.random.split(key, max_episodes)
+
+    for ep_i in range(max_episodes):
+        importance_accum, ep_steps = single_episode_importance(rngs[ep_i], importance_accum)
+        total_steps += ep_steps
+
+    # Average over total steps
+    if total_steps > 0:
+        importance_accum = jax.tree_util.tree_map(
+            lambda x: x / float(total_steps),
+            importance_accum
+        )
+
+    # Optional normalization
+    if normalize_importance and total_steps > 0:
+        total_abs = jax.tree_util.tree_reduce(
+            lambda acc, x: acc + jnp.sum(jnp.abs(x)),
+            importance_accum,
+            0.0
+        )
+        param_count = jax.tree_util.tree_reduce(
+            lambda acc, x: acc + x.size,
+            importance_accum,
+            0
+        )
+        importance_mean = total_abs / (param_count + 1e-8)
+        importance_accum = jax.tree_util.tree_map(
+            lambda x: x / (importance_mean + 1e-8),
+            importance_accum
+        )
+
+    return importance_accum
 
 
-# def compute_l2_reg_loss(
-#         params: FrozenDict,
-#         cl_state: CLState,
-#         seq_idx: int,
-#         cl_reg_coef: float
-# ) -> jnp.ndarray:
-#     """
-#     Compute an L2 regularization term with averaging over the parameter count.
-#     If this is the first task (seq_idx == 0), we typically turn off L2 by returning 0.
-#     """
-#
-#     # Turn off the L2 penalty if on the first task.
-#     aux_loss_coef = jnp.where(seq_idx > 0, cl_reg_coef, 0.0)
-#
-#     # Compute the elementwise sum of squared differences.
-#     def tree_loss(new_p, old_p, w):
-#         diff = new_p - old_p
-#         return jnp.sum(w * diff ** 2)
-#
-#     loss_tree = jax.tree_util.tree_map(
-#         lambda p, old_p, w: tree_loss(p, old_p, w),
-#         params,
-#         cl_state.old_params,
-#         cl_state.reg_weights
-#     )
-#     total_reg_loss = jax.tree_util.tree_reduce(lambda acc, x: acc + x, loss_tree, 0.0)
-#
-#     # Count the total number of (actor) parameters we are actually regularizing.
-#     # (Only those entries where w != 0.)
-#     def count_params(p, w):
-#         # For array p, w is typically the same shape.  If w != 0, those entries are regularized.
-#         # We'll just treat all entries in p as "counted" if w is non-zero,
-#         # but you could do a finer check if you only want some subset.
-#         return jnp.sum(w)
-#
-#     param_count_tree = jax.tree_util.tree_map(count_params, params, cl_state.reg_weights)
-#     param_count = jax.tree_util.tree_reduce(lambda acc, x: acc + x, param_count_tree, 0.0)
-#     # To prevent division by zero if no parameters are being regularized:
-#     param_count = jnp.maximum(param_count, 1.0)
-#
-#     # Average L2 over all regularized parameters and scale by aux_loss_coef:
-#     avg_reg_loss = total_reg_loss / param_count
-#
-#     return aux_loss_coef * avg_reg_loss
+def compute_mas_loss(params: FrozenDict,
+                     mas_state: MASState,
+                     mas_coef: float
+                     ) -> float:
+    """
+    0.5 * mas_coef * sum( importance * (params - old_params)^2 ).
+    """
+    def penalty(p, old_p, imp, w):
+        return w * imp * (p - old_p)**2
+
+    penalty_tree = jax.tree_util.tree_map(
+        lambda p_, op_, im_, w: penalty(p_, op_, im_, w),
+        params, mas_state.old_params, mas_state.importance, mas_state.reg_weights
+    )
+
+    penalty_sum = jax.tree_util.tree_reduce(lambda acc, x: acc + x.sum(), penalty_tree, 0.0)
+    return 0.5 * mas_coef * penalty_sum
 
 
 def make_task_onehot(task_idx: int, num_tasks: int) -> jnp.ndarray:
@@ -248,7 +378,7 @@ def make_task_onehot(task_idx: int, num_tasks: int) -> jnp.ndarray:
 
 @dataclass
 class Config:
-    reg_coef: float = 300.0
+    reg_coef: float = 2e4
     lr: float = 3e-4
     num_envs: int = 16
     num_steps: int = 128
@@ -268,7 +398,10 @@ class Config:
     alg_name: str = "IPPO"
     use_task_id: bool = False
     use_multihead: bool = False
+    shared_backbone: bool = False
+    normalize_importance: bool = False
     regularize_critic: bool = False
+    regularize_heads: bool = True
 
     # Environment
     seq_length: int = 6
@@ -284,6 +417,7 @@ class Config:
     log_interval: int = 75  # log every n calls to update step
     eval_num_steps: int = 1000  # number of steps to evaluate the model
     eval_num_episodes: int = 5  # number of episodes to evaluate the model
+    gif_len: int = 300
 
     anneal_lr: bool = False
     seed: int = 30
@@ -352,7 +486,7 @@ def main():
                                                               seed=config.seed)
 
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    run_name = f'{config.alg_name}_L2_seq{config.seq_length}_{config.strategy}_{timestamp}'
+    run_name = f'{config.alg_name}_MAS_seq{config.seq_length}_{config.strategy}_{timestamp}'
     exp_dir = os.path.join("runs", run_name)
 
     for layout_config in config.env_kwargs:
@@ -369,7 +503,7 @@ def main():
         sync_tensorboard=True,
         mode=config.wandb_mode,
         tags=wandb_tags,
-        group="L2",
+        group="MAS",
         name=run_name
     )
 
@@ -485,8 +619,8 @@ def main():
 
         return padded_envs
 
-    @partial(jax.jit, static_argnums=(1))
-    def evaluate_model(train_state, network, key, env_idx):
+    @partial(jax.jit, static_argnums=(2))
+    def evaluate_model(train_state, key, env_idx):
         '''
         Evaluates the model by running 10 episodes on all environments and returns the average reward
         @param train_state: the current state of the training
@@ -494,7 +628,7 @@ def main():
         returns the average reward
         '''
 
-        def run_episode_while(env, key_r, network, network_params, max_steps=1000):
+        def run_episode_while(env, key_r, max_steps=1000):
             """
             Run a single episode using jax.lax.while_loop
             """
@@ -564,7 +698,7 @@ def main():
                 # Environment step
                 next_obs, next_state, reward, done_step, info = env.step(key_s, state_env, actions)
                 done = done_step["__all__"]
-                reward = reward["agent_0"]
+                reward = reward["agent_0"]  # Common reward
                 total_reward += reward
                 step_count += 1
 
@@ -592,11 +726,8 @@ def main():
         for env in envs:
             env = make(config.env_name, layout=env)  # Create the environment
 
-            # network.init(key_a, init_x)  # initializes the network with the observation space
-            network_params = train_state.params
-
             # Run k episodes
-            all_rewards = jax.vmap(lambda k: run_episode_while(env, k, network_params, config.eval_num_steps))(
+            all_rewards = jax.vmap(lambda k: run_episode_while(env, k, config.eval_num_steps))(
                 jax.random.split(key, config.eval_num_episodes)
             )
 
@@ -637,7 +768,7 @@ def main():
     )
 
     network = ActorCritic(temp_env.action_space().n, activation=config.activation, use_multihead=config.use_multihead,
-                          num_tasks=config.seq_length)
+                          num_tasks=config.seq_length, shared_backbone=config.shared_backbone)
 
     obs_dim = np.prod(temp_env.observation_space().shape)
 
@@ -668,7 +799,7 @@ def main():
     )
 
     @partial(jax.jit, static_argnums=(3))
-    def train_on_environment(rng, train_state, cl_state, env_idx, env_counter):
+    def train_on_environment(rng, train_state, cl_state, env_idx):
         '''
         Trains the network using IPPO
         @param rng: random number generator
@@ -903,7 +1034,7 @@ def main():
                                     ratio,
                                     1.0 - config.clip_eps,
                                     1.0 + config.clip_eps,
-                                )
+                                    )
                                 * gae
                         )
 
@@ -911,15 +1042,15 @@ def main():
                                                   loss_actor_clipped)  # calculate the actor loss as the minimum of the clipped and unclipped actor loss
                         loss_actor = loss_actor.mean()  # calculate the mean of the actor loss
                         entropy = pi.entropy().mean()  # calculate the entropy of the policy
-                        l2_loss = compute_l2_reg_loss(params, cl_state, env_idx, config.reg_coef)
 
-                        total_loss = (
-                                loss_actor
-                                + config.vf_coef * value_loss
-                                - config.ent_coef * entropy
-                                + l2_loss
-                        )
-                        return total_loss, (value_loss, loss_actor, entropy, l2_loss)
+                        # MAS penalty
+                        mas_penalty = compute_mas_loss(params, cl_state, config.reg_coef)
+
+                        total_loss = (loss_actor
+                                      + config.vf_coef * value_loss
+                                      - config.ent_coef * entropy
+                                      + mas_penalty)
+                        return total_loss, (value_loss, loss_actor, entropy, mas_penalty)
 
                     # returns a function with the same parameters as loss_fn that calculates the gradient of the loss function
                     grad_fn = jax.value_and_grad(_loss_fn, has_aux=True)
@@ -1009,12 +1140,12 @@ def main():
                 update_step * config.num_minibatches * config.update_epochs)
 
             # Losses section
-            total_loss, (value_loss, loss_actor, entropy, l2_loss) = loss_info
+            total_loss, (value_loss, loss_actor, entropy, reg_loss) = loss_info
             metric["Losses/total_loss"] = total_loss.mean()
             metric["Losses/value_loss"] = value_loss.mean()
             metric["Losses/actor_loss"] = loss_actor.mean()
             metric["Losses/entropy"] = entropy.mean()
-            metric["Losses/reg_loss"] = l2_loss.mean()
+            metric["Losses/reg_loss"] = reg_loss.mean()
 
             # Rewards section
             metric["General/shaped_reward_agent0"] = metric["shaped_reward"]["agent_0"]
@@ -1040,7 +1171,7 @@ def main():
                 train_state_eval = jax.tree_util.tree_map(lambda x: x.copy(), train_state)
 
                 def log_metrics(metric, update_step):
-                    evaluations = evaluate_model(train_state_eval, network, eval_rng, env_idx)
+                    evaluations = evaluate_model(train_state_eval, eval_rng, env_idx)
                     for i, evaluation in enumerate(evaluations):
                         metric[f"Evaluation/{config.layout_name[i]}"] = evaluation
 
@@ -1052,7 +1183,7 @@ def main():
                         for key, value in metric.items():
                             writer.add_scalar(key, value, real_step)
 
-                    jax.experimental.io_callback(callback, None, (metric, update_step, env_counter))
+                    jax.experimental.io_callback(callback, None, (metric, update_step, env_idx + 1))
                     return None
 
                 def do_not_log(metric, update_step):
@@ -1098,28 +1229,24 @@ def main():
 
         visualizer = OvercookedVisualizer()
 
-        env_counter = 1
-
         runner_state = None
         for i, (r, _) in enumerate(zip(sub_rngs, envs)):
-            if i > 0:
-                # Overwrite old_params with the final params from the last task
-                cl_state = update_cl_state(cl_state, train_state.params)
-            runner_state, metrics = train_on_environment(r, train_state, cl_state, env_idx=i, env_counter=env_counter)
+            # --- Train on environment i using the *current* mas_state ---
+            runner_state, metric = train_on_environment(r, train_state, cl_state, i)
             train_state = runner_state[0]
 
-            # ----- Generate & log a GIF after finishing task i -----
-            # We'll do a purely python-level rollout on the same environment.
-            # Use OvercookedVisualizer or env.render() as needed:
-            states = record_gif_of_episode(config, train_state, envs[i], network, env_idx=i)
+            # --- Compute new Fisher, then update mas_state for next tasks ---
+            # fisher = compute_fisher_with_rollouts(config, train_state, envs[i], network, i, r, config.use_task_id, seq_length, i, config.normalize_fisher)
+            fisher = compute_mas_importance(config, train_state, envs[i], network, i, r, normalize_importance=config.normalize_importance)
+            cl_state = update_mas_state(cl_state, train_state.params, fisher)
+
+            # Generate & log a GIF after finishing task i
+            states = record_gif_of_episode(config, train_state, envs[i], network, env_idx=i, max_steps=config.gif_len)
             visualizer.animate(states, agent_view_size=5, task_idx=i, task_name=envs[i].name, exp_dir=exp_dir)
 
             # save the model
-            path = f"checkpoints/overcooked/L2/{run_name}/model_env_{env_counter}"
+            path = f"checkpoints/overcooked/MAS/{run_name}/model_env_{i + 1}"
             save_params(path, train_state)
-
-            # update the environment counter
-            env_counter += 1
 
         return runner_state
 
@@ -1141,9 +1268,9 @@ def main():
 
     # Run the model
     rng, train_rng = jax.random.split(rng)
-
-    # -------------- Initialize CLState once ---------------
-    cl_state = init_cl_state(train_state.params, regularize_critic=config.regularize_critic)
+    cl_state = init_cl_state(train_state.params,
+                             regularize_critic=config.regularize_critic,
+                             regularize_heads=config.regularize_heads)
 
     # apply the loop_over_envs function to the environments
     loop_over_envs(train_rng, train_state, cl_state, envs)

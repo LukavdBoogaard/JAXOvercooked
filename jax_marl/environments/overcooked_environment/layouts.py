@@ -367,6 +367,72 @@ WWWWWWWWW
 """
 
 
+basic_cooperative = """
+WWWWWWWWW
+WPOAW   W
+WWWW    W
+W       W
+W       W
+W   AWXBW
+WWWWWWWWW
+"""
+
+corridor_challenge = """
+WWWWWWWWWWW
+WA        W
+WWWWWWWW  W
+WP       XW
+WO  WWWW  W
+WB        W
+WWWWWWW   W
+W       A W
+WWWWWWWWWWW
+"""
+
+split_work = """
+WWPWWOWWW
+WA      W
+W       W
+WWWW WWWW
+W       W
+W       W
+WB     AW
+WWWWXWWWW
+"""
+
+resource_sharing = """
+WWPWWOWWW
+WA      W
+W  WWW  W
+W  W    W
+W  W    W
+W  WWW  W
+WB     AW
+WWWWXWWWW
+"""
+
+efficiency_test = """
+WWWWWWWWW
+WA  P   W
+W       W
+WO WWW BW
+W   W   W
+W   W   W
+WA  X   W
+WWWWWWWWW
+"""
+
+forced_teamwork = """
+WWWWWPWWWW
+WA       W
+W  WWW   W
+W  W     W
+WO W    XW
+W  WWW   W
+WB      AW
+WWWWWWWWWW
+"""
+
 
 overcooked_layouts = {
     "cramped_room" : FrozenDict(cramped_room),
@@ -383,5 +449,11 @@ overcooked_layouts = {
     "easy_layout" : layout_grid_to_dict(easy_layout),
     "big_kitchen" : layout_grid_to_dict(big_kitchen),
     "no_cooperation" : layout_grid_to_dict(no_cooperation),
-    "forced_coord_2" : layout_grid_to_dict(foorced_coord_2)
+    "forced_coord_2" : layout_grid_to_dict(foorced_coord_2),
+    "basic_cooperative" : layout_grid_to_dict(basic_cooperative),
+    "corridor_challenge" : layout_grid_to_dict(corridor_challenge),
+    "split_work" : layout_grid_to_dict(split_work),
+    "resource_sharing" : layout_grid_to_dict(resource_sharing),
+    "efficiency_test" : layout_grid_to_dict(efficiency_test),
+    "forced_teamwork" : layout_grid_to_dict(forced_teamwork)
 }
