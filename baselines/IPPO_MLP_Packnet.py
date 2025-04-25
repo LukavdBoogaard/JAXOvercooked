@@ -291,6 +291,7 @@ class Packnet():
                         all_prunable = jnp.concatenate([all_prunable.reshape(-1), p.reshape(-1)], axis=0)
 
         cutoff = jnp.nanquantile(jnp.abs(all_prunable), prune_quantile)
+        jax.debug.print("Cutoff: {cutoff}", cutoff=cutoff)
         mask = {}
         new_params = {}
 
@@ -1039,7 +1040,7 @@ def main():
 
      # Initialize the Packnet class
     packnet = Packnet(seq_length=config.seq_length, 
-                      prune_instructions=0.4,
+                      prune_instructions=0.9,
                       train_finetune_split=(config.train_epochs, config.finetune_epochs),
                       prunable_layers=[nn.Dense])
 
