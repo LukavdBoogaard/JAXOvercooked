@@ -139,7 +139,7 @@ class Config:
     # Wandb settings
     wandb_mode: str = "online"
     entity: Optional[str] = ""
-    project: str = "ippo_continual"
+    project: str = "COOX"
     tags: List[str] = field(default_factory=list)
 
     # to be computed during runtime
@@ -191,8 +191,6 @@ def calculate_sparsity(params, threshold=1e-5):
     
     # Compute percentage of small weights
     sparsity_percentage = 100 * (num_small_weights / total_weights)
-
-    print(f"Sparsity: {sparsity_percentage:.2f}%")
     
     return sparsity_percentage
     
@@ -231,7 +229,7 @@ def main():
     wandb_tags = config.tags if config.tags is not None else []
     wandb.login(key=os.environ.get("WANDB_API_KEY"))
     wandb.init(
-        project='Continual_IPPO', 
+        project=config.project, 
         config=config,
         sync_tensorboard=True,
         mode=config.wandb_mode,
@@ -581,7 +579,7 @@ def main():
 
 
     # Load the practical baseline yaml file as a dictionary
-    repo_root = "/home/lvdenboogaard/JAXOvercooked"
+    repo_root = "/home/luka/repo/JAXOvercooked"
     yaml_loc = os.path.join(repo_root, "practical_reward_baseline_results.yaml")
     with open(yaml_loc, "r") as f:
         practical_baselines = OmegaConf.load(f)
@@ -883,9 +881,7 @@ def main():
             # average the metric
             metric = jax.tree_util.tree_map(lambda x: x.mean(), metric)
 
-            update_step = update_step + 1
-
-            
+            update_step += 1
 
             # add the general metrics to the metric dictionary
             metric["General/update_step"] = update_step
@@ -919,6 +915,7 @@ def main():
             def evaluate_and_log(rng, update_step):
                 rng, eval_rng = jax.random.split(rng)
                 train_state_eval = jax.tree_util.tree_map(lambda x: x.copy(), train_state)
+                
 
                 def log_metrics(metric, update_step):
                     evaluations = evaluate_model(train_state_eval, network, eval_rng)
@@ -926,17 +923,20 @@ def main():
                         metric[f"Evaluation/{layout_name}"] = evaluations[i]
                         
                         # Add error handling for missing baseline entries
+                        bare_layout = layout_name.split("__")[1]
                         try:
-                            if layout_name in practical_baselines:
-                                baseline_reward = practical_baselines[layout_name]["avg_rewards"]
+                            if bare_layout in practical_baselines:
+                                baseline_reward = practical_baselines[bare_layout]["avg_rewards"]
                                 metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i] / baseline_reward
                             else:
-                                print(f"Warning: No baseline data for environment '{layout_name}'")
+                                print(f"Warning: No baseline data for environment '{bare_layout}'")
                                 # Use 1.0 as default normalization factor (no scaling)
                                 metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
                         except Exception as e:
                             print(f"Error scaling rewards for {layout_name}: {e}")
                             metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
+                    
+                    params = jax.tree_util.tree_map(lambda x: x, train_state_eval.params["params"])
                     
                     # Same error handling for callback function
                     def callback(args):
@@ -951,6 +951,16 @@ def main():
 
                         for key, value in metric.items():
                             writer.add_scalar(key, value, real_step)
+
+                        # Add histograms of the parameters and grads to the writer
+                        for layer, dict in params.items():
+                            for layer_name, param_array in dict.items():
+                                writer.add_histogram(
+                                    tag=f"weights/{layer}/{layer_name}", 
+                                    values=jnp.array(param_array), 
+                                    global_step=real_step,
+                                    bins=100)
+
 
                     jax.experimental.io_callback(callback, None, (metric, update_step, env_counter))
                     return None

@@ -1077,7 +1077,11 @@ def main():
         tx=tx
     )
 
- 
+    # Load the practical baseline yaml file as a dictionary
+    repo_root = "/home/luka/repo/JAXOvercooked"
+    yaml_loc = os.path.join(repo_root, "practical_reward_baseline_results.yaml")
+    with open(yaml_loc, "r") as f:
+        practical_baselines = OmegaConf.load(f)
 
    
     # def get_shape(x):
@@ -1462,8 +1466,22 @@ def main():
                         metric[f"Evaluation/{config.layout_name[i]}"] = jnp.nan
 
                     evaluations = evaluate_model(train_state_eval, network, eval_rng)
-                    for i, evaluation in enumerate(evaluations):
-                        metric[f"Evaluation/{config.layout_name[i]}"] = evaluation
+                    for i, layout_name in enumerate(config.layout_name):
+                        metric[f"Evaluation/{layout_name}"] = evaluations[i]
+                        
+                        # Add error handling for missing baseline entries
+                        bare_layout = layout_name.split("__")[1]
+                        try:
+                            if bare_layout in practical_baselines:
+                                baseline_reward = practical_baselines[bare_layout]["avg_rewards"]
+                                metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i] / baseline_reward
+                            else:
+                                print(f"Warning: No baseline data for environment '{bare_layout}'")
+                                # Use 1.0 as default normalization factor (no scaling)
+                                metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
+                        except Exception as e:
+                            print(f"Error scaling rewards for {layout_name}: {e}")
+                            metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
 
                     # Extract parameters 
                     params = jax.tree_util.tree_map(lambda x: x, train_state_eval.params["params"])
@@ -1471,11 +1489,19 @@ def main():
                     
                     def callback(args):
                         metric, update_step, env_counter, params, grads = args
-                        update_step = int(update_step)
-                        env_counter = int(env_counter)
-                        real_step = (env_counter-1) * config.num_updates + update_step
+                        real_step = (int(env_counter)-1) * config.num_updates + int(update_step)
+
+                        env_name = config.layout_name[env_counter-1]
+                        if env_name in practical_baselines:
+                            metric["Scaled returns/returned_episode_returns_scaled"] = metric["returned_episode_returns"] / practical_baselines[env_name]["avg_rewards"]
+                        else:
+                            metric["Scaled returns/returned_episode_returns_scaled"] = metric["returned_episode_returns"]  # No scaling if no baseline
+                        
+                        # Add the scalars to the writer
                         for key, value in metric.items():
                             writer.add_scalar(key, value, real_step)
+
+                        # Add histograms of the parameters and grads to the writer
                         for layer, dict in params.items():
                             for layer_name, param_array in dict.items():
                                 writer.add_histogram(

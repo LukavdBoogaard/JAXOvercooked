@@ -23,8 +23,8 @@ def generate_sequence(sequence_length=2, strategy='random', layout_names=None, s
     
     if strategy == 'random':
         # set seed
-        # if seed is not None:
-        #     random.seed(seed)
+        if seed is not None:
+            random.seed(seed)
         selected_layouts = random.sample(layouts, sequence_length)
         # reset seed
         random.seed(None)
