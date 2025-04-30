@@ -717,7 +717,7 @@ class Config:
     finetune_lr: float = 1e-4
     finetune_timesteps: int = 1e6
 
-    seq_length: int = 4
+    seq_length: int = 3
     strategy: str = "random"
     layouts: Optional[Sequence[str]] = field(default_factory=lambda: ["asymm_advantages", "smallest_kitchen", "cramped_room", "easy_layout", "square_arena", "no_cooperation"])
     env_kwargs: Optional[Sequence[dict]] = None
@@ -1146,7 +1146,7 @@ def main():
 
      # Initialize the Packnet class
     packnet = Packnet(seq_length=config.seq_length, 
-                      prune_instructions=0.6,
+                      prune_instructions=0.4,
                       train_finetune_split=(config.train_epochs, config.finetune_epochs),
                       prunable_layers=[nn.Dense])
     

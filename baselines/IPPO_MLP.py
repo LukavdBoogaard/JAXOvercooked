@@ -19,7 +19,7 @@ from typing import Sequence, NamedTuple, Any, Optional, List
 from flax.training.train_state import TrainState
 import distrax
 from gymnax.wrappers.purerl import LogWrapper, FlattenObservationWrapper
-
+from baselines.cl_metrics import ContinualLearningMetrics
 from jax_marl.registration import make
 from jax_marl.wrappers.baselines import LogWrapper
 from jax_marl.environments.overcooked_environment import overcooked_layouts
@@ -123,7 +123,7 @@ class Config:
     env_name: str = "overcooked"
     alg_name: str = "ippo"
 
-    seq_length: int = 6
+    seq_length: int = 3
     strategy: str = "random"
     layouts: Optional[Sequence[str]] = field(default_factory=lambda: ["asymm_advantages", "smallest_kitchen", "cramped_room", "easy_layout", "square_arena", "no_cooperation"])
     env_kwargs: Optional[Sequence[dict]] = None
@@ -139,7 +139,7 @@ class Config:
     # Wandb settings
     wandb_mode: str = "online"
     entity: Optional[str] = ""
-    project: str = "COOX"
+    project: str = "COOX_benchmark"
     tags: List[str] = field(default_factory=list)
 
     # to be computed during runtime
@@ -584,6 +584,8 @@ def main():
     with open(yaml_loc, "r") as f:
         practical_baselines = OmegaConf.load(f)
 
+    cl_metrics = ContinualLearningMetrics()
+
     @partial(jax.jit, static_argnums=(2))
     def train_on_environment(rng, train_state, env, env_counter):
         '''
@@ -916,9 +918,13 @@ def main():
                 rng, eval_rng = jax.random.split(rng)
                 train_state_eval = jax.tree_util.tree_map(lambda x: x.copy(), train_state)
                 
-
                 def log_metrics(metric, update_step):
                     evaluations = evaluate_model(train_state_eval, network, eval_rng)
+
+                            # Store evaluations for continual learning metrics
+                    global_step = (env_counter-1) * config.num_updates + update_step
+                    cl_metrics.record_evaluation(env_counter-1, global_step, evaluations)
+
                     for i, layout_name in enumerate(config.layout_name):
                         metric[f"Evaluation/{layout_name}"] = evaluations[i]
                         
@@ -928,15 +934,15 @@ def main():
                             if bare_layout in practical_baselines:
                                 baseline_reward = practical_baselines[bare_layout]["avg_rewards"]
                                 metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i] / baseline_reward
+                                if i not in cl_metrics.optimal_performance:
+                                    cl_metrics.optimal_performance[i] = baseline_reward
+                                    cl_metrics.random_performance[i] = 0.0
                             else:
                                 print(f"Warning: No baseline data for environment '{bare_layout}'")
-                                # Use 1.0 as default normalization factor (no scaling)
                                 metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
                         except Exception as e:
                             print(f"Error scaling rewards for {layout_name}: {e}")
                             metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
-                    
-                    params = jax.tree_util.tree_map(lambda x: x, train_state_eval.params["params"])
                     
                     # Same error handling for callback function
                     def callback(args):
@@ -953,13 +959,13 @@ def main():
                             writer.add_scalar(key, value, real_step)
 
                         # Add histograms of the parameters and grads to the writer
-                        for layer, dict in params.items():
-                            for layer_name, param_array in dict.items():
-                                writer.add_histogram(
-                                    tag=f"weights/{layer}/{layer_name}", 
-                                    values=jnp.array(param_array), 
-                                    global_step=real_step,
-                                    bins=100)
+                        # for layer, dict in params.items():
+                        #     for layer_name, param_array in dict.items():
+                        #         writer.add_histogram(
+                        #             tag=f"weights/{layer}/{layer_name}", 
+                        #             values=jnp.array(param_array), 
+                        #             global_step=real_step,
+                        #             bins=100)
 
 
                     jax.experimental.io_callback(callback, None, (metric, update_step, env_counter))
@@ -1010,18 +1016,46 @@ def main():
         # counter for the environment 
         env_counter = 1
 
+        evaluations_right_after_training = []
+
         for env_rng, env in zip(env_rngs, envs):
             runner_state, metrics = train_on_environment(env_rng, train_state, env, env_counter)
 
             # unpack the runner state
             train_state, env_state, last_obs, update_step, rng = runner_state
 
+            # Evaluate at the end of training to get the average performance of the task right after training
+            evaluations = evaluate_model(train_state, network, rng)
+            evaluation_current_task = evaluations[env_counter-1]
+            evaluations_right_after_training.append(evaluation_current_task)
+            
+
             # save the model
             path = f"checkpoints/overcooked/{run_name}/model_env_{env_counter}"
             save_params(path, train_state)
 
+            def calculate_average_forgetting():
+                '''
+                Calculate the average forgetting of all previous tasks 
+                '''
+                evaluations = evaluate_model(train_state, network, rng)
+                # calculate the forgetting of each task 
+                forgetting = []
+                for i in range(env_counter-1):
+                    # calculate the forgetting of the task
+                    forgetting.append((evaluations[i] - evaluations_right_after_training[i]) / evaluations_right_after_training[i])
+                    print(f"forgetting of task {i+1}: {forgetting[i]}")
+            
+            calcul
+
             # update the environment counter
             env_counter += 1
+        
+        # at the end of the sequence, we evaluate again
+        evaluations = evaluate_model(train_state, network, rng)
+
+        # calculate the forgetting of each
+
 
         return runner_state
 
@@ -1052,6 +1086,9 @@ def sample_discrete_action(key, action_space):
     """Samples a discrete action based on the action space provided."""
     num_actions = action_space.n
     return jax.random.randint(key, (1,), 0, num_actions)
+
+
+
 
 
 if __name__ == "__main__":
