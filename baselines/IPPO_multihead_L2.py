@@ -22,153 +22,14 @@ from jax_marl.registration import make
 from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
 from jax_marl.wrappers.baselines import LogWrapper
 from architectures.multihead_mlp import ActorCritic
-
+from cl_methods.L2_regularization import init_cl_state, update_cl_state, compute_l2_reg_loss, make_task_onehot
+from baselines.utils import Transition, batchify, unbatchify
 
 import wandb
 from functools import partial
 from dataclasses import dataclass, field
 import tyro
 from tensorboardX import SummaryWriter
-
-
-class Transition(NamedTuple):
-    '''
-    Named tuple to store the transition information
-    '''
-    done: jnp.ndarray  # whether the episode is done
-    action: jnp.ndarray  # the action taken
-    value: jnp.ndarray  # the value of the state
-    reward: jnp.ndarray  # the reward received
-    log_prob: jnp.ndarray  # the log probability of the action
-    obs: jnp.ndarray  # the observation
-    # info: jnp.ndarray # additional information
-
-
-@struct.dataclass
-class CLState:
-    old_params: FrozenDict
-    reg_weights: FrozenDict
-
-
-def copy_params(params):
-    return jax.tree_util.tree_map(lambda x: x.copy(), params)
-
-
-def init_cl_state(params: FrozenDict, regularize_critic: bool = False) -> CLState:
-    """Initialize old_params = current params, reg_weights = all 1 (or 0 if skipping critic)."""
-    old_params = copy_params(params)
-    reg_weights = build_reg_weights(params, regularize_critic)
-    return CLState(old_params=old_params, reg_weights=reg_weights)
-
-
-def update_cl_state(cl_state: CLState, new_params: FrozenDict) -> CLState:
-    """
-    When starting a new task, overwrite old_params with new_params.
-    Keep the same reg_weights. (Do not accumulate from earlier tasks.)
-    """
-    return CLState(
-        old_params=copy_params(new_params),
-        reg_weights=cl_state.reg_weights
-    )
-
-
-def build_reg_weights(params: FrozenDict, regularize_critic: bool = False) -> FrozenDict:
-    def _assign_reg_weight(path, x):
-        # Join the keys in the path to a string.
-        path_str = "/".join(str(key) for key in path)
-        # Exclude head parameters: do not regularize if parameter is in actor_head or critic_head.
-        if "actor_head" in path_str or "critic_head" in path_str:
-            return jnp.zeros_like(x)
-        # If we're not regularizing the critic, then exclude any parameter from critic branches.
-        if not regularize_critic and "critic" in path_str.lower():
-            return jnp.zeros_like(x)
-        # Otherwise, regularize (the trunk).
-        return jnp.ones_like(x)
-
-    return jax.tree_util.tree_map_with_path(_assign_reg_weight, params)
-
-
-def compute_l2_reg_loss(params: FrozenDict,
-                        cl_state: CLState,
-                        seq_idx: int,
-                        cl_reg_coef: float) -> jnp.ndarray:
-    """L2 regularization vs. a single old_params, scaled by cl_reg_coef if seq_idx>0."""
-
-    def _tree_loss(new_p, old_p, w):
-        diff = new_p - old_p
-        return jnp.sum(w * diff ** 2)
-
-    # If seq_idx == 0, no penalty:
-    coef = jnp.where(seq_idx > 0, cl_reg_coef, 0.0)
-
-    loss_tree = jax.tree_util.tree_map(
-        lambda p, op, w: _tree_loss(p, op, w),
-        params, cl_state.old_params, cl_state.reg_weights
-    )
-    total_reg_loss = jax.tree_util.tree_reduce(lambda acc, x: acc + x, loss_tree, 0.0)
-
-    # Count how many are actually being penalized (where reg_weights != 0).
-    def _count_params(p, w):
-        return jnp.sum(w)  # ignoring partial matches
-
-    count_tree = jax.tree_util.tree_map(_count_params, params, cl_state.reg_weights)
-    param_count = jax.tree_util.tree_reduce(lambda acc, x: acc + x, count_tree, 0.0)
-    param_count = jnp.maximum(param_count, 1.0)
-
-    return coef * (total_reg_loss / param_count)
-
-
-# def compute_l2_reg_loss(
-#         params: FrozenDict,
-#         cl_state: CLState,
-#         seq_idx: int,
-#         cl_reg_coef: float
-# ) -> jnp.ndarray:
-#     """
-#     Compute an L2 regularization term with averaging over the parameter count.
-#     If this is the first task (seq_idx == 0), we typically turn off L2 by returning 0.
-#     """
-#
-#     # Turn off the L2 penalty if on the first task.
-#     aux_loss_coef = jnp.where(seq_idx > 0, cl_reg_coef, 0.0)
-#
-#     # Compute the elementwise sum of squared differences.
-#     def tree_loss(new_p, old_p, w):
-#         diff = new_p - old_p
-#         return jnp.sum(w * diff ** 2)
-#
-#     loss_tree = jax.tree_util.tree_map(
-#         lambda p, old_p, w: tree_loss(p, old_p, w),
-#         params,
-#         cl_state.old_params,
-#         cl_state.reg_weights
-#     )
-#     total_reg_loss = jax.tree_util.tree_reduce(lambda acc, x: acc + x, loss_tree, 0.0)
-#
-#     # Count the total number of (actor) parameters we are actually regularizing.
-#     # (Only those entries where w != 0.)
-#     def count_params(p, w):
-#         # For array p, w is typically the same shape.  If w != 0, those entries are regularized.
-#         # We'll just treat all entries in p as "counted" if w is non-zero,
-#         # but you could do a finer check if you only want some subset.
-#         return jnp.sum(w)
-#
-#     param_count_tree = jax.tree_util.tree_map(count_params, params, cl_state.reg_weights)
-#     param_count = jax.tree_util.tree_reduce(lambda acc, x: acc + x, param_count_tree, 0.0)
-#     # To prevent division by zero if no parameters are being regularized:
-#     param_count = jnp.maximum(param_count, 1.0)
-#
-#     # Average L2 over all regularized parameters and scale by aux_loss_coef:
-#     avg_reg_loss = total_reg_loss / param_count
-#
-#     return aux_loss_coef * avg_reg_loss
-
-
-def make_task_onehot(task_idx: int, num_tasks: int) -> jnp.ndarray:
-    """
-    Returns a one-hot vector of length `num_tasks` with a 1 at `task_idx`.
-    """
-    return jnp.eye(num_tasks, dtype=jnp.float32)[task_idx]
 
 
 @dataclass
@@ -224,35 +85,6 @@ class Config:
     num_actors: int = 0
     num_updates: int = 0
     minibatch_size: int = 0
-
-
-############################
-##### HELPER FUNCTIONS #####
-############################
-
-def batchify(x: dict, agent_list, num_actors):
-    '''
-    converts the observations of a batch of agents into an array of size (num_actors, -1) that can be used by the network
-    @param x: dictionary of observations
-    @param agent_list: list of agents
-    @param num_actors: number of actors
-    returns the batchified observations
-    '''
-    x = jnp.stack([x[a] for a in agent_list])
-    return x.reshape((num_actors, -1))
-
-
-def unbatchify(x: jnp.ndarray, agent_list, num_envs, num_actors):
-    '''
-    converts the array of size (num_actors, -1) into a dictionary of observations for all agents
-    @param x: array of observations
-    @param agent_list: list of agents
-    @param num_envs: number of environments
-    @param num_actors: number of actors
-    returns the unbatchified observations
-    '''
-    x = x.reshape((num_actors, num_envs, -1))
-    return {a: x[i] for i, a in enumerate(agent_list)}
 
 
 ############################

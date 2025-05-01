@@ -28,6 +28,7 @@ from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
 from jax_marl.environments.overcooked_environment.layouts import counter_circuit_grid
 from architectures.mlp import ActorCritic
 from cl_methods.Packnet import Packnet, PacknetState
+from baselines.utils import Transition, batchify, unbatchify
 
 from dotenv import load_dotenv
 import hydra
@@ -42,19 +43,6 @@ from dataclasses import dataclass, field
 import tyro
 from tensorboardX import SummaryWriter
 from pathlib import Path
-
-
-class Transition(NamedTuple):
-    '''
-    Named tuple to store the transition information
-    '''
-    done: jnp.ndarray # whether the episode is done
-    action: jnp.ndarray # the action taken
-    value: jnp.ndarray # the value of the state
-    reward: jnp.ndarray # the reward received
-    log_prob: jnp.ndarray # the log probability of the action
-    obs: jnp.ndarray # the observation
-    # info: jnp.ndarray # additional information
 
 @dataclass
 class Config:
@@ -105,34 +93,6 @@ class Config:
     num_updates: int = 0
     minibatch_size: int = 0
     finetune_updates: int = 0
-
-    
-############################
-##### HELPER FUNCTIONS #####
-############################
-
-def batchify(x: dict, agent_list, num_actors):
-    '''
-    converts the observations of a batch of agents into an array of size (num_actors, -1) that can be used by the network
-    @param x: dictionary of observations
-    @param agent_list: list of agents
-    @param num_actors: number of actors
-    returns the batchified observations
-    '''
-    x = jnp.stack([x[a] for a in agent_list])
-    return x.reshape((num_actors, -1))
-
-def unbatchify(x: jnp.ndarray, agent_list, num_envs, num_actors):
-    '''
-    converts the array of size (num_actors, -1) into a dictionary of observations for all agents
-    @param x: array of observations
-    @param agent_list: list of agents
-    @param num_envs: number of environments
-    @param num_actors: number of actors
-    returns the unbatchified observations
-    '''
-    x = x.reshape((num_actors, num_envs, -1))
-    return {a: x[i] for i, a in enumerate(agent_list)}
 
     
 ############################

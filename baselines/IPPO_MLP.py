@@ -26,6 +26,7 @@ from jax_marl.environments.overcooked_environment import overcooked_layouts
 from jax_marl.environments.env_selection import generate_sequence
 from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
 from architectures.mlp import ActorCritic
+from baselines.utils import Transition, batchify, unbatchify, sample_discrete_action
 
 from dotenv import load_dotenv
 import os
@@ -40,22 +41,7 @@ import tyro
 from tensorboardX import SummaryWriter
 from pathlib import Path
 
-# Enable compile logging
-# jax.log_compiles(True)
 
-
-
-class Transition(NamedTuple):
-    '''
-    Named tuple to store the transition information
-    '''
-    done: jnp.ndarray # whether the episode is done
-    action: jnp.ndarray # the action taken
-    value: jnp.ndarray # the value of the state
-    reward: jnp.ndarray # the reward received
-    log_prob: jnp.ndarray # the log probability of the action
-    obs: jnp.ndarray # the observation
-    # info: jnp.ndarray # additional information
 
 @dataclass
 class Config:
@@ -101,52 +87,7 @@ class Config:
     minibatch_size: int = 0
 
     
-############################
-##### HELPER FUNCTIONS #####
-############################
 
-def batchify(x: dict, agent_list, num_actors):
-    '''
-    converts the observations of a batch of agents into an array of size (num_actors, -1) that can be used by the network
-    @param x: dictionary of observations
-    @param agent_list: list of agents
-    @param num_actors: number of actors
-    returns the batchified observations
-    '''
-    x = jnp.stack([x[a] for a in agent_list])
-    return x.reshape((num_actors, -1))
-
-def unbatchify(x: jnp.ndarray, agent_list, num_envs, num_actors):
-    '''
-    converts the array of size (num_actors, -1) into a dictionary of observations for all agents
-    @param x: array of observations
-    @param agent_list: list of agents
-    @param num_envs: number of environments
-    @param num_actors: number of actors
-    returns the unbatchified observations
-    '''
-    x = x.reshape((num_actors, num_envs, -1))
-    return {a: x[i] for i, a in enumerate(agent_list)}
-
-def calculate_sparsity(params, threshold=1e-5):
-    """
-    Calculate the percentage of parameters that are close to zero
-    """
-    # Flatten the params into a single array
-    flat_params, _ = jax.tree_util.tree_flatten(params)
-    
-    # Concatenate all weights into one large array
-    all_weights = jnp.concatenate([jnp.ravel(p) for p in flat_params])
-    
-    # Count weights below threshold
-    num_small_weights = jnp.sum(jnp.abs(all_weights) < threshold)
-    total_weights = all_weights.size
-    
-    # Compute percentage of small weights
-    sparsity_percentage = 100 * (num_small_weights / total_weights)
-    
-    return sparsity_percentage
-    
 ############################
 ##### MAIN FUNCTION    #####
 ############################
@@ -840,7 +781,7 @@ def main():
             metric["General/update_step"] = update_step
             metric["General/env_step"] = update_step * config.num_steps * config.num_envs
             metric["General/learning_rate"] = linear_schedule(update_step * config.num_minibatches * config.update_epochs)
-            metric["General/sparsity"] = calculate_sparsity(train_state.params)
+            # metric["General/sparsity"] = calculate_sparsity(train_state.params)
 
             # Losses section
             total_loss, (value_loss, loss_actor, entropy) = loss_info
@@ -889,8 +830,6 @@ def main():
                             print(f"Error scaling rewards for {layout_name}: {e}")
                             metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
                     
-                    params = jax.tree_util.tree_map(lambda x: x, train_state_eval.params["params"])
-                    
                     # Same error handling for callback function
                     def callback(args):
                         metric, update_step, env_counter = args
@@ -904,15 +843,6 @@ def main():
 
                         for key, value in metric.items():
                             writer.add_scalar(key, value, real_step)
-
-                        # Add histograms of the parameters and grads to the writer
-                        for layer, dict in params.items():
-                            for layer_name, param_array in dict.items():
-                                writer.add_histogram(
-                                    tag=f"weights/{layer}/{layer_name}", 
-                                    values=jnp.array(param_array), 
-                                    global_step=real_step,
-                                    bins=100)
 
 
                     jax.experimental.io_callback(callback, None, (metric, update_step, env_counter))
@@ -1000,12 +930,6 @@ def main():
     # apply the loop_over_envs function to the environments
     runner_state = loop_over_envs(train_rng, train_state, envs)
     
-
-def sample_discrete_action(key, action_space):
-    """Samples a discrete action based on the action space provided."""
-    num_actions = action_space.n
-    return jax.random.randint(key, (1,), 0, num_actions)
-
 
 if __name__ == "__main__":
     print("Running main...")
