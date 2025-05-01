@@ -1,4 +1,5 @@
 import os
+os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
 from datetime import datetime
 from typing import Sequence, NamedTuple, Any, Optional, List
 
@@ -25,23 +26,11 @@ from cl_methods.EWC import (
     init_cl_state, update_ewc_state, compute_fisher_with_rollouts,
     make_task_onehot, build_reg_weights, copy_params, EWCState, compute_ewc_loss)
 
-os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
-
 import wandb
 from functools import partial
 from dataclasses import dataclass, field
 import tyro
 from tensorboardX import SummaryWriter
-
-
-
-
-from flax.core.frozen_dict import FrozenDict
-from flax import struct
-
-
-
-
 
 @dataclass
 class Config:
