@@ -40,7 +40,9 @@ class CNN(nn.Module):
         x = x.reshape((x.shape[0], -1))  # Flatten
 
         x = nn.Dense(
-            features=64, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
+            features=64, 
+            kernel_init=orthogonal(np.sqrt(2)), 
+            bias_init=constant(0.0)
         )(x)
         x = activation(x)
 

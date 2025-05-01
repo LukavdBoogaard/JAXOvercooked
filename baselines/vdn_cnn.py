@@ -32,40 +32,7 @@ from jax_marl.wrappers.baselines import (
     CTRolloutManager,
 )
 from jax_marl.environments.overcooked_environment import overcooked_layouts
-
-
-class CNN(nn.Module):
-    activation: str = "relu"
-
-    @nn.compact
-    def __call__(self, x):
-        if self.activation == "relu":
-            activation = nn.relu
-        else:
-            activation = nn.tanh
-        x = nn.Conv(
-            features=32,
-            kernel_size=(5, 5),
-        )(x)
-        x = activation(x)
-        x = nn.Conv(
-            features=32,
-            kernel_size=(3, 3),
-        )(x)
-        x = activation(x)
-        x = nn.Conv(
-            features=32,
-            kernel_size=(3, 3),
-        )(x)
-        x = activation(x)
-        x = x.reshape((x.shape[0], -1))  # Flatten
-
-        x = nn.Dense(
-            features=64
-        )(x)
-        x = activation(x)
-
-        return x
+from architectures.cnn import CNN
 
 
 class QNetwork(nn.Module):

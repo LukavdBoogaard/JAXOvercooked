@@ -41,11 +41,6 @@ import tyro
 from tensorboardX import SummaryWriter
 from pathlib import Path
 
-# Enable compile logging
-# jax.log_compiles(True)
-
-
-
 class Transition(NamedTuple):
     '''
     Named tuple to store the transition information
