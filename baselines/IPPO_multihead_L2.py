@@ -827,10 +827,13 @@ def main():
                         real_step = (int(env_counter)-1) * config.num_updates + int(update_step)
                         
                         env_name = config.layout_name[env_counter-1]
-                        if env_name in practical_baselines:
-                            metric["Scaled returns/returned_episode_returns_scaled"] = metric["returned_episode_returns"] / practical_baselines[env_name]["avg_rewards"]
+                        bare_layout = env_name.split("__")[1].strip()
+                        if bare_layout in practical_baselines:
+                            metric["Scaled returns/returned_episode_returns_scaled"] = (
+                                metric["returned_episode_returns"] / practical_baselines[bare_layout]["avg_rewards"])
                         else:
-                            metric["Scaled returns/returned_episode_returns_scaled"] = metric["returned_episode_returns"]  # No scaling if no baseline
+                            print("Warning: No baseline data for environment: ", bare_layout)
+                            metric["Scaled returns/returned_episode_returns_scaled"] = metric["returned_episode_returns"]  
 
                         for key, value in metric.items():
                             writer.add_scalar(key, value, real_step)

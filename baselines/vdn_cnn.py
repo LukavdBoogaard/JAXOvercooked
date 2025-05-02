@@ -86,7 +86,7 @@ class Config:
     # Wandb settings
     wandb_mode: str = "online"
     entity: Optional[str] = ""
-    project: str = "ippo_continual"
+    project: str = "COOX"
     tags: List[str] = field(default_factory=list)
     wandb_log_all_seeds: bool = False
     env_name: str = "overcooked"
@@ -119,7 +119,7 @@ def main():
     wandb_tags = config.tags if config.tags is not None else []
     wandb.login(key=os.environ.get("WANDB_API_KEY"))
     wandb.init(
-        project='COOX_benchmark', 
+        project=config.project, 
         config=config,
         sync_tensorboard=True,
         mode=config.wandb_mode,
