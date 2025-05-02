@@ -25,6 +25,7 @@ from architectures.multihead_mlp import ActorCritic
 from cl_methods.L2_regularization import init_cl_state, update_cl_state, compute_l2_reg_loss
 from baselines.utils import Transition, batchify, unbatchify, make_task_onehot
 
+from omegaconf import OmegaConf
 import wandb
 from functools import partial
 from dataclasses import dataclass, field
@@ -51,7 +52,8 @@ class Config:
     explore_fraction: float = 0.0
     activation: str = "tanh"
     env_name: str = "overcooked"
-    alg_name: str = "IPPO"
+    alg_name: str = "ippo"
+    network_architecture: str = "multihead_mlp"
     use_task_id: bool = False
     use_multihead: bool = False
     regularize_critic: bool = False
@@ -67,9 +69,9 @@ class Config:
     )
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
-    log_interval: int = 75  # log every n calls to update step
-    eval_num_steps: int = 1000  # number of steps to evaluate the model
-    eval_num_episodes: int = 5  # number of episodes to evaluate the model
+    log_interval: int = 75
+    eval_num_steps: int = 1000
+    eval_num_episodes: int = 5
 
     anneal_lr: bool = False
     seed: int = 30
@@ -78,14 +80,13 @@ class Config:
     # Wandb settings
     wandb_mode: str = "online"
     entity: Optional[str] = ""
-    project: str = "ippo_continual"
+    project: str = "COOX"
     tags: List[str] = field(default_factory=list)
 
     # to be computed during runtime
     num_actors: int = 0
     num_updates: int = 0
     minibatch_size: int = 0
-
 
 ############################
 ##### MAIN FUNCTION    #####
@@ -102,26 +103,27 @@ def main():
     config = tyro.cli(Config)
 
     # generate a sequence of tasks
-    seq_length = config.seq_length
-    strategy = config.strategy
-    layouts = config.layouts
-    config.env_kwargs, config.layout_name = generate_sequence(seq_length, strategy, layout_names=layouts,
-                                                              seed=config.seed)
-
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    run_name = f'{config.alg_name}_L2_seq{config.seq_length}_{config.strategy}_{timestamp}'
-    exp_dir = os.path.join("runs", run_name)
+    config.env_kwargs, config.layout_name = generate_sequence(
+        sequence_length=config.seq_length, 
+        strategy=config.strategy, 
+        layout_names=config.layouts, 
+        seed=config.seed
+    )
 
     for layout_config in config.env_kwargs:
         layout_name = layout_config["layout"]
         layout_config["layout"] = overcooked_layouts[layout_name]
+
+    timestamp = datetime.now().strftime("%m-%d_%H-%M")
+    run_name = f'{config.alg_name}_L2_{config.network_architecture}_seq{config.seq_length}_{config.strategy}_{timestamp}'
+    exp_dir = os.path.join("runs", run_name)
 
     # Initialize WandB
     load_dotenv()
     wandb_tags = config.tags if config.tags is not None else []
     wandb.login(key=os.environ.get("WANDB_API_KEY"))
     wandb.init(
-        project='Continual_IPPO',
+        project=config.project,
         config=config,
         sync_tensorboard=True,
         mode=config.wandb_mode,
@@ -366,9 +368,8 @@ def main():
     padded_envs = pad_observation_space()
 
     envs = []
-    for i, env_layout in enumerate(padded_envs):
-        # TODO config.layouts[i] doesn't work for a random order
-        env = make(config.env_name, layout=env_layout, layout_name=config.layouts[i])
+    for env_layout in padded_envs:
+        env = make(config.env_name, layout=env_layout)
         env = LogWrapper(env, replace_info=False)
         envs.append(env)
 
@@ -424,6 +425,12 @@ def main():
         tx=tx
     )
 
+    # Load the practical baseline yaml file as a dictionary
+    repo_root = "/home/luka/repo/JAXOvercooked"
+    yaml_loc = os.path.join(repo_root, "practical_reward_baseline_results.yaml")
+    with open(yaml_loc, "r") as f:
+        practical_baselines = OmegaConf.load(f)
+
     @partial(jax.jit, static_argnums=(3))
     def train_on_environment(rng, train_state, cl_state, env_idx, env_counter):
         '''
@@ -452,7 +459,6 @@ def main():
         obsv, env_state = jax.vmap(env.reset, in_axes=(0,))(reset_rng)
 
         # TRAIN
-        # @profile
         def _update_step(runner_state, _):
             '''
             perform a single update step in the training loop
@@ -461,7 +467,6 @@ def main():
             '''
 
             # COLLECT TRAJECTORIES
-            # @profile
             def _env_step(runner_state, _):
                 '''
                 selects an action based on the policy, calculates the log probability of the action,
@@ -524,8 +529,11 @@ def main():
                 current_timestep = update_step * config.num_steps * config.num_envs
 
                 # add the shaped reward to the normal reward
-                reward = jax.tree_util.tree_map(lambda x, y: x + y * rew_shaping_anneal(current_timestep), reward,
-                                                info["shaped_reward"])
+                reward = jax.tree_util.tree_map(lambda x,y: 
+                                                x+y * rew_shaping_anneal(current_timestep), 
+                                                reward,
+                                                info["shaped_reward"]
+                                                )
 
                 transition = Transition(
                     batchify(done, env.agents, config.num_actors).squeeze(),
@@ -575,7 +583,6 @@ def main():
                 @param last_val: the value of the last state
                 returns the advantages and the targets
                 '''
-
                 def _get_advantages(gae_and_next_value, transition):
                     '''
                     calculates the advantage for a single transition
@@ -589,7 +596,7 @@ def main():
                         transition.value,
                         transition.reward,
                     )
-                    delta = reward + config.gamma * next_value * (1 - done) - value  # calculate the temporal difference
+                    delta = reward + config.gamma * next_value * (1 - done) - value # calculate the temporal difference
                     gae = (
                             delta
                             + config.gamma * config.gae_lambda * (1 - done) * gae
@@ -698,7 +705,7 @@ def main():
                 # set the batch size and check if it is correct
                 batch_size = config.minibatch_size * config.num_minibatches
                 assert (
-                        batch_size == config.num_steps * config.num_actors
+                    batch_size == config.num_steps * config.num_actors
                 ), "batch size must be equal to number of steps * number of actors"
 
                 # create a batch of the trajectory, advantages, and targets
@@ -752,9 +759,8 @@ def main():
             # update the metric with the current timestep
             metric = jax.tree_util.tree_map(lambda x: x.mean(), metric)
 
-            # General section
-            # Update the step counter
-            update_step = update_step + 1
+            
+            update_step += 1
             mean_explore = jnp.mean(info["explore"])
 
             metric["General/env_index"] = env_idx
@@ -791,6 +797,7 @@ def main():
             # Evaluation section
             for i in range(len(config.layout_name)):
                 metric[f"Evaluation/{config.layout_name[i]}"] = jnp.nan
+                metric[f"Scaled returns/evaluation_{config.layout_name[i]}_scaled"] = jnp.nan
 
             def evaluate_and_log(rng, update_step):
                 rng, eval_rng = jax.random.split(rng)
@@ -798,14 +805,33 @@ def main():
 
                 def log_metrics(metric, update_step):
                     evaluations = evaluate_model(train_state_eval, network, eval_rng, env_idx)
-                    for i, evaluation in enumerate(evaluations):
-                        metric[f"Evaluation/{config.layout_name[i]}"] = evaluation
+                    for i, layout_name in enumerate(config.layout_name):
+                        metric[f"Evaluation/{layout_name}"] = evaluations[i]
+                        
+                        # Add error handling for missing baseline entries
+                        bare_layout = layout_name.split("__")[1]
+                        try:
+                            if bare_layout in practical_baselines:
+                                baseline_reward = practical_baselines[bare_layout]["avg_rewards"]
+                                metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i] / baseline_reward
+                            else:
+                                print(f"Warning: No baseline data for environment '{bare_layout}'")
+                                # Use 1.0 as default normalization factor (no scaling)
+                                metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
+                        except Exception as e:
+                            print(f"Error scaling rewards for {layout_name}: {e}")
+                            metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
 
                     def callback(args):
                         metric, update_step, env_counter = args
-                        update_step = int(update_step)
-                        env_counter = int(env_counter)
-                        real_step = (env_counter - 1) * config.num_updates + update_step
+                        real_step = (int(env_counter)-1) * config.num_updates + int(update_step)
+                        
+                        env_name = config.layout_name[env_counter-1]
+                        if env_name in practical_baselines:
+                            metric["Scaled returns/returned_episode_returns_scaled"] = metric["returned_episode_returns"] / practical_baselines[env_name]["avg_rewards"]
+                        else:
+                            metric["Scaled returns/returned_episode_returns_scaled"] = metric["returned_episode_returns"]  # No scaling if no baseline
+
                         for key, value in metric.items():
                             writer.add_scalar(key, value, real_step)
 
@@ -850,15 +876,14 @@ def main():
         returns the runner state and the metrics
         '''
         # split the random number generator for training on the environments
-        rngs = jax.random.split(rng, len(envs) + 1)
-        main_rng, sub_rngs = rngs[0], rngs[1:]
+        rng, *env_rngs = jax.random.split(rng, len(envs)+1)
 
         visualizer = OvercookedVisualizer()
 
         env_counter = 1
 
         runner_state = None
-        for i, (r, _) in enumerate(zip(sub_rngs, envs)):
+        for i, (r, _) in enumerate(zip(env_rngs, envs)):
             if i > 0:
                 # Overwrite old_params with the final params from the last task
                 cl_state = update_cl_state(cl_state, train_state.params)

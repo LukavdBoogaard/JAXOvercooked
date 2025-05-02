@@ -11,7 +11,7 @@ from typing import Sequence, NamedTuple, Any, Optional, List
 from flax.training.train_state import TrainState
 from gymnax.wrappers.purerl import LogWrapper
 from architectures.cnn import ActorCritic
-from baselines.utils import Transition_CNN, batchify, unbatchify
+from baselines.utils import Transition_CNN, batchify, unbatchify, sample_discrete_action
 
 from jax_marl.registration import make
 from jax_marl.wrappers.baselines import LogWrapper
@@ -55,9 +55,9 @@ class Config:
     layouts: Optional[Sequence[str]] = field(default_factory=lambda: ["asymm_advantages", "smallest_kitchen", "cramped_room", "easy_layout", "square_arena", "no_cooperation"])
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
-    log_interval: int = 10 
-    eval_num_steps: int = 400 # number of steps to evaluate the model
-    eval_num_episodes: int = 5 # number of episodes to evaluate the model
+    log_interval: int = 75
+    eval_num_steps: int = 1000 
+    eval_num_episodes: int = 5 
     
     anneal_lr: bool = False
     seed: int = 30
@@ -66,14 +66,14 @@ class Config:
     # Wandb settings
     wandb_mode: str = "online"
     entity: Optional[str] = ""
-    project: str = "ippo_continual"
+    project: str = "COOX"
     tags: List[str] = field(default_factory=list)
 
     # to be computed during runtime
     num_actors: int = 0
     num_updates: int = 0
     minibatch_size: int = 0
-  
+
 ############################
 ##### MAIN FUNCTION    #####
 ############################
@@ -89,11 +89,12 @@ def main():
     config = tyro.cli(Config)
 
     # generate a sequence of tasks
-    seq_length = config.seq_length
-    strategy = config.strategy
-    layouts = config.layouts
-    config.env_kwargs, config.layout_name = generate_sequence(seq_length, strategy, layout_names=layouts, seed=config.seed)
-
+    config.env_kwargs, config.layout_name = generate_sequence(
+        sequence_length=config.seq_length, 
+        strategy=config.strategy, 
+        layout_names=config.layouts, 
+        seed=config.seed
+    )
 
     for layout_config in config.env_kwargs:
         layout_name = layout_config["layout"]
@@ -108,7 +109,7 @@ def main():
     wandb_tags = config.tags if config.tags is not None else []
     wandb.login(key=os.environ.get("WANDB_API_KEY"))
     wandb.init(
-        project='Continual_IPPO', 
+        project=config.project,
         config=config,
         sync_tensorboard=True,
         mode=config.wandb_mode,
@@ -320,7 +321,6 @@ def main():
 
         return all_avg_rewards
     
-    """ 
     def get_rollout_for_visualization():
         '''
         Simulates the environment using the network
@@ -385,7 +385,6 @@ def main():
             visualizer.animate(state_seq=env, agent_view_size=5, filename=f"~/JAXOvercooked/environment_layouts/env_{config.layouts[i]}.gif")
 
         return None
-    """
 
     # pad all environments
     padded_envs = pad_observation_space()
@@ -441,8 +440,8 @@ def main():
         params=network_params,
         tx=tx
     )
-    
-     # Load the practical baseline yaml file as a dictionary
+
+    # Load the practical baseline yaml file as a dictionary
     repo_root = "/home/luka/repo/JAXOvercooked"
     yaml_loc = os.path.join(repo_root, "practical_reward_baseline_results.yaml")
     with open(yaml_loc, "r") as f:
@@ -497,8 +496,6 @@ def main():
 
                 # prepare the observations for the network
                 obs_batch = jnp.stack([last_obs[a] for a in env.agents]).reshape(-1, *env.observation_space().shape)
-
-                print("input_obs_shape", obs_batch.shape)
                 
                 # apply the policy network to the observations to get the suggested actions and their values
                 pi, value = network.apply(train_state.params, obs_batch)
@@ -523,9 +520,6 @@ def main():
 
                 # REWARD SHAPING IN NEW VERSION
                 shaped_reward = info.pop("shaped_reward")
-                
-                # add the reward of one of the agents to the info dictionary
-                # info["reward"] = reward["agent_0"]
 
                 current_timestep = update_step * config.num_steps * config.num_envs
 
@@ -533,7 +527,8 @@ def main():
                 reward = jax.tree_util.tree_map(lambda x,y: 
                                                 x+y * rew_shaping_anneal(current_timestep), 
                                                 reward, 
-                                                shaped_reward)
+                                                shaped_reward
+                                                )
 
                 info = jax.tree.map(lambda x: x.reshape((config.num_actors)), info)
                 transition = Transition_CNN(
@@ -756,7 +751,7 @@ def main():
             # average the metric
             metric = jax.tree_util.tree_map(lambda x: x.mean(), metric)
 
-            update_step = update_step + 1
+            update_step += 1
 
             # add the general metrics to the metric dictionary
             metric["General/update_step"] = update_step
@@ -794,7 +789,6 @@ def main():
                     evaluations = evaluate_model(train_state_eval, network, eval_rng)
                     for i, layout_name in enumerate(config.layout_name):
                         metric[f"Evaluation/{layout_name}"] = evaluations[i]
-
                         
                         # Add error handling for missing baseline entries
                         bare_layout = layout_name.split("__")[1]
@@ -907,7 +901,6 @@ def main():
     rng, train_rng = jax.random.split(rng)
     # apply the loop_over_envs function to the environments
     runner_state = loop_over_envs(train_rng, train_state, envs)
-
 
 if __name__ == "__main__":
     print("Running main...")

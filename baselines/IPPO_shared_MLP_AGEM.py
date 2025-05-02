@@ -32,6 +32,7 @@ from cl_methods.AGEM import (
 
 os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
 
+from omegaconf import OmegaConf
 import wandb
 from functools import partial
 from dataclasses import dataclass, field
@@ -57,7 +58,8 @@ class Config:
     explore_fraction: float = 0.0
     activation: str = "tanh"
     env_name: str = "overcooked"
-    alg_name: str = "IPPO"
+    alg_name: str = "ippo"
+    network_architecture: str = "mlp_shared"
     use_task_id: bool = False
     use_multihead: bool = False
     shared_backbone: bool = False
@@ -74,9 +76,9 @@ class Config:
     )
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
-    log_interval: int = 75  # log every n calls to update step
-    eval_num_steps: int = 1000  # number of steps to evaluate the model
-    eval_num_episodes: int = 5  # number of episodes to evaluate the model
+    log_interval: int = 75
+    eval_num_steps: int = 1000
+    eval_num_episodes: int = 5
     gif_len: int = 300
 
     anneal_lr: bool = False
@@ -86,7 +88,7 @@ class Config:
     # Wandb settings
     wandb_mode: str = "online"
     entity: Optional[str] = ""
-    project: str = "ippo_continual"
+    project: str = "COOX"
     tags: List[str] = field(default_factory=list)
 
     # to be computed during runtime
@@ -109,18 +111,19 @@ def main():
     config = tyro.cli(Config)
 
     # generate a sequence of tasks
-    seq_length = config.seq_length
-    strategy = config.strategy
-    layouts = config.layouts
-    config.env_kwargs, config.layout_name = generate_sequence(seq_length, strategy, layout_names=layouts,
-                                                              seed=config.seed)
+    config.env_kwargs, config.layout_name = generate_sequence(
+        sequence_length=config.seq_length, 
+        strategy=config.strategy, 
+        layout_names=config.layouts, 
+        seed=config.seed
+    )
 
     for layout_config in config.env_kwargs:
         layout_name = layout_config["layout"]
         layout_config["layout"] = overcooked_layouts[layout_name]
 
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    run_name = f'{config.alg_name}_EWC_seq{config.seq_length}_{config.strategy}_{timestamp}'
+    timestamp = datetime.now().strftime("%m-%d_%H-%M")
+    run_name = f'{config.alg_name}_EWC_{config.network_architecture}_seq{config.seq_length}_{config.strategy}_{timestamp}'
     exp_dir = os.path.join("runs", run_name)
 
     # Initialize WandB
@@ -128,7 +131,7 @@ def main():
     wandb_tags = config.tags if config.tags is not None else []
     wandb.login(key=os.environ.get("WANDB_API_KEY"))
     wandb.init(
-        project='Continual_IPPO',
+        project=config.project,
         config=config,
         sync_tensorboard=True,
         mode=config.wandb_mode,
@@ -278,7 +281,7 @@ def main():
                 @param state: the current state of the loop
                 returns a boolean indicating whether the loop should continue
                 '''
-                return jnp.logical_and(~state.done, state.step_count < max_steps)
+                return jnp.logical_and(jnp.logical_not(state.done), state.step_count < max_steps)
 
             def body_fun(state: EvalState):
                 '''
@@ -371,9 +374,8 @@ def main():
     padded_envs = pad_observation_space()
 
     envs = []
-    for i, env_layout in enumerate(padded_envs):
-        # TODO config.layouts[i] doesn't work for a random order
-        env = make(config.env_name, layout=env_layout, layout_name=config.layouts[i])
+    for env_layout in padded_envs:
+        env = make(config.env_name, layout=env_layout)
         env = LogWrapper(env, replace_info=False)
         envs.append(env)
 
@@ -402,8 +404,11 @@ def main():
     )
 
     # global network
-    network = ActorCritic(temp_env.action_space().n, activation=config.activation, use_multihead=config.use_multihead,
-                          num_tasks=config.seq_length, shared_backbone=config.shared_backbone)
+    network = ActorCritic(temp_env.action_space().n, 
+                          activation=config.activation, 
+                          use_multihead=config.use_multihead,
+                          num_tasks=config.seq_length, 
+                          shared_backbone=config.shared_backbone)
 
     obs_dim = np.prod(temp_env.observation_space().shape)
 
@@ -432,6 +437,12 @@ def main():
         params=network_params,
         tx=tx
     )
+
+    # Load the practical baseline yaml file as a dictionary
+    repo_root = "/home/luka/repo/JAXOvercooked"
+    yaml_loc = os.path.join(repo_root, "practical_reward_baseline_results.yaml")
+    with open(yaml_loc, "r") as f:
+        practical_baselines = OmegaConf.load(f)
 
     @partial(jax.jit, static_argnums=(2))
     def train_on_environment(rng, train_state, env_idx, agem_mem):
@@ -533,8 +544,11 @@ def main():
                 current_timestep = update_step * config.num_steps * config.num_envs
 
                 # add the shaped reward to the normal reward
-                reward = jax.tree_util.tree_map(lambda x, y: x + y * rew_shaping_anneal(current_timestep), reward,
-                                                info["shaped_reward"])
+                reward = jax.tree_util.tree_map(lambda x,y: 
+                                                x+y * rew_shaping_anneal(current_timestep),
+                                                reward,
+                                                info["shaped_reward"]
+                                                )
 
                 transition = Transition(
                     batchify(done, env.agents, config.num_actors).squeeze(),
@@ -814,7 +828,7 @@ def main():
 
             # General section
             # Update the step counter
-            update_step = update_step + 1
+            update_step += 1
             mean_explore = jnp.mean(info["explore"])
 
             metric["General/env_index"] = env_idx
@@ -854,6 +868,7 @@ def main():
             # Evaluation section
             for i in range(len(config.layout_name)):
                 metric[f"Evaluation/{config.layout_name[i]}"] = jnp.nan
+                metric[f"Scaled returns/evaluation_{config.layout_name[i]}_scaled"] = jnp.nan
 
             def evaluate_and_log(rng, update_step):
                 rng, eval_rng = jax.random.split(rng)
@@ -861,14 +876,33 @@ def main():
 
                 def log_metrics(metric, update_step):
                     evaluations = evaluate_model(train_state_eval, eval_rng, env_idx)
-                    for i, evaluation in enumerate(evaluations):
-                        metric[f"Evaluation/{config.layout_name[i]}"] = evaluation
-
+                    for i, layout_name in enumerate(config.layout_name):
+                        metric[f"Evaluation/{layout_name}"] = evaluations[i]
+                        
+                        # Add error handling for missing baseline entries
+                        bare_layout = layout_name.split("__")[1]
+                        try:
+                            if bare_layout in practical_baselines:
+                                baseline_reward = practical_baselines[bare_layout]["avg_rewards"]
+                                metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i] / baseline_reward
+                            else:
+                                print(f"Warning: No baseline data for environment '{bare_layout}'")
+                                # Use 1.0 as default normalization factor (no scaling)
+                                metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
+                        except Exception as e:
+                            print(f"Error scaling rewards for {layout_name}: {e}")
+                            metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
+                    
                     def callback(args):
                         metric, update_step, env_counter = args
-                        update_step = int(update_step)
-                        env_counter = int(env_counter)
-                        real_step = (env_counter - 1) * config.num_updates + update_step
+                        real_step = (int(env_counter)-1) * config.num_updates + int(update_step)
+                        
+                        env_name = config.layout_name[env_counter-1]
+                        if env_name in practical_baselines:
+                            metric["Scaled returns/returned_episode_returns_scaled"] = metric["returned_episode_returns"] / practical_baselines[env_name]["avg_rewards"]
+                        else:
+                            metric["Scaled returns/returned_episode_returns_scaled"] = metric["returned_episode_returns"]  # No scaling if no baseline
+
                         for key, value in metric.items():
                             writer.add_scalar(key, value, real_step)
 
@@ -947,13 +981,12 @@ def main():
         returns the runner state and the metrics
         '''
         # split the random number generator for training on the environments
-        rngs = jax.random.split(rng, len(envs) + 1)
-        main_rng, sub_rngs = rngs[0], rngs[1:]
+        rng, *env_rngs = jax.random.split(rng, len(envs)+1)
 
         visualizer = OvercookedVisualizer()
 
         runner_state = None
-        for i, (env_rng, _) in enumerate(zip(sub_rngs, envs)):
+        for i, (env_rng, _) in enumerate(zip(env_rngs, envs)):
             (train_state, rng, agem_mem) = train_on_environment(env_rng, train_state, i, agem_mem)
 
             # Generate & log a GIF after finishing task i
