@@ -21,10 +21,13 @@ from jax_marl.registration import make
 from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
 from jax_marl.wrappers.baselines import LogWrapper
 from architectures.shared_mlp import ActorCritic
-from baselines.utils import Transition, batchify, unbatchify
+from baselines.utils import Transition, batchify, unbatchify, make_task_onehot
 from cl_methods.AGEM import (
-    init_agem_memory, sample_memory, compute_memory_gradient,
-    agem_project, make_task_onehot, update_agem_memory
+    init_agem_memory, 
+    sample_memory, 
+    compute_memory_gradient,
+    agem_project, 
+    update_agem_memory
 )
 
 os.environ["TF_CUDNN_DETERMINISTIC"] = "1"

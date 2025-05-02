@@ -14,12 +14,6 @@ class AGEMMemory:
     values: jnp.ndarray
 
 
-def make_task_onehot(task_idx: int, num_tasks: int) -> jnp.ndarray:
-    """
-    Returns a one-hot vector of length `num_tasks` with a 1 at `task_idx`.
-    """
-    return jnp.eye(num_tasks, dtype=jnp.float32)[task_idx]
-
 def init_agem_memory(max_memory_size: int, obs_dim: int):
     return AGEMMemory(
         obs=jnp.zeros((max_memory_size, obs_dim)),

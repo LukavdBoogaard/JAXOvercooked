@@ -1,19 +1,14 @@
 import os
-os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
-
 import jax
 import jax.numpy as jnp
 from flax import struct
 from flax.core.frozen_dict import FrozenDict
+from baselines.utils import copy_params
 
 @struct.dataclass
 class CLState:
     old_params: FrozenDict
     reg_weights: FrozenDict
-
-
-def copy_params(params):
-    return jax.tree_util.tree_map(lambda x: x.copy(), params)
 
 
 def init_cl_state(params: FrozenDict, regularize_critic: bool = False) -> CLState:
@@ -80,8 +75,3 @@ def compute_l2_reg_loss(params: FrozenDict,
     return coef * (total_reg_loss / param_count)
 
 
-def make_task_onehot(task_idx: int, num_tasks: int) -> jnp.ndarray:
-    """
-    Returns a one-hot vector of length `num_tasks` with a 1 at `task_idx`.
-    """
-    return jnp.eye(num_tasks, dtype=jnp.float32)[task_idx]

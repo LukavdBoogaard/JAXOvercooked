@@ -61,3 +61,13 @@ def sample_discrete_action(key, action_space):
     """Samples a discrete action based on the action space provided."""
     num_actions = action_space.n
     return jax.random.randint(key, (1,), 0, num_actions)
+
+
+def make_task_onehot(task_idx: int, num_tasks: int) -> jnp.ndarray:
+    """
+    Returns a one-hot vector of length `num_tasks` with a 1 at `task_idx`.
+    """
+    return jnp.eye(num_tasks, dtype=jnp.float32)[task_idx]
+
+def copy_params(params):
+    return jax.tree_util.tree_map(lambda x: x.copy(), params)

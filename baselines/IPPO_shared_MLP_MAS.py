@@ -1,4 +1,5 @@
 import os
+os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
 from datetime import datetime
 from typing import Sequence, NamedTuple, Any, Optional, List
 
@@ -11,7 +12,6 @@ import numpy as np
 import optax
 from dotenv import load_dotenv
 from flax.core.frozen_dict import freeze, unfreeze
-from flax.linen.initializers import constant, orthogonal
 from flax.training.train_state import TrainState
 
 from jax_marl.environments.env_selection import generate_sequence
@@ -20,36 +20,18 @@ from jax_marl.registration import make
 from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
 from jax_marl.wrappers.baselines import LogWrapper
 from architectures.shared_mlp import ActorCritic
+from baselines.utils import Transition, batchify, unbatchify, make_task_onehot
 from cl_methods.MAS import (MASState, 
                             init_cl_state, 
                             update_mas_state, 
                             compute_mas_loss, 
-                            compute_mas_importance,
-                            make_task_onehot)
-
-os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
+                            compute_mas_importance)
 
 import wandb
 from functools import partial
 from dataclasses import dataclass, field
 import tyro
 from tensorboardX import SummaryWriter
-
-class Transition(NamedTuple):
-    '''
-    Named tuple to store the transition information
-    '''
-    done: jnp.ndarray  # whether the episode is done
-    action: jnp.ndarray  # the action taken
-    value: jnp.ndarray  # the value of the state
-    reward: jnp.ndarray  # the reward received
-    log_prob: jnp.ndarray  # the log probability of the action
-    obs: jnp.ndarray  # the observation
-    # info: jnp.ndarray # additional information
-
-
-from flax.core.frozen_dict import FrozenDict
-from flax import struct
 
 
 
@@ -112,34 +94,6 @@ class Config:
     num_updates: int = 0
     minibatch_size: int = 0
 
-
-############################
-##### HELPER FUNCTIONS #####
-############################
-
-def batchify(x: dict, agent_list, num_actors):
-    '''
-    converts the observations of a batch of agents into an array of size (num_actors, -1) that can be used by the network
-    @param x: dictionary of observations
-    @param agent_list: list of agents
-    @param num_actors: number of actors
-    returns the batchified observations
-    '''
-    x = jnp.stack([x[a] for a in agent_list])
-    return x.reshape((num_actors, -1))
-
-
-def unbatchify(x: jnp.ndarray, agent_list, num_envs, num_actors):
-    '''
-    converts the array of size (num_actors, -1) into a dictionary of observations for all agents
-    @param x: array of observations
-    @param agent_list: list of agents
-    @param num_envs: number of environments
-    @param num_actors: number of actors
-    returns the unbatchified observations
-    '''
-    x = x.reshape((num_actors, num_envs, -1))
-    return {a: x[i] for i, a in enumerate(agent_list)}
 
 
 ############################

@@ -2,16 +2,13 @@ import jax
 import jax.numpy as jnp
 from flax.core.frozen_dict import FrozenDict
 from flax import struct
+from baselines.utils import make_task_onehot, copy_params
 
 @struct.dataclass
 class EWCState:
     old_params: FrozenDict
     fisher: FrozenDict
     reg_weights: FrozenDict  # a mask: ones for parameters to regularize, zeros otherwise
-
-
-def copy_params(params):
-    return jax.tree_util.tree_map(lambda x: x.copy(), params)
 
 
 def init_cl_state(params: FrozenDict, regularize_critic: bool, regularize_heads: bool) -> EWCState:
@@ -217,9 +214,3 @@ def compute_ewc_loss(params: FrozenDict,
     ewc_term = jax.tree_util.tree_reduce(lambda acc, x: acc + x.sum(), ewc_term_tree, 0.0)
     return 0.5 * ewc_coef * ewc_term
 
-
-def make_task_onehot(task_idx: int, num_tasks: int) -> jnp.ndarray:
-    """
-    Returns a one-hot vector of length `num_tasks` with a 1 at `task_idx`.
-    """
-    return jnp.eye(num_tasks, dtype=jnp.float32)[task_idx]

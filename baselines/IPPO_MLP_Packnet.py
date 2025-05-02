@@ -25,10 +25,9 @@ from jax_marl.wrappers.baselines import LogWrapper
 from jax_marl.environments.overcooked_environment import overcooked_layouts
 from jax_marl.environments.env_selection import generate_sequence
 from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
-from jax_marl.environments.overcooked_environment.layouts import counter_circuit_grid
 from architectures.mlp import ActorCritic
 from cl_methods.Packnet import Packnet, PacknetState
-from baselines.utils import Transition, batchify, unbatchify
+from baselines.utils import Transition, batchify, unbatchify, sample_discrete_action
 
 from dotenv import load_dotenv
 import hydra
@@ -1068,12 +1067,6 @@ def main():
     # apply the loop_over_envs function to the environments
     runner_state = loop_over_envs(train_rng, train_state, envs, packnet_state)
     
-
-def sample_discrete_action(key, action_space):
-    """Samples a discrete action based on the action space provided."""
-    num_actions = action_space.n
-    return jax.random.randint(key, (1,), 0, num_actions)
-
 
 if __name__ == "__main__":
     print("Running main...")

@@ -1,37 +1,24 @@
-# import os
+import os
 # os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 from datetime import datetime
-
-import copy
-from datetime import datetime
-import pickle
 import flax
 import jax
 import jax.experimental
 import jax.numpy as jnp
-import flax.linen as nn
-import numpy as np
 import optax
-import orbax.checkpoint as ocp
-from flax.linen.initializers import constant, orthogonal
 from flax.core.frozen_dict import FrozenDict, freeze, unfreeze
 from typing import Sequence, NamedTuple, Any, Optional, List
 from flax.training.train_state import TrainState
-import distrax
-from gymnax.wrappers.purerl import LogWrapper, FlattenObservationWrapper
-from architectures.cnn import CNN, ActorCritic
-from baselines.utils import Transition_CNN, batchify, unbatchify, sample_discrete_action
+from gymnax.wrappers.purerl import LogWrapper
+from architectures.cnn import ActorCritic
+from baselines.utils import Transition_CNN, batchify, unbatchify
 
 from jax_marl.registration import make
 from jax_marl.wrappers.baselines import LogWrapper
 from jax_marl.environments.overcooked_environment import overcooked_layouts
 from jax_marl.environments.env_selection import generate_sequence
 from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
-from jax_marl.environments.overcooked_environment.layouts import counter_circuit_grid
 from dotenv import load_dotenv
-import hydra
-import os
-os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
 
 from omegaconf import OmegaConf
 import matplotlib.pyplot as plt
@@ -920,12 +907,6 @@ def main():
     rng, train_rng = jax.random.split(rng)
     # apply the loop_over_envs function to the environments
     runner_state = loop_over_envs(train_rng, train_state, envs)
-    
-
-def sample_discrete_action(key, action_space):
-    """Samples a discrete action based on the action space provided."""
-    num_actions = action_space.n
-    return jax.random.randint(key, (1,), 0, num_actions)
 
 
 if __name__ == "__main__":

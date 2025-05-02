@@ -1094,12 +1094,6 @@ def main():
     runner_state = loop_over_envs(train_rng, train_states, envs, packnet_state)
     
 
-def sample_discrete_action(key, action_space):
-    """Samples a discrete action based on the action space provided."""
-    num_actions = action_space.n
-    return jax.random.randint(key, (1,), 0, num_actions)
-
-
 if __name__ == "__main__":
     print("Running main...")
     main()

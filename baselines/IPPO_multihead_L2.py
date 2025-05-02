@@ -22,8 +22,8 @@ from jax_marl.registration import make
 from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
 from jax_marl.wrappers.baselines import LogWrapper
 from architectures.multihead_mlp import ActorCritic
-from cl_methods.L2_regularization import init_cl_state, update_cl_state, compute_l2_reg_loss, make_task_onehot
-from baselines.utils import Transition, batchify, unbatchify
+from cl_methods.L2_regularization import init_cl_state, update_cl_state, compute_l2_reg_loss
+from baselines.utils import Transition, batchify, unbatchify, make_task_onehot
 
 import wandb
 from functools import partial
@@ -904,12 +904,6 @@ def main():
 
     # apply the loop_over_envs function to the environments
     loop_over_envs(train_rng, train_state, cl_state, envs)
-
-
-def sample_discrete_action(key, action_space):
-    """Samples a discrete action based on the action space provided."""
-    num_actions = action_space.n
-    return jax.random.randint(key, (1,), 0, num_actions)
 
 
 def record_gif_of_episode(config, train_state, env, network, env_idx=0, max_steps=300):

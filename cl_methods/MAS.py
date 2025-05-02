@@ -1,26 +1,15 @@
 import os
-os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
-
 import jax
 import jax.numpy as jnp
 from flax.core.frozen_dict import FrozenDict
 from flax import struct
-
-import wandb
-from functools import partial
-from dataclasses import dataclass, field
-import tyro
-from tensorboardX import SummaryWriter
+from baselines.utils import make_task_onehot, copy_params
 
 @struct.dataclass
 class MASState:
     old_params: FrozenDict
     importance: FrozenDict
     reg_weights: FrozenDict  # a mask: ones for parameters to regularize, zeros otherwise
-
-
-def copy_params(params):
-    return jax.tree_util.tree_map(lambda x: x.copy(), params)
 
 
 def init_cl_state(params: FrozenDict, regularize_critic: bool, regularize_heads: bool) -> MASState:
@@ -206,9 +195,3 @@ def compute_mas_loss(params: FrozenDict,
     penalty_sum = jax.tree_util.tree_reduce(lambda acc, x: acc + x.sum(), penalty_tree, 0.0)
     return 0.5 * mas_coef * penalty_sum
 
-
-def make_task_onehot(task_idx: int, num_tasks: int) -> jnp.ndarray:
-    """
-    Returns a one-hot vector of length `num_tasks` with a 1 at `task_idx`.
-    """
-    return jnp.eye(num_tasks, dtype=jnp.float32)[task_idx]
