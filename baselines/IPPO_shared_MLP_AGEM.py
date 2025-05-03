@@ -10,9 +10,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 from dotenv import load_dotenv
-from flax import struct
 from flax.core.frozen_dict import freeze, unfreeze
-from flax.linen.initializers import constant, orthogonal
 from flax.training.train_state import TrainState
 
 from jax_marl.environments.env_selection import generate_sequence
@@ -123,7 +121,7 @@ def main():
         layout_config["layout"] = overcooked_layouts[layout_name]
 
     timestamp = datetime.now().strftime("%m-%d_%H-%M")
-    run_name = f'{config.alg_name}_EWC_{config.network_architecture}_seq{config.seq_length}_{config.strategy}_{timestamp}'
+    run_name = f'{config.alg_name}_AGEM_{config.network_architecture}_seq{config.seq_length}_{config.strategy}_{timestamp}'
     exp_dir = os.path.join("runs", run_name)
 
     # Initialize WandB
@@ -444,17 +442,15 @@ def main():
     with open(yaml_loc, "r") as f:
         practical_baselines = OmegaConf.load(f)
 
-    @partial(jax.jit, static_argnums=(2))
-    def train_on_environment(rng, train_state, env_idx, agem_mem):
+    @partial(jax.jit, static_argnums=(2,3))
+    def train_on_environment(rng, train_state, env, env_idx, agem_mem):
         '''
         Trains the network using IPPO
         @param rng: random number generator
         returns the runner state and the metrics
         '''
 
-        env = envs[env_idx]
-
-        print(f"Training on environment {env_idx}: {env.name}")
+        print(f"Training on environment: {config.layout_name[env_idx]}")
 
         # How many steps to explore the environment with random actions
         exploration_steps = int(config.explore_fraction * config.total_timesteps)
@@ -989,15 +985,16 @@ def main():
         visualizer = OvercookedVisualizer()
 
         runner_state = None
-        for i, (env_rng, _) in enumerate(zip(env_rngs, envs)):
-            (train_state, rng, agem_mem) = train_on_environment(env_rng, train_state, i, agem_mem)
+        for i, (rng, env) in enumerate(zip(env_rngs, envs)):
+            (train_state, rng, agem_mem) = train_on_environment(rng, train_state, env, i, agem_mem)
 
             # Generate & log a GIF after finishing task i
-            states = record_gif_of_episode(config, train_state, envs[i], network, env_idx=i, max_steps=config.gif_len)
-            visualizer.animate(states, agent_view_size=5, task_idx=i, task_name=envs[i].name, exp_dir=exp_dir)
+            env_name = config.layout_name[i]
+            states = record_gif_of_episode(config, train_state, env, network, env_idx=i, max_steps=config.gif_len)
+            visualizer.animate(states, agent_view_size=5, task_idx=i, task_name=env_name, exp_dir=exp_dir)
 
             # save the model
-            path = f"checkpoints/overcooked/EWC/{run_name}/model_env_{i + 1}"
+            path = f"checkpoints/overcooked/AGEM/{run_name}/model_env_{i + 1}"
             save_params(path, train_state)
 
         return runner_state

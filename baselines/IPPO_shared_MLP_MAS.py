@@ -58,7 +58,7 @@ class Config:
     activation: str = "tanh"
     env_name: str = "overcooked"
     alg_name: str = "ippo"
-    network_architecture: str = "mlp"
+    network_architecture: str = "mlp_shared"
     use_task_id: bool = False
     use_multihead: bool = False
     shared_backbone: bool = False
@@ -125,7 +125,7 @@ def main():
         layout_name = layout_config["layout"]
         layout_config["layout"] = overcooked_layouts[layout_name]
     timestamp = datetime.now().strftime("%m-%d_%H-%M")
-    run_name = f'{config.alg_name}_{config.network_architecture}_MAS_seq{config.seq_length}_{config.strategy}_{timestamp}'
+    run_name = f'{config.alg_name}_MAS_{config.network_architecture}_seq{config.seq_length}_{config.strategy}_{timestamp}'
     exp_dir = os.path.join("runs", run_name)
 
     # Initialize WandB
@@ -282,7 +282,7 @@ def main():
                 @param state: the current state of the loop
                 returns a boolean indicating whether the loop should continue
                 '''
-                return jnp.logical_and(~state.done, state.step_count < max_steps)
+                return jnp.logical_and(jnp.logical_not(state.done), state.step_count < max_steps)
 
             def body_fun(state: EvalState):
                 '''
@@ -438,17 +438,15 @@ def main():
     with open(yaml_loc, "r") as f:
         practical_baselines = OmegaConf.load(f)
 
-    @partial(jax.jit, static_argnums=(3))
-    def train_on_environment(rng, train_state, cl_state, env_idx):
+    @partial(jax.jit, static_argnums=(2,4))
+    def train_on_environment(rng, train_state, env, cl_state, env_idx):
         '''
         Trains the network using IPPO
         @param rng: random number generator
         returns the runner state and the metrics
         '''
 
-        env = envs[env_idx]
-
-        print(f"Training on environment {env_idx}: {env.name}")
+        print(f"Training on environment: {config.layout_name[env_idx]}")
 
         # How many steps to explore the environment with random actions
         exploration_steps = int(config.explore_fraction * config.total_timesteps)
@@ -771,7 +769,7 @@ def main():
 
             # General section
             # Update the step counter
-            update_step = update_step + 1
+            update_step += 1
             mean_explore = jnp.mean(info["explore"])
 
             metric["General/env_index"] = env_idx
@@ -808,6 +806,7 @@ def main():
             # Evaluation section
             for i in range(len(config.layout_name)):
                 metric[f"Evaluation/{config.layout_name[i]}"] = jnp.nan
+                metric[f"Scaled returns/evaluation_{config.layout_name[i]}_scaled"] = jnp.nan
 
             def evaluate_and_log(rng, update_step):
                 rng, eval_rng = jax.random.split(rng)
@@ -889,25 +888,25 @@ def main():
         returns the runner state and the metrics
         '''
         # split the random number generator for training on the environments
-        rngs = jax.random.split(rng, len(envs) + 1)
-        main_rng, sub_rngs = rngs[0], rngs[1:]
+        rng, *env_rngs = jax.random.split(rng, len(envs)+1)
 
         visualizer = OvercookedVisualizer()
 
         runner_state = None
-        for i, (r, _) in enumerate(zip(sub_rngs, envs)):
+        for i, (rng, env) in enumerate(zip(env_rngs, envs)):
             # --- Train on environment i using the *current* mas_state ---
-            runner_state, metric = train_on_environment(r, train_state, cl_state, i)
+            runner_state, metric = train_on_environment(rng, train_state, env, cl_state, i)
             train_state = runner_state[0]
 
             # --- Compute new Fisher, then update mas_state for next tasks ---
             # fisher = compute_fisher_with_rollouts(config, train_state, envs[i], network, i, r, config.use_task_id, seq_length, i, config.normalize_fisher)
-            fisher = compute_mas_importance(config, train_state, envs[i], network, i, r, normalize_importance=config.normalize_importance)
+            fisher = compute_mas_importance(config, train_state, env, network, i, rng, normalize_importance=config.normalize_importance)
             cl_state = update_mas_state(cl_state, train_state.params, fisher)
 
             # Generate & log a GIF after finishing task i
-            states = record_gif_of_episode(config, train_state, envs[i], network, env_idx=i, max_steps=config.gif_len)
-            visualizer.animate(states, agent_view_size=5, task_idx=i, task_name=envs[i].name, exp_dir=exp_dir)
+            env_name = config.layout_name[i]
+            states = record_gif_of_episode(config, train_state, env, network, env_idx=i, max_steps=config.gif_len)
+            visualizer.animate(states, agent_view_size=5, task_idx=i, task_name=env_name, exp_dir=exp_dir)
 
             # save the model
             path = f"checkpoints/overcooked/MAS/{run_name}/model_env_{i + 1}"
