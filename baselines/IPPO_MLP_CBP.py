@@ -46,8 +46,8 @@ from pathlib import Path
 class CBPDense(nn.Module):
     """Dense layer *plus* CBP bookkeeping (utility, age, counter)."""
     features: int
-    eta: float  # utility decay
     name: str
+    eta: float = 0.0   # utility decay, off by default
     kernel_init: callable = orthogonal(np.sqrt(2))
     bias_init: callable = constant(0.0)
     activation: str = "tanh"
@@ -77,11 +77,12 @@ class CBPDense(nn.Module):
             ctr = self.variable("cbp", f"{self.name}_ctr",
                                 lambda: jnp.zeros(()))  # scalar float
             # contribution =  |h| * Σ|w_out|
-            w_abs_sum = jnp.sum(jnp.abs(next_kernel), axis=1)  # (n_units,)
-            contrib = jnp.mean(jnp.abs(h), axis=0) * w_abs_sum
+            w_abs_sum = jnp.sum(jnp.abs(next_kernel), axis=1)  # (n_units,)  # Flax weights are saved as (in, out). PyTorch is (out, in).
+            abs_neuron_output = jnp.abs(h)  
+            contrib = jnp.mean(abs_neuron_output, axis=0) * w_abs_sum   # Mean over the batch (dim 0 of h)
             util.value = util.value * self.eta + (1 - self.eta) * contrib
             age.value = age.value + 1  # +1 every fwd pass
-            # counter is *not* touched here (it is updated after the optimiser step)
+            # replacement counter (ctr) is *not* touched here (it is updated after the optimizer step)
         return h
 
 
@@ -126,16 +127,18 @@ class ActorCritic(nn.Module):
 
 # -----------------------------------------------------------
 def weight_reinit(key, shape):
-    """Same initialiser used at model start (orthogonal(√2))."""
+    """Should be the same weight initializer used at model start (orthogonal(√2))."""
     return orthogonal(np.sqrt(2))(key, shape)
 
 
-def cbp_step(params: FrozenDict,
-             cbp_state: FrozenDict,
-             *,
-             rng: jax.random.PRNGKey,
-             maturity: int,
-             rho: float) -> Tuple[FrozenDict, FrozenDict, jax.random.PRNGKey]:
+def cbp_step(
+        params: FrozenDict,
+        cbp_state: FrozenDict,
+        *,
+        rng: jax.random.PRNGKey,
+        maturity: int,
+        rho: float,   # replacement rate (0.0 - 1.0)
+    ) -> Tuple[FrozenDict, FrozenDict, jax.random.PRNGKey]:
     """
     Pure JAX function: one CBP maintenance step.
     * increments replacement counter for every layer
@@ -148,14 +151,14 @@ def cbp_step(params: FrozenDict,
         age = s[f"{layer_name}_age"]
         ctr = s[f"{layer_name}_ctr"]
         mature_mask = age > maturity
-        n_mat = int(jnp.sum(mature_mask))
-        ctr += n_mat * rho
+        n_eligible = int(jnp.sum(mature_mask))
+        ctr += n_eligible * rho
 
         # number of whole neurons to replace
         n_rep = int(math.floor(float(ctr)))
         ctr -= float(n_rep)
-        if n_rep == 0 or n_mat == 0:
-            s[f"{layer_name}_ctr"] = ctr
+        s[f"{layer_name}_ctr"] = ctr
+        if n_rep == 0:
             return rng
 
         # indices of mature neurons sorted by utility (ascending)
@@ -166,18 +169,19 @@ def cbp_step(params: FrozenDict,
 
         W_in = p[layer_name + "_d"]["kernel"]  # (in, out)
         b_in = p[layer_name + "_d"]["bias"]  # (out,)
-        W_out = p[next_layer_name]["kernel"]  # (out, next)
+        W_out = p[next_layer_name]["kernel"]  # (out, next_out)
 
-        for idx in to_rep:
-            rng, k1 = jax.random.split(rng)
-            # re-initialise incoming weights
-            W_in[:, idx] = weight_reinit(k1, W_in[:, idx].shape)
-            b_in = b_in.at[idx].set(0.0)
-            # zero outgoing weights
-            W_out = W_out.at[idx, :].set(0.0)
-            # reset bookkeeping
-            util = util.at[idx].set(0.0)
-            age = age.at[idx].set(0)
+        # --- neuron re-initialisation ---
+        rng, k_init = jax.random.split(rng)
+        tmp_W = weight_reinit(k_init, W_in.shape)
+        # copy only chosen columns from tmp_W
+        W_in  = W_in.at[:, to_rep].set(tmp_W[:, to_rep])
+        b_in  = b_in.at[to_rep].set(0.0)                       # bias → 0
+        W_out = W_out.at[to_rep, :].set(0.0)                   # outgoing weights → 0
+
+        # reset bookkeeping
+        util = util.at[to_rep].set(0.0)
+        age  = age.at[to_rep].set(0)
 
         # write back
         p[layer_name + "_d"]["kernel"] = W_in
@@ -185,7 +189,6 @@ def cbp_step(params: FrozenDict,
         p[next_layer_name]["kernel"] = W_out
         s[f"{layer_name}_util"] = util
         s[f"{layer_name}_age"] = age
-        s[f"{layer_name}_ctr"] = ctr
         return rng
 
     rng = _layer("actor_fc1", "actor_fc2_d", rng)
