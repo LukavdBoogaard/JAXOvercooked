@@ -19,6 +19,7 @@ wandb
 pytest
 imageio
 pygame
+tyro
 numpy>=1.26.1
 hydra-core>=1.3.2
 omegaconf>=2.3.0
