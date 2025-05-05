@@ -2,9 +2,6 @@
 # os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 from datetime import datetime
 
-import copy
-from datetime import datetime
-import pickle
 import flax
 import jax
 import jax.experimental
@@ -25,84 +22,19 @@ from jax_marl.wrappers.baselines import LogWrapper
 from jax_marl.environments.overcooked_environment import overcooked_layouts
 from jax_marl.environments.env_selection import generate_sequence
 from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
+from architectures.mlp import ActorCritic
+from baselines.utils import Transition, batchify, unbatchify, sample_discrete_action
 from dotenv import load_dotenv
 import os
 os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
 
 from omegaconf import OmegaConf
-import matplotlib.pyplot as plt
 import wandb
 from functools import partial
 from dataclasses import dataclass, field
 import tyro
 from tensorboardX import SummaryWriter
-from pathlib import Path
 
-# Enable compile logging
-# jax.log_compiles(True)
-
-class ActorCritic(nn.Module):
-    '''
-    Class to define the actor-critic networks used in IPPO. Each agent has its own actor-critic network
-    '''
-    action_dim: Sequence[int]
-    activation: str = "tanh"
-
-    @nn.compact
-    def __call__(self, x):
-        if self.activation == "relu":
-            activation = nn.relu
-        else:
-            activation = nn.tanh
-
-        # ACTOR  
-        actor_mean = nn.Dense(
-            128, # number of neurons
-            kernel_init=orthogonal(np.sqrt(2)), 
-            bias_init=constant(0.0) # sets the bias initialization to a constant value of 0
-        )(x) # applies a dense layer to the input x
-
-        actor_mean = activation(actor_mean) # applies the activation function to the output of the dense layer
-
-        actor_mean = nn.Dense(
-            128, 
-            kernel_init=orthogonal(np.sqrt(2)), 
-            bias_init=constant(0.0)
-        )(actor_mean)
-
-        actor_mean = activation(actor_mean)
-
-        actor_mean = nn.Dense(
-            self.action_dim, 
-            kernel_init=orthogonal(0.01), 
-            bias_init=constant(0.0)
-        )(actor_mean)
-
-        pi = distrax.Categorical(logits=actor_mean) # creates a categorical distribution over all actions (the logits are the output of the actor network)
-
-        # CRITIC
-        critic = nn.Dense(128, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x)
-        critic = activation(critic)
-        critic = nn.Dense(128, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(critic)
-        critic = activation(critic)
-        critic = nn.Dense(1, kernel_init=orthogonal(1.0), bias_init=constant(0.0))(critic)
-        
-        # returns the policy (actor) and state-value (critic) networks
-        value = jnp.squeeze(critic, axis=-1)
-        return pi, value #squeezed to remove any unnecessary dimensions
-    
-
-class Transition(NamedTuple):
-    '''
-    Named tuple to store the transition information
-    '''
-    done: jnp.ndarray # whether the episode is done
-    action: jnp.ndarray # the action taken
-    value: jnp.ndarray # the value of the state
-    reward: jnp.ndarray # the reward received
-    log_prob: jnp.ndarray # the log probability of the action
-    obs: jnp.ndarray # the observation
-    # info: jnp.ndarray # additional information
 
 @dataclass
 class Config:
@@ -122,15 +54,16 @@ class Config:
     activation: str = "tanh"
     env_name: str = "overcooked"
     alg_name: str = "ippo"
+    network_architecture: str = "mlp"
 
     seq_length: int = 6
     strategy: str = "random"
     layouts: Optional[Sequence[str]] = field(default_factory=lambda: ["asymm_advantages", "smallest_kitchen", "cramped_room", "easy_layout", "square_arena", "no_cooperation"])
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
-    log_interval: int = 75 # log every 200 calls to update step
-    eval_num_steps: int = 1000 # number of steps to evaluate the model
-    eval_num_episodes: int = 5 # number of episodes to evaluate the model
+    log_interval: int = 75
+    eval_num_steps: int = 1000
+    eval_num_episodes: int = 5
     
     anneal_lr: bool = False
     seed: int = 30
@@ -147,60 +80,13 @@ class Config:
     num_updates: int = 0
     minibatch_size: int = 0
 
-    
-############################
-##### HELPER FUNCTIONS #####
-############################
-
-def batchify(x: dict, agent_list, num_actors):
-    '''
-    converts the observations of a batch of agents into an array of size (num_actors, -1) that can be used by the network
-    @param x: dictionary of observations
-    @param agent_list: list of agents
-    @param num_actors: number of actors
-    returns the batchified observations
-    '''
-    x = jnp.stack([x[a] for a in agent_list])
-    return x.reshape((num_actors, -1))
-
-def unbatchify(x: jnp.ndarray, agent_list, num_envs, num_actors):
-    '''
-    converts the array of size (num_actors, -1) into a dictionary of observations for all agents
-    @param x: array of observations
-    @param agent_list: list of agents
-    @param num_envs: number of environments
-    @param num_actors: number of actors
-    returns the unbatchified observations
-    '''
-    x = x.reshape((num_actors, num_envs, -1))
-    return {a: x[i] for i, a in enumerate(agent_list)}
-
-def calculate_sparsity(params, threshold=1e-5):
-    """
-    Calculate the percentage of parameters that are close to zero
-    """
-    # Flatten the params into a single array
-    flat_params, _ = jax.tree_util.tree_flatten(params)
-    
-    # Concatenate all weights into one large array
-    all_weights = jnp.concatenate([jnp.ravel(p) for p in flat_params])
-    
-    # Count weights below threshold
-    num_small_weights = jnp.sum(jnp.abs(all_weights) < threshold)
-    total_weights = all_weights.size
-    
-    # Compute percentage of small weights
-    sparsity_percentage = 100 * (num_small_weights / total_weights)
-    
-    return sparsity_percentage
-    
 ############################
 ##### MAIN FUNCTION    #####
 ############################
 
 
 def main():
-     # set the device to the first available GPU
+    # set the device to the first available GPU
     jax.config.update("jax_platform_name", "gpu")
 
     # print the device that is being used
@@ -220,8 +106,8 @@ def main():
         layout_name = layout_config["layout"]
         layout_config["layout"] = overcooked_layouts[layout_name]
     
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    run_name = f'{config.alg_name}_seq{config.seq_length}_{config.strategy}_{timestamp}'
+    timestamp = datetime.now().strftime("%m-%d_%H-%M")
+    run_name = f'{config.alg_name}_{config.network_architecture}_seq{config.seq_length}_{config.strategy}_{timestamp}'
     exp_dir = os.path.join("runs", run_name)
 
     # Initialize WandB
@@ -229,7 +115,7 @@ def main():
     wandb_tags = config.tags if config.tags is not None else []
     wandb.login(key=os.environ.get("WANDB_API_KEY"))
     wandb.init(
-        project=config.project, 
+        project=config.project,
         config=config,
         sync_tensorboard=True,
         mode=config.wandb_mode,
@@ -259,9 +145,9 @@ def main():
         '''
         envs = []
         for env_args in config.env_kwargs:
-                # Create the environment
-                env = make(config.env_name, **env_args)
-                envs.append(env)
+            # Create the environment
+            env = make(config.env_name, **env_args)
+            envs.append(env)
 
         # find the environment with the largest observation space
         max_width, max_height = 0, 0
@@ -419,7 +305,7 @@ def main():
                 # Environment step
                 next_obs, next_state, reward, done_step, info = env.step(key_s, state_env, actions)
                 done = done_step["__all__"]
-                reward = reward["agent_0"]  
+                reward = reward["agent_0"]
                 total_reward += reward
                 step_count += 1
 
@@ -521,16 +407,15 @@ def main():
             visualizer.animate(state_seq=env, agent_view_size=5, filename=f"~/JAXOvercooked/environment_layouts/env_{config.layouts[i]}.gif")
 
         return None
-    
-    # padd all environments
+
+    # pad all environments
     padded_envs = pad_observation_space()
-    
+
     envs = []
     for env_layout in padded_envs:
         env = make(config.env_name, layout=env_layout)
         env = LogWrapper(env, replace_info=False)
         envs.append(env)
-
 
     # set extra config parameters based on the environment
     temp_env = envs[0]
@@ -563,20 +448,19 @@ def main():
 
     # Initialize the optimizer
     tx = optax.chain(
-        optax.clip_by_global_norm(config.max_grad_norm), 
+        optax.clip_by_global_norm(config.max_grad_norm),
         optax.adam(learning_rate=linear_schedule if config.anneal_lr else config.lr, eps=1e-5)
     )
 
     # jit the apply function
     network.apply = jax.jit(network.apply)
 
-    # Initialize the training state      
+    # Initialize the training state
     train_state = TrainState.create(
         apply_fn=network.apply,
         params=network_params,
         tx=tx
     )
-
 
     # Load the practical baseline yaml file as a dictionary
     repo_root = "/home/luka/repo/JAXOvercooked"
@@ -591,9 +475,7 @@ def main():
         @param rng: random number generator 
         returns the runner state and the metrics
         '''
-
         print("Training on environment")
-
         # reset the learning rate and the optimizer
         tx = optax.chain(
         optax.clip_by_global_norm(config.max_grad_norm), 
@@ -607,17 +489,14 @@ def main():
         obsv, env_state = jax.vmap(env.reset, in_axes=(0,))(reset_rng) 
         
         # TRAIN 
-        # @profile
-        def _update_step(runner_state, unused):
+        def _update_step(runner_state, _):
             '''
             perform a single update step in the training loop
             @param runner_state: the carry state that contains all important training information
             returns the updated runner state and the metrics 
             '''
-
             # COLLECT TRAJECTORIES
-            # @profile
-            def _env_step(runner_state, unused):
+            def _env_step(runner_state, _):
                 '''
                 selects an action based on the policy, calculates the log probability of the action, 
                 and performs the selected action in the environment
@@ -627,13 +506,11 @@ def main():
                 # Unpack the runner state
                 train_state, env_state, last_obs, update_step, rng = runner_state
 
-                # SELECT ACTION
                 # split the random number generator for action selection
                 rng, _rng = jax.random.split(rng)
 
                 # prepare the observations for the network
                 obs_batch = batchify(last_obs, env.agents, config.num_actors)
-                # print("obs_shape", obs_batch.shape)
                 
                 # apply the policy network to the observations to get the suggested actions and their values
                 pi, value = network.apply(train_state.params, obs_batch)
@@ -657,14 +534,17 @@ def main():
                 )
 
                 # REWARD SHAPING IN NEW VERSION
-                
                 # add the reward of one of the agents to the info dictionary
                 info["reward"] = reward["agent_0"]
 
                 current_timestep = update_step * config.num_steps * config.num_envs
 
                 # add the shaped reward to the normal reward 
-                reward = jax.tree_util.tree_map(lambda x,y: x+y * rew_shaping_anneal(current_timestep), reward, info["shaped_reward"])
+                reward = jax.tree_util.tree_map(lambda x,y: 
+                                                x+y * rew_shaping_anneal(current_timestep), 
+                                                reward,
+                                                info["shaped_reward"]
+                                                )
 
                 transition = Transition(
                     batchify(done, env.agents, config.num_actors).squeeze(), 
@@ -887,7 +767,6 @@ def main():
             metric["General/update_step"] = update_step
             metric["General/env_step"] = update_step * config.num_steps * config.num_envs
             metric["General/learning_rate"] = linear_schedule(update_step * config.num_minibatches * config.update_epochs)
-            metric["General/sparsity"] = calculate_sparsity(train_state.params)
 
             # Losses section
             total_loss, (value_loss, loss_actor, entropy) = loss_info
@@ -915,7 +794,6 @@ def main():
             def evaluate_and_log(rng, update_step):
                 rng, eval_rng = jax.random.split(rng)
                 train_state_eval = jax.tree_util.tree_map(lambda x: x.copy(), train_state)
-                
 
                 def log_metrics(metric, update_step):
                     evaluations = evaluate_model(train_state_eval, network, eval_rng)
@@ -923,7 +801,7 @@ def main():
                         metric[f"Evaluation/{layout_name}"] = evaluations[i]
                         
                         # Add error handling for missing baseline entries
-                        bare_layout = layout_name.split("__")[1]
+                        bare_layout = layout_name.split("__")[1].strip()
                         try:
                             if bare_layout in practical_baselines:
                                 baseline_reward = practical_baselines[bare_layout]["avg_rewards"]
@@ -936,30 +814,21 @@ def main():
                             print(f"Error scaling rewards for {layout_name}: {e}")
                             metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
                     
-                    params = jax.tree_util.tree_map(lambda x: x, train_state_eval.params["params"])
-                    
-                    # Same error handling for callback function
                     def callback(args):
                         metric, update_step, env_counter = args
                         real_step = (int(env_counter)-1) * config.num_updates + int(update_step)
                         
                         env_name = config.layout_name[env_counter-1]
-                        if env_name in practical_baselines:
-                            metric["Scaled returns/returned_episode_returns_scaled"] = metric["returned_episode_returns"] / practical_baselines[env_name]["avg_rewards"]
+                        bare_layout = env_name.split("__")[1].strip()
+                        if bare_layout in practical_baselines:
+                            metric["Scaled returns/returned_episode_returns_scaled"] = (
+                                metric["returned_episode_returns"] / practical_baselines[bare_layout]["avg_rewards"])
                         else:
-                            metric["Scaled returns/returned_episode_returns_scaled"] = metric["returned_episode_returns"]  # No scaling if no baseline
+                            print("Warning: No baseline data for environment: ", bare_layout)
+                            metric["Scaled returns/returned_episode_returns_scaled"] = metric["returned_episode_returns"]  
 
                         for key, value in metric.items():
                             writer.add_scalar(key, value, real_step)
-
-                        # Add histograms of the parameters and grads to the writer
-                        for layer, dict in params.items():
-                            for layer_name, param_array in dict.items():
-                                writer.add_histogram(
-                                    tag=f"weights/{layer}/{layer_name}", 
-                                    values=jnp.array(param_array), 
-                                    global_step=real_step,
-                                    bins=100)
 
 
                     jax.experimental.io_callback(callback, None, (metric, update_step, env_counter))
@@ -1046,15 +915,7 @@ def main():
     rng, train_rng = jax.random.split(rng)
     # apply the loop_over_envs function to the environments
     runner_state = loop_over_envs(train_rng, train_state, envs)
-    
-
-def sample_discrete_action(key, action_space):
-    """Samples a discrete action based on the action space provided."""
-    num_actions = action_space.n
-    return jax.random.randint(key, (1,), 0, num_actions)
-
 
 if __name__ == "__main__":
     print("Running main...")
     main()
-
