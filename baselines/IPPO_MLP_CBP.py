@@ -1101,7 +1101,8 @@ def main():
                             print(f"Error scaling rewards for {layout_name}: {e}")
                             metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
 
-                    params = jax.tree_util.tree_map(lambda x: x, train_state_eval.params)  # ["params"])
+                    # params = jax.tree_util.tree_map(lambda x: x, train_state_eval.params)  # ["params"])
+                    params = train_state_eval.params
 
                     # Same error handling for callback function
                     def callback(args):
