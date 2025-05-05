@@ -1016,7 +1016,12 @@ def main():
         # counter for the environment 
         env_counter = 1
 
-        evaluations_right_after_training = []
+        evaluation_matrix = jnp.zeros((len(envs)+1), len(envs))
+
+        # Evaluate the model on all environments before training
+        rng, eval_rng = jax.random.split(rng)
+        evaluations = evaluate_model(train_state, network, eval_rng)
+        evaluation_matrix.at[0].set(evaluations)
 
         for env_rng, env in zip(env_rngs, envs):
             runner_state, metrics = train_on_environment(env_rng, train_state, env, env_counter)
@@ -1026,36 +1031,14 @@ def main():
 
             # Evaluate at the end of training to get the average performance of the task right after training
             evaluations = evaluate_model(train_state, network, rng)
-            evaluation_current_task = evaluations[env_counter-1]
-            evaluations_right_after_training.append(evaluation_current_task)
-            
+            evaluation_matrix.at[env_counter].set(evaluations)
 
             # save the model
             path = f"checkpoints/overcooked/{run_name}/model_env_{env_counter}"
             save_params(path, train_state)
 
-            def calculate_average_forgetting():
-                '''
-                Calculate the average forgetting of all previous tasks 
-                '''
-                evaluations = evaluate_model(train_state, network, rng)
-                # calculate the forgetting of each task 
-                forgetting = []
-                for i in range(env_counter-1):
-                    # calculate the forgetting of the task
-                    forgetting.append((evaluations[i] - evaluations_right_after_training[i]) / evaluations_right_after_training[i])
-                    print(f"forgetting of task {i+1}: {forgetting[i]}")
-            
-            calcul
-
             # update the environment counter
             env_counter += 1
-        
-        # at the end of the sequence, we evaluate again
-        evaluations = evaluate_model(train_state, network, rng)
-
-        # calculate the forgetting of each
-
 
         return runner_state
 
