@@ -433,6 +433,43 @@ WB      AW
 WWWWWWWWWW
 """
 
+most_efficient = """
+WWWWW
+WAOAW
+W P W
+W P W
+W B W
+W X W
+WWWWW
+"""
+
+most_efficient_horizontal = """
+WWWWWWW
+WA    W
+WOPPBXW
+WA    W
+WWWWWWW
+"""
+
+bottleneck_small = """
+WWWWWWWW
+W AP  OW
+W WWWWWW
+W      W
+WB A XWW
+WWWWWWWW
+"""
+bottleneck_large = """
+WWWWWWWWWWW
+WA  P    OW
+W         W
+WWWW WWWWWW
+W         W
+W         W
+WB       XW
+W     A   W
+WWWWWWWWWWW
+"""
 
 overcooked_layouts = {
     "cramped_room" : FrozenDict(cramped_room),
@@ -455,5 +492,9 @@ overcooked_layouts = {
     "split_work" : layout_grid_to_dict(split_work),
     "resource_sharing" : layout_grid_to_dict(resource_sharing),
     "efficiency_test" : layout_grid_to_dict(efficiency_test),
-    "forced_teamwork" : layout_grid_to_dict(forced_teamwork)
+    "forced_teamwork" : layout_grid_to_dict(forced_teamwork),
+    "most_efficient" : layout_grid_to_dict(most_efficient),
+    "most_efficient_horizontal" : layout_grid_to_dict(most_efficient_horizontal),
+    "bottleneck_small" : layout_grid_to_dict(bottleneck_small),
+    "bottleneck_large" : layout_grid_to_dict(bottleneck_large)
 }

@@ -77,7 +77,7 @@ class Config:
     env_name: str = "overcooked"
     alg_name: str = "reward_normalization"
 
-    seq_length: int = 21
+    seq_length: int = 1
     strategy: str = "random"
     layouts: Optional[Sequence[str]] = None
     env_kwargs: Optional[Sequence[dict]] = None
@@ -166,12 +166,13 @@ def main():
     wandb_tags = config.tags if config.tags is not None else []
     wandb.login(key=os.environ.get("WANDB_API_KEY"))
     wandb.init(
-        project='Continual_IPPO', 
+        project='COOX', 
         config=config,
         sync_tensorboard=True,
         mode=config.wandb_mode,
         name=run_name,
         tags=wandb_tags,
+        group="single_layouts",
     )
 
     # Set up Tensorboard

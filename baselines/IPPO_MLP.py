@@ -23,7 +23,13 @@ from jax_marl.environments.overcooked_environment import overcooked_layouts
 from jax_marl.environments.env_selection import generate_sequence
 from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
 from architectures.mlp import ActorCritic
-from baselines.utils import Transition, batchify, unbatchify, sample_discrete_action
+from baselines.utils import (Transition, 
+                             batchify, 
+                             unbatchify, 
+                             sample_discrete_action,
+                             compute_bwt,
+                             compute_fwt)
+
 from dotenv import load_dotenv
 import os
 os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
@@ -887,7 +893,7 @@ def main():
         # counter for the environment 
         env_counter = 1
 
-        evaluation_matrix = jnp.zeros((len(envs)+1), len(envs))
+        evaluation_matrix = jnp.zeros(((len(envs)+1), len(envs)))
 
         # Evaluate the model on all environments before training
         rng, eval_rng = jax.random.split(rng)
@@ -910,6 +916,22 @@ def main():
 
             # update the environment counter
             env_counter += 1
+        
+        # calculate the forward transfer and backward transfer
+        fwt, avg_fwt = compute_fwt(evaluation_matrix)
+        bwt, avg_bwt = compute_bwt(evaluation_matrix)
+
+        print("Forward Transfer: ", fwt)
+        print("Average Forward Transfer: ", avg_fwt)
+        print("Backward Transfer: ", bwt)
+        print("Average Backward Transfer: ", avg_bwt)
+
+        # save the forward and backward transfer as a table
+        import pandas as pd
+        fwt_table = pd.DataFrame(fwt, columns=["Forward Transfer"])
+        bwt_table = pd.DataFrame(bwt, columns=["Backward Transfer"])
+        fwt_table.to_csv(f"checkpoints/overcooked/{run_name}/fwt.csv", index=False)
+        bwt_table.to_csv(f"checkpoints/overcooked/{run_name}/bwt.csv", index=False)
 
         return runner_state
 

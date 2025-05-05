@@ -71,3 +71,47 @@ def make_task_onehot(task_idx: int, num_tasks: int) -> jnp.ndarray:
 
 def copy_params(params):
     return jax.tree_util.tree_map(lambda x: x.copy(), params)
+
+def compute_fwt(matrix):
+    """
+    Computes the forward transfer for all tasks in a sequence
+    param matrix: a 2D array of shape (num_tasks + 1, num_tasks) where each entry is the performance of the model on the task
+    """
+    # Assert that the matrix has the correct shape
+    assert matrix.shape[0] == matrix.shape[1] + 1, "Matrix must have shape (num_tasks + 1, num_tasks)"
+
+    num_tasks = matrix.shape[1]
+
+    # Create a 2D array to store the forward transfer values
+    fwt = jnp.full((num_tasks,), jnp.nan)
+
+    for i in range(num_tasks):
+        # the first task has no forward transfer
+        if i == 0:
+            continue
+        # Compute the forward transfer for task i
+        fwt = fwt.at[i].set(matrix[i, i] - matrix[0, i]) 
+
+    avg_fwt = jnp.nanmean(fwt)
+    return fwt, avg_fwt
+
+def compute_bwt(matrix):
+    """
+    Computes the backward transfer for all tasks in a sequence
+    param matrix: a 2D array of shape (num_tasks + 1, num_tasks) where each entry is the performance of the model on the task
+    """
+    # Assert that the matrix has the correct shape
+    assert matrix.shape[0] == matrix.shape[1] + 1, "Matrix must have shape (num_tasks + 1, num_tasks)"
+
+    num_tasks = matrix.shape[1]
+    bwt_series = []
+    # Create a 2D array to store the backward transfer values
+    bwt_avg = jnp.full((num_tasks,), jnp.nan)
+
+    for i in range(num_tasks-1):
+        difference = matrix[i+2, i+1] - matrix[i+1,i+1]
+        bwt_series.append(difference)
+        bwt_avg = bwt_avg.at[i].set(jnp.nanmean(difference))
+
+    return bwt_series, bwt_avg
+
