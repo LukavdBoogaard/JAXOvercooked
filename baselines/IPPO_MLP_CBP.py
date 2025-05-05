@@ -1119,13 +1119,35 @@ def main():
                             writer.add_scalar(key, value, real_step)
 
                         # Add histograms of the parameters and grads to the writer
-                        for layer, dict in params.items():
-                            for layer_name, param_array in dict.items():
-                                writer.add_histogram(
-                                    tag=f"weights/{layer}/{layer_name}",
-                                    values=jnp.array(param_array),
-                                    global_step=real_step,
-                                    bins=100)
+                        # for layer, dict in params.items():
+                        #     for layer_name, param_array in dict.items():
+                        #         writer.add_histogram(
+                        #             tag=f"weights/{layer}/{layer_name}",
+                        #             values=jnp.array(param_array),
+                        #             global_step=real_step,
+                        #             bins=100)
+
+                        ## Tried fixing histogram logging for CBP layers, doesn't work yet
+                        # for module_name, submod in params.items():
+                        #     if module_name.endswith("_out"):
+                        #         # out‐layers are directly a dict of arrays
+                        #         for tensor_name, tensor in submod.items():  # e.g. "kernel","bias"
+                        #             writer.add_histogram(
+                        #                 tag=f"weights/{module_name}/{tensor_name}",
+                        #                 values=jnp.array(tensor),
+                        #                 global_step=real_step,
+                        #                 bins=100,
+                        #             )
+                        #     else:
+                        #         # all other modules have an extra level (the Dense submodule)
+                        #         for submod_name, tensor_dict in submod.items():
+                        #             for tensor_name, tensor in tensor_dict.items():  # "kernel","bias"
+                        #                 writer.add_histogram(
+                        #                     tag=f"weights/{module_name}/{submod_name}/{tensor_name}",
+                        #                     values=jnp.array(tensor),
+                        #                     global_step=real_step,
+                        #                     bins=100,
+                        #                 )
 
                     jax.experimental.io_callback(callback, None, (metric, update_step, env_counter))
                     return None
