@@ -134,6 +134,7 @@ def main():
         mode=config.wandb_mode,
         name=run_name,
         tags=wandb_tags,
+        group="PackNet",
     )
 
     # Set up Tensorboard
