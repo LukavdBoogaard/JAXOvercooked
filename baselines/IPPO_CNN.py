@@ -1,35 +1,24 @@
-# import os
+import os
 # os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 from datetime import datetime
-
-import copy
-from datetime import datetime
-import pickle
 import flax
 import jax
 import jax.experimental
 import jax.numpy as jnp
-import flax.linen as nn
-import numpy as np
 import optax
-import orbax.checkpoint as ocp
-from flax.linen.initializers import constant, orthogonal
 from flax.core.frozen_dict import FrozenDict, freeze, unfreeze
 from typing import Sequence, NamedTuple, Any, Optional, List
 from flax.training.train_state import TrainState
-import distrax
-from gymnax.wrappers.purerl import LogWrapper, FlattenObservationWrapper
+from gymnax.wrappers.purerl import LogWrapper
+from architectures.cnn import ActorCritic
+from baselines.utils import Transition_CNN, batchify, unbatchify, sample_discrete_action
 
 from jax_marl.registration import make
 from jax_marl.wrappers.baselines import LogWrapper
 from jax_marl.environments.overcooked_environment import overcooked_layouts
 from jax_marl.environments.env_selection import generate_sequence
 from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
-from jax_marl.environments.overcooked_environment.layouts import counter_circuit_grid
 from dotenv import load_dotenv
-import hydra
-import os
-os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
 
 from omegaconf import OmegaConf
 import matplotlib.pyplot as plt
@@ -40,93 +29,6 @@ import tyro
 from tensorboardX import SummaryWriter
 from pathlib import Path
 
-# Enable compile logging
-# jax.log_compiles(True)
-
-class CNN(nn.Module):
-    activation: str = "tanh"
-    @nn.compact
-    def __call__(self, x):
-        if self.activation == "relu":
-            activation = nn.relu
-        else:
-            activation = nn.tanh
-        x = nn.Conv(
-            features=32,
-            kernel_size=(5, 5),
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0),
-        )(x)
-        x = activation(x)
-        x = nn.Conv(
-            features=32,
-            kernel_size=(3, 3),
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0),
-        )(x)
-        x = activation(x)
-        x = nn.Conv(
-            features=32,
-            kernel_size=(3, 3),
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0),
-        )(x)
-        x = activation(x)
-        x = x.reshape((x.shape[0], -1))  # Flatten
-
-        x = nn.Dense(
-            features=64, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
-        )(x)
-        x = activation(x)
-
-        return x
-
-
-class ActorCritic(nn.Module):
-    action_dim: Sequence[int]
-    activation: str = "tanh"
-
-    @nn.compact
-    def __call__(self, x):
-        if self.activation == "relu":
-            activation = nn.relu
-        else:
-            activation = nn.tanh
-        
-        embedding = CNN(self.activation)(x)
-
-        actor_mean = nn.Dense(
-            128, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
-        )(embedding)
-        actor_mean = activation(actor_mean)
-        actor_mean = nn.Dense(
-            self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0)
-        )(embedding)
-        pi = distrax.Categorical(logits=actor_mean)
-
-        critic = nn.Dense(
-            128, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
-        )(embedding)
-        critic = activation(critic)
-        critic = nn.Dense(1, kernel_init=orthogonal(1.0), bias_init=constant(0.0))(
-            critic
-        )
-
-        return pi, jnp.squeeze(critic, axis=-1)
-
-    
-
-class Transition(NamedTuple):
-    '''
-    Named tuple to store the transition information
-    '''
-    done: jnp.ndarray # whether the episode is done
-    action: jnp.ndarray # the action taken
-    value: jnp.ndarray # the value of the state
-    reward: jnp.ndarray # the reward received
-    log_prob: jnp.ndarray # the log probability of the action
-    obs: jnp.ndarray # the observation
-    info: jnp.ndarray # additional information
 
 @dataclass
 class Config:
@@ -153,9 +55,9 @@ class Config:
     layouts: Optional[Sequence[str]] = field(default_factory=lambda: ["asymm_advantages", "smallest_kitchen", "cramped_room", "easy_layout", "square_arena", "no_cooperation"])
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
-    log_interval: int = 10 
-    eval_num_steps: int = 400 # number of steps to evaluate the model
-    eval_num_episodes: int = 5 # number of episodes to evaluate the model
+    log_interval: int = 75
+    eval_num_steps: int = 1000 
+    eval_num_episodes: int = 5 
     
     anneal_lr: bool = False
     seed: int = 30
@@ -164,7 +66,7 @@ class Config:
     # Wandb settings
     wandb_mode: str = "online"
     entity: Optional[str] = ""
-    project: str = "ippo_continual"
+    project: str = "COOX"
     tags: List[str] = field(default_factory=list)
 
     # to be computed during runtime
@@ -172,35 +74,6 @@ class Config:
     num_updates: int = 0
     minibatch_size: int = 0
 
-    
-############################
-##### HELPER FUNCTIONS #####
-############################
-
-def batchify(x: dict, agent_list, num_actors):
-    '''
-    converts the observations of a batch of agents into an array of size (num_actors, -1) that can be used by the network
-    @param x: dictionary of observations
-    @param agent_list: list of agents
-    @param num_actors: number of actors
-    returns the batchified observations
-    '''
-    x = jnp.stack([x[a] for a in agent_list])
-    return x.reshape((num_actors, -1))
-
-def unbatchify(x: jnp.ndarray, agent_list, num_envs, num_actors):
-    '''
-    converts the array of size (num_actors, -1) into a dictionary of observations for all agents
-    @param x: array of observations
-    @param agent_list: list of agents
-    @param num_envs: number of environments
-    @param num_actors: number of actors
-    returns the unbatchified observations
-    '''
-    x = x.reshape((num_actors, num_envs, -1))
-    return {a: x[i] for i, a in enumerate(agent_list)}
-
-    
 ############################
 ##### MAIN FUNCTION    #####
 ############################
@@ -216,11 +89,12 @@ def main():
     config = tyro.cli(Config)
 
     # generate a sequence of tasks
-    seq_length = config.seq_length
-    strategy = config.strategy
-    layouts = config.layouts
-    config.env_kwargs, config.layout_name = generate_sequence(seq_length, strategy, layout_names=layouts, seed=config.seed)
-
+    config.env_kwargs, config.layout_name = generate_sequence(
+        sequence_length=config.seq_length, 
+        strategy=config.strategy, 
+        layout_names=config.layouts, 
+        seed=config.seed
+    )
 
     for layout_config in config.env_kwargs:
         layout_name = layout_config["layout"]
@@ -235,7 +109,7 @@ def main():
     wandb_tags = config.tags if config.tags is not None else []
     wandb.login(key=os.environ.get("WANDB_API_KEY"))
     wandb.init(
-        project='Continual_IPPO', 
+        project=config.project,
         config=config,
         sync_tensorboard=True,
         mode=config.wandb_mode,
@@ -447,7 +321,6 @@ def main():
 
         return all_avg_rewards
     
-    """ 
     def get_rollout_for_visualization():
         '''
         Simulates the environment using the network
@@ -512,7 +385,6 @@ def main():
             visualizer.animate(state_seq=env, agent_view_size=5, filename=f"~/JAXOvercooked/environment_layouts/env_{config.layouts[i]}.gif")
 
         return None
-    """
 
     # pad all environments
     padded_envs = pad_observation_space()
@@ -568,8 +440,8 @@ def main():
         params=network_params,
         tx=tx
     )
-    
-     # Load the practical baseline yaml file as a dictionary
+
+    # Load the practical baseline yaml file as a dictionary
     repo_root = "/home/luka/repo/JAXOvercooked"
     yaml_loc = os.path.join(repo_root, "practical_reward_baseline_results.yaml")
     with open(yaml_loc, "r") as f:
@@ -624,8 +496,6 @@ def main():
 
                 # prepare the observations for the network
                 obs_batch = jnp.stack([last_obs[a] for a in env.agents]).reshape(-1, *env.observation_space().shape)
-
-                print("input_obs_shape", obs_batch.shape)
                 
                 # apply the policy network to the observations to get the suggested actions and their values
                 pi, value = network.apply(train_state.params, obs_batch)
@@ -650,9 +520,6 @@ def main():
 
                 # REWARD SHAPING IN NEW VERSION
                 shaped_reward = info.pop("shaped_reward")
-                
-                # add the reward of one of the agents to the info dictionary
-                # info["reward"] = reward["agent_0"]
 
                 current_timestep = update_step * config.num_steps * config.num_envs
 
@@ -660,10 +527,11 @@ def main():
                 reward = jax.tree_util.tree_map(lambda x,y: 
                                                 x+y * rew_shaping_anneal(current_timestep), 
                                                 reward, 
-                                                shaped_reward)
+                                                shaped_reward
+                                                )
 
                 info = jax.tree.map(lambda x: x.reshape((config.num_actors)), info)
-                transition = Transition(
+                transition = Transition_CNN(
                     batchify(done, env.agents, config.num_actors).squeeze(), 
                     action,
                     value,
@@ -883,7 +751,7 @@ def main():
             # average the metric
             metric = jax.tree_util.tree_map(lambda x: x.mean(), metric)
 
-            update_step = update_step + 1
+            update_step += 1
 
             # add the general metrics to the metric dictionary
             metric["General/update_step"] = update_step
@@ -921,7 +789,6 @@ def main():
                     evaluations = evaluate_model(train_state_eval, network, eval_rng)
                     for i, layout_name in enumerate(config.layout_name):
                         metric[f"Evaluation/{layout_name}"] = evaluations[i]
-
                         
                         # Add error handling for missing baseline entries
                         bare_layout = layout_name.split("__")[1]
@@ -942,10 +809,13 @@ def main():
                         real_step = (int(env_counter)-1) * config.num_updates + int(update_step)
 
                         env_name = config.layout_name[env_counter-1]
-                        if env_name in practical_baselines:
-                            metric["Scaled returns/returned_episode_returns_scaled"] = metric["returned_episode_returns"] / practical_baselines[env_name]["avg_rewards"]
+                        bare_layout = env_name.split("__")[1].strip()
+                        if bare_layout in practical_baselines:
+                            metric["Scaled returns/returned_episode_returns_scaled"] = (
+                                metric["returned_episode_returns"] / practical_baselines[bare_layout]["avg_rewards"])
                         else:
-                            metric["Scaled returns/returned_episode_returns_scaled"] = metric["returned_episode_returns"]  # No scaling if no baseline
+                            print("Warning: No baseline data for environment: ", bare_layout)
+                            metric["Scaled returns/returned_episode_returns_scaled"] = metric["returned_episode_returns"]  
 
                         for key, value in metric.items():
                             writer.add_scalar(key, value, real_step)
@@ -1034,13 +904,6 @@ def main():
     rng, train_rng = jax.random.split(rng)
     # apply the loop_over_envs function to the environments
     runner_state = loop_over_envs(train_rng, train_state, envs)
-    
-
-def sample_discrete_action(key, action_space):
-    """Samples a discrete action based on the action space provided."""
-    num_actions = action_space.n
-    return jax.random.randint(key, (1,), 0, num_actions)
-
 
 if __name__ == "__main__":
     print("Running main...")

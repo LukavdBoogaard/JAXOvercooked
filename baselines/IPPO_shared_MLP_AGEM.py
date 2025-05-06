@@ -10,9 +10,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 from dotenv import load_dotenv
-from flax import struct
 from flax.core.frozen_dict import freeze, unfreeze
-from flax.linen.initializers import constant, orthogonal
 from flax.training.train_state import TrainState
 
 from jax_marl.environments.env_selection import generate_sequence
@@ -20,172 +18,24 @@ from jax_marl.environments.overcooked_environment import overcooked_layouts
 from jax_marl.registration import make
 from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
 from jax_marl.wrappers.baselines import LogWrapper
+from architectures.shared_mlp import ActorCritic
+from baselines.utils import Transition, batchify, unbatchify, make_task_onehot
+from cl_methods.AGEM import (
+    init_agem_memory, 
+    sample_memory, 
+    compute_memory_gradient,
+    agem_project, 
+    update_agem_memory
+)
 
 os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
 
+from omegaconf import OmegaConf
 import wandb
 from functools import partial
 from dataclasses import dataclass, field
 import tyro
 from tensorboardX import SummaryWriter
-
-
-# Enable compile logging if desired
-# jax.log_compiles(True)
-
-
-def choose_head(out: jnp.ndarray, num_heads: int, env_idx: int) -> jnp.ndarray:
-    # out has shape (batch, base_dim * num_heads)
-    batch = out.shape[0]
-    base_dim = out.shape[1] // num_heads
-    out = out.reshape(batch, num_heads, base_dim)
-    return out[:, env_idx, :]
-
-
-class ActorCritic(nn.Module):
-    action_dim: int
-    activation: str = "tanh"
-    use_multihead: bool = False
-    num_tasks: int = 1
-    shared_backbone: bool = False
-
-    def setup(self):
-        if self.activation == "relu":
-            self.activation_fn = nn.relu
-        else:
-            self.activation_fn = nn.tanh
-
-        if self.shared_backbone:
-            # New architecture: shared trunk and multihead logic
-            self.fc1 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0), name="common_dense1")
-            self.fc2 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0), name="common_dense2")
-            self.fc3 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0), name="common_dense3")
-            self.critic_fc1 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
-                                       name="critic_dense1")
-            self.critic_fc2 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
-                                       name="critic_dense2")
-            self.critic_fc3 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
-                                       name="critic_dense3")
-            actor_head_size = self.action_dim * (self.num_tasks if self.use_multihead else 1)
-            critic_head_size = 1 * (self.num_tasks if self.use_multihead else 1)
-            self.actor_head = nn.Dense(actor_head_size, kernel_init=orthogonal(0.01), bias_init=constant(0.0),
-                                       name="actor_head")
-            self.critic_head = nn.Dense(critic_head_size, kernel_init=orthogonal(1.0), bias_init=constant(0.0),
-                                        name="critic_head")
-        else:
-            # Separate trunk: each branch is its own network
-
-            # Actor branch
-            self.actor_dense1 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
-                                         name="actor_dense1")
-            self.actor_dense2 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
-                                         name="actor_dense2")
-            self.actor_dense3 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
-                                         name="actor_dense3")
-            # If using multihead, output dimension is action_dim*num_tasks.
-            actor_out_dim = self.action_dim * self.num_tasks if self.use_multihead else self.action_dim
-            self.actor_out = nn.Dense(actor_out_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0),
-                                      name="actor_head")
-
-            # Critic branch
-            self.critic_dense1 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
-                                          name="critic_dense1")
-            self.critic_dense2 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
-                                          name="critic_dense2")
-            self.critic_dense3 = nn.Dense(256, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
-                                          name="critic_dense3")
-            critic_out_dim = 1 * self.num_tasks if self.use_multihead else 1
-            self.critic_out = nn.Dense(critic_out_dim, kernel_init=orthogonal(1.0), bias_init=constant(0.0),
-                                       name="critic_head")
-
-    def __call__(self, x, env_idx=0):
-
-        if self.shared_backbone:
-            x = self.fc1(x)
-            x = self.activation_fn(x)
-            x = self.fc2(x)
-            x = self.activation_fn(x)
-            x = self.fc3(x)
-            x = self.activation_fn(x)
-            if self.use_multihead:
-                # Concatenate and then select the correct head
-                actor_concat = self.actor_head(x)
-                actor_logits = choose_head(actor_concat, self.num_tasks, env_idx)
-            else:
-                actor_logits = self.actor_head(x)
-            pi = distrax.Categorical(logits=actor_logits)
-            v = self.critic_fc1(x)
-            v = self.activation_fn(v)
-            v = self.critic_fc2(v)
-            v = self.activation_fn(v)
-            v = self.critic_fc3(v)
-            v = self.activation_fn(v)
-            if self.use_multihead:
-                critic_concat = self.critic_head(v)
-                v = choose_head(critic_concat, self.num_tasks, env_idx)
-            else:
-                v = self.critic_head(v)
-            v = jnp.squeeze(v, axis=-1)
-            return pi, v
-        else:
-            # Actor branch: separate trunk
-            actor = self.actor_dense1(x)
-            actor = self.activation_fn(actor)
-            actor = self.actor_dense2(actor)
-            actor = self.activation_fn(actor)
-            actor = self.actor_dense3(actor)
-            actor = self.activation_fn(actor)
-            actor_all = self.actor_out(actor)
-            if self.use_multihead:
-                actor_logits = choose_head(actor_all, self.num_tasks, env_idx)
-            else:
-                actor_logits = actor_all
-            pi = distrax.Categorical(logits=actor_logits)
-
-            # Critic branch: separate trunk
-            critic = self.critic_dense1(x)
-            critic = self.activation_fn(critic)
-            critic = self.critic_dense2(critic)
-            critic = self.activation_fn(critic)
-            critic = self.critic_dense3(critic)
-            critic = self.activation_fn(critic)
-            critic_all = self.critic_out(critic)
-            if self.use_multihead:
-                value = choose_head(critic_all, self.num_tasks, env_idx)
-            else:
-                value = critic_all
-            value = jnp.squeeze(value, axis=-1)
-            return pi, value
-
-
-class Transition(NamedTuple):
-    '''
-    Named tuple to store the transition information
-    '''
-    done: jnp.ndarray  # whether the episode is done
-    action: jnp.ndarray  # the action taken
-    value: jnp.ndarray  # the value of the state
-    reward: jnp.ndarray  # the reward received
-    log_prob: jnp.ndarray  # the log probability of the action
-    obs: jnp.ndarray  # the observation
-    # info: jnp.ndarray # additional information
-
-
-@struct.dataclass
-class AGEMMemory:
-    obs: jnp.ndarray
-    actions: jnp.ndarray
-    log_probs: jnp.ndarray
-    advantages: jnp.ndarray
-    targets: jnp.ndarray
-    values: jnp.ndarray
-
-
-def make_task_onehot(task_idx: int, num_tasks: int) -> jnp.ndarray:
-    """
-    Returns a one-hot vector of length `num_tasks` with a 1 at `task_idx`.
-    """
-    return jnp.eye(num_tasks, dtype=jnp.float32)[task_idx]
 
 
 @dataclass
@@ -206,7 +56,8 @@ class Config:
     explore_fraction: float = 0.0
     activation: str = "tanh"
     env_name: str = "overcooked"
-    alg_name: str = "IPPO"
+    alg_name: str = "ippo"
+    network_architecture: str = "mlp_shared"
     use_task_id: bool = False
     use_multihead: bool = False
     shared_backbone: bool = False
@@ -223,9 +74,9 @@ class Config:
     )
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
-    log_interval: int = 75  # log every n calls to update step
-    eval_num_steps: int = 1000  # number of steps to evaluate the model
-    eval_num_episodes: int = 5  # number of episodes to evaluate the model
+    log_interval: int = 75
+    eval_num_steps: int = 1000
+    eval_num_episodes: int = 5
     gif_len: int = 300
 
     anneal_lr: bool = False
@@ -235,182 +86,13 @@ class Config:
     # Wandb settings
     wandb_mode: str = "online"
     entity: Optional[str] = ""
-    project: str = "ippo_continual"
+    project: str = "COOX"
     tags: List[str] = field(default_factory=list)
 
     # to be computed during runtime
     num_actors: int = 0
     num_updates: int = 0
     minibatch_size: int = 0
-
-
-############################
-###### AGEM FUNCTIONS ######
-############################
-
-
-def init_agem_memory(max_memory_size: int, obs_dim: int):
-    return AGEMMemory(
-        obs=jnp.zeros((max_memory_size, obs_dim)),
-        actions=jnp.zeros((max_memory_size,)),
-        log_probs=jnp.zeros((max_memory_size,)),
-        advantages=jnp.zeros((max_memory_size,)),
-        targets=jnp.zeros((max_memory_size,)),
-        values=jnp.zeros((max_memory_size,)),
-    )
-
-
-def agem_project(grads_ppo, grads_mem):
-    """
-    Implements the AGEM projection:
-      If g_new^T g_mem < 0:
-         g_new := g_new - (g_new^T g_mem / ||g_mem||^2) * g_mem
-    """
-    dot_g = sum([jnp.vdot(gn, gm) for gn, gm in zip(jax.tree_util.tree_leaves(grads_ppo),
-                                                    jax.tree_util.tree_leaves(grads_mem))])
-    dot_mem = sum([jnp.vdot(gm, gm2) for gm, gm2 in zip(jax.tree_util.tree_leaves(grads_mem),
-                                                        jax.tree_util.tree_leaves(grads_mem))])
-
-    def project_fn(g_new):
-        # Scale factor
-        alpha = dot_g / (dot_mem + 1e-12)
-        # Sub each leaf: g_new := g_new - alpha*g_mem
-        return jax.tree_util.tree_map(lambda gn, gm: gn - alpha * gm, g_new, grads_mem)
-
-    grads_projected = jax.lax.cond(
-        dot_g < 0.0,
-        project_fn,
-        lambda x: x,
-        grads_ppo
-    )
-    stats = {
-        "agem/dot_g": dot_g,
-        "agem/dot_mem": dot_mem,
-        "agem/alpha": dot_g / (dot_mem + 1e-12),
-        "agem/is_projected": (dot_g < 0.0),
-    }
-    return grads_projected, stats
-
-
-def sample_memory(agem_mem: AGEMMemory, sample_size: int, rng: jax.random.PRNGKey):
-    idxs = jax.random.randint(rng, (sample_size,), minval=0, maxval=agem_mem.obs.shape[0])
-    obs = agem_mem.obs[idxs]
-    actions = agem_mem.actions[idxs]
-    log_probs = agem_mem.log_probs[idxs]
-    advs = agem_mem.advantages[idxs]
-    targets = agem_mem.targets[idxs]
-    vals = agem_mem.values[idxs]
-    return obs, actions, log_probs, advs, targets, vals
-
-
-def compute_memory_gradient(network, params,
-                            clip_eps, vf_coef, ent_coef,
-                            mem_obs, mem_actions,
-                            mem_advs, mem_log_probs,
-                            mem_targets, mem_values):
-    """Compute the same clipped PPO loss on the memory data."""
-
-    def loss_fn(params):
-        pi, value = network.apply(params, mem_obs)  # shapes: [B]
-        log_prob = pi.log_prob(mem_actions)
-
-        ratio = jnp.exp(log_prob - mem_log_probs)
-        # standard advantage normalization
-        adv_std = jnp.std(mem_advs) + 1e-8
-        adv_mean = jnp.mean(mem_advs)
-        normalized_adv = (mem_advs - adv_mean) / adv_std
-
-        unclipped = ratio * normalized_adv
-        clipped = jnp.clip(ratio, 1.0 - clip_eps, 1.0 + clip_eps) * normalized_adv
-        actor_loss = -jnp.mean(jnp.minimum(unclipped, clipped))
-
-        # Critic Loss (same as normal PPO)
-        value_pred_clipped = mem_values + (value - mem_values).clip(-clip_eps, clip_eps)
-        value_losses = (value - mem_targets) ** 2
-        value_losses_clipped = (value_pred_clipped - mem_targets) ** 2
-        critic_loss = 0.5 * jnp.mean(jnp.maximum(value_losses, value_losses_clipped))
-
-        entropy = jnp.mean(pi.entropy())
-
-        total_loss = actor_loss + vf_coef * critic_loss - ent_coef * entropy
-        return total_loss, (critic_loss, actor_loss, entropy)
-
-    (total_loss, (v_loss, a_loss, ent)), grads = jax.value_and_grad(loss_fn, has_aux=True)(params)
-    stats = {
-        "agem/ppo_total_loss": total_loss,
-        "agem/ppo_value_loss": v_loss,
-        "agem/ppo_actor_loss": a_loss,
-        "agem/ppo_entropy": ent
-    }
-    return grads, stats
-
-
-def update_agem_memory(agem_mem: AGEMMemory,
-                       new_obs, new_actions, new_log_probs,
-                       new_advantages, new_targets, new_values,
-                       max_memory_size: int) -> AGEMMemory:
-    """
-    Insert new transitions into our ring-buffer memory, all at once.
-    `new_obs` shape: [B, obs_dim]
-    The others shape: [B]
-    We'll just do a simple "append and keep last max_memory_size".
-    """
-    # Concat
-    obs_combined = jnp.concatenate([agem_mem.obs, new_obs], axis=0)
-    actions_combined = jnp.concatenate([agem_mem.actions, new_actions], axis=0)
-    log_probs_combined = jnp.concatenate([agem_mem.log_probs, new_log_probs], axis=0)
-    advs_combined = jnp.concatenate([agem_mem.advantages, new_advantages], axis=0)
-    targets_combined = jnp.concatenate([agem_mem.targets, new_targets], axis=0)
-    vals_combined = jnp.concatenate([agem_mem.values, new_values], axis=0)
-
-    total_len = obs_combined.shape[0]
-    if total_len > max_memory_size:
-        keep_slice = slice(total_len - max_memory_size, total_len)
-        obs_combined = obs_combined[keep_slice]
-        actions_combined = actions_combined[keep_slice]
-        log_probs_combined = log_probs_combined[keep_slice]
-        advs_combined = advs_combined[keep_slice]
-        targets_combined = targets_combined[keep_slice]
-        vals_combined = vals_combined[keep_slice]
-
-    return AGEMMemory(
-        obs=obs_combined,
-        actions=actions_combined,
-        log_probs=log_probs_combined,
-        advantages=advs_combined,
-        targets=targets_combined,
-        values=vals_combined,
-    )
-
-
-############################
-##### HELPER FUNCTIONS #####
-############################
-
-def batchify(x: dict, agent_list, num_actors):
-    '''
-    converts the observations of a batch of agents into an array of size (num_actors, -1) that can be used by the network
-    @param x: dictionary of observations
-    @param agent_list: list of agents
-    @param num_actors: number of actors
-    returns the batchified observations
-    '''
-    x = jnp.stack([x[a] for a in agent_list])
-    return x.reshape((num_actors, -1))
-
-
-def unbatchify(x: jnp.ndarray, agent_list, num_envs, num_actors):
-    '''
-    converts the array of size (num_actors, -1) into a dictionary of observations for all agents
-    @param x: array of observations
-    @param agent_list: list of agents
-    @param num_envs: number of environments
-    @param num_actors: number of actors
-    returns the unbatchified observations
-    '''
-    x = x.reshape((num_actors, num_envs, -1))
-    return {a: x[i] for i, a in enumerate(agent_list)}
-
 
 ############################
 ##### MAIN FUNCTION    #####
@@ -427,18 +109,19 @@ def main():
     config = tyro.cli(Config)
 
     # generate a sequence of tasks
-    seq_length = config.seq_length
-    strategy = config.strategy
-    layouts = config.layouts
-    config.env_kwargs, config.layout_name = generate_sequence(seq_length, strategy, layout_names=layouts,
-                                                              seed=config.seed)
+    config.env_kwargs, config.layout_name = generate_sequence(
+        sequence_length=config.seq_length, 
+        strategy=config.strategy, 
+        layout_names=config.layouts, 
+        seed=config.seed
+    )
 
     for layout_config in config.env_kwargs:
         layout_name = layout_config["layout"]
         layout_config["layout"] = overcooked_layouts[layout_name]
 
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    run_name = f'{config.alg_name}_EWC_seq{config.seq_length}_{config.strategy}_{timestamp}'
+    timestamp = datetime.now().strftime("%m-%d_%H-%M")
+    run_name = f'{config.alg_name}_AGEM_{config.network_architecture}_seq{config.seq_length}_{config.strategy}_{timestamp}'
     exp_dir = os.path.join("runs", run_name)
 
     # Initialize WandB
@@ -446,7 +129,7 @@ def main():
     wandb_tags = config.tags if config.tags is not None else []
     wandb.login(key=os.environ.get("WANDB_API_KEY"))
     wandb.init(
-        project='Continual_IPPO',
+        project=config.project,
         config=config,
         sync_tensorboard=True,
         mode=config.wandb_mode,
@@ -596,7 +279,7 @@ def main():
                 @param state: the current state of the loop
                 returns a boolean indicating whether the loop should continue
                 '''
-                return jnp.logical_and(~state.done, state.step_count < max_steps)
+                return jnp.logical_and(jnp.logical_not(state.done), state.step_count < max_steps)
 
             def body_fun(state: EvalState):
                 '''
@@ -689,9 +372,8 @@ def main():
     padded_envs = pad_observation_space()
 
     envs = []
-    for i, env_layout in enumerate(padded_envs):
-        # TODO config.layouts[i] doesn't work for a random order
-        env = make(config.env_name, layout=env_layout, layout_name=config.layouts[i])
+    for env_layout in padded_envs:
+        env = make(config.env_name, layout=env_layout)
         env = LogWrapper(env, replace_info=False)
         envs.append(env)
 
@@ -720,8 +402,11 @@ def main():
     )
 
     # global network
-    network = ActorCritic(temp_env.action_space().n, activation=config.activation, use_multihead=config.use_multihead,
-                          num_tasks=config.seq_length, shared_backbone=config.shared_backbone)
+    network = ActorCritic(temp_env.action_space().n, 
+                          activation=config.activation, 
+                          use_multihead=config.use_multihead,
+                          num_tasks=config.seq_length, 
+                          shared_backbone=config.shared_backbone)
 
     obs_dim = np.prod(temp_env.observation_space().shape)
 
@@ -751,17 +436,21 @@ def main():
         tx=tx
     )
 
-    @partial(jax.jit, static_argnums=(2))
-    def train_on_environment(rng, train_state, env_idx, agem_mem):
+    # Load the practical baseline yaml file as a dictionary
+    repo_root = "/home/luka/repo/JAXOvercooked"
+    yaml_loc = os.path.join(repo_root, "practical_reward_baseline_results.yaml")
+    with open(yaml_loc, "r") as f:
+        practical_baselines = OmegaConf.load(f)
+
+    @partial(jax.jit, static_argnums=(2,3))
+    def train_on_environment(rng, train_state, env, env_idx, agem_mem):
         '''
         Trains the network using IPPO
         @param rng: random number generator
         returns the runner state and the metrics
         '''
 
-        env = envs[env_idx]
-
-        print(f"Training on environment {env_idx}: {env.name}")
+        print(f"Training on environment: {config.layout_name[env_idx]}")
 
         # How many steps to explore the environment with random actions
         exploration_steps = int(config.explore_fraction * config.total_timesteps)
@@ -851,8 +540,11 @@ def main():
                 current_timestep = update_step * config.num_steps * config.num_envs
 
                 # add the shaped reward to the normal reward
-                reward = jax.tree_util.tree_map(lambda x, y: x + y * rew_shaping_anneal(current_timestep), reward,
-                                                info["shaped_reward"])
+                reward = jax.tree_util.tree_map(lambda x,y: 
+                                                x+y * rew_shaping_anneal(current_timestep),
+                                                reward,
+                                                info["shaped_reward"]
+                                                )
 
                 transition = Transition(
                     batchify(done, env.agents, config.num_actors).squeeze(),
@@ -1132,7 +824,7 @@ def main():
 
             # General section
             # Update the step counter
-            update_step = update_step + 1
+            update_step += 1
             mean_explore = jnp.mean(info["explore"])
 
             metric["General/env_index"] = env_idx
@@ -1172,6 +864,7 @@ def main():
             # Evaluation section
             for i in range(len(config.layout_name)):
                 metric[f"Evaluation/{config.layout_name[i]}"] = jnp.nan
+                metric[f"Scaled returns/evaluation_{config.layout_name[i]}_scaled"] = jnp.nan
 
             def evaluate_and_log(rng, update_step):
                 rng, eval_rng = jax.random.split(rng)
@@ -1179,14 +872,36 @@ def main():
 
                 def log_metrics(metric, update_step):
                     evaluations = evaluate_model(train_state_eval, eval_rng, env_idx)
-                    for i, evaluation in enumerate(evaluations):
-                        metric[f"Evaluation/{config.layout_name[i]}"] = evaluation
-
+                    for i, layout_name in enumerate(config.layout_name):
+                        metric[f"Evaluation/{layout_name}"] = evaluations[i]
+                        
+                        # Add error handling for missing baseline entries
+                        bare_layout = layout_name.split("__")[1]
+                        try:
+                            if bare_layout in practical_baselines:
+                                baseline_reward = practical_baselines[bare_layout]["avg_rewards"]
+                                metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i] / baseline_reward
+                            else:
+                                print(f"Warning: No baseline data for environment '{bare_layout}'")
+                                # Use 1.0 as default normalization factor (no scaling)
+                                metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
+                        except Exception as e:
+                            print(f"Error scaling rewards for {layout_name}: {e}")
+                            metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
+                    
                     def callback(args):
                         metric, update_step, env_counter = args
-                        update_step = int(update_step)
-                        env_counter = int(env_counter)
-                        real_step = (env_counter - 1) * config.num_updates + update_step
+                        real_step = (int(env_counter)-1) * config.num_updates + int(update_step)
+                        
+                        env_name = config.layout_name[env_counter-1]
+                        bare_layout = env_name.split("__")[1].strip()
+                        if bare_layout in practical_baselines:
+                            metric["Scaled returns/returned_episode_returns_scaled"] = (
+                                metric["returned_episode_returns"] / practical_baselines[bare_layout]["avg_rewards"])
+                        else:
+                            print("Warning: No baseline data for environment: ", bare_layout)
+                            metric["Scaled returns/returned_episode_returns_scaled"] = metric["returned_episode_returns"]  
+
                         for key, value in metric.items():
                             writer.add_scalar(key, value, real_step)
 
@@ -1265,21 +980,21 @@ def main():
         returns the runner state and the metrics
         '''
         # split the random number generator for training on the environments
-        rngs = jax.random.split(rng, len(envs) + 1)
-        main_rng, sub_rngs = rngs[0], rngs[1:]
+        rng, *env_rngs = jax.random.split(rng, len(envs)+1)
 
         visualizer = OvercookedVisualizer()
 
         runner_state = None
-        for i, (env_rng, _) in enumerate(zip(sub_rngs, envs)):
-            (train_state, rng, agem_mem) = train_on_environment(env_rng, train_state, i, agem_mem)
+        for i, (rng, env) in enumerate(zip(env_rngs, envs)):
+            (train_state, rng, agem_mem) = train_on_environment(rng, train_state, env, i, agem_mem)
 
             # Generate & log a GIF after finishing task i
-            states = record_gif_of_episode(config, train_state, envs[i], network, env_idx=i, max_steps=config.gif_len)
-            visualizer.animate(states, agent_view_size=5, task_idx=i, task_name=envs[i].name, exp_dir=exp_dir)
+            env_name = config.layout_name[i]
+            states = record_gif_of_episode(config, train_state, env, network, env_idx=i, max_steps=config.gif_len)
+            visualizer.animate(states, agent_view_size=5, task_idx=i, task_name=env_name, exp_dir=exp_dir)
 
             # save the model
-            path = f"checkpoints/overcooked/EWC/{run_name}/model_env_{i + 1}"
+            path = f"checkpoints/overcooked/AGEM/{run_name}/model_env_{i + 1}"
             save_params(path, train_state)
 
         return runner_state
