@@ -370,7 +370,7 @@ WWWWWWWWW
 basic_cooperative = """
 WWWWWWWWW
 WPOAW   W
-WWWW    W
+W WW    W
 W       W
 W       W
 W   AWXBW
@@ -422,7 +422,7 @@ WA  X   W
 WWWWWWWWW
 """
 
-forced_teamwork = """
+c_kichten = """
 WWWWWPWWWW
 WA       W
 W  WWW   W
@@ -454,6 +454,7 @@ WWWWWWW
 bottleneck_small = """
 WWWWWWWW
 W AP  OW
+W      W
 W WWWWWW
 W      W
 WB A XWW
@@ -492,7 +493,7 @@ overcooked_layouts = {
     "split_work" : layout_grid_to_dict(split_work),
     "resource_sharing" : layout_grid_to_dict(resource_sharing),
     "efficiency_test" : layout_grid_to_dict(efficiency_test),
-    "forced_teamwork" : layout_grid_to_dict(forced_teamwork),
+    "c_kitchen" : layout_grid_to_dict(c_kitchen),
     "most_efficient" : layout_grid_to_dict(most_efficient),
     "most_efficient_horizontal" : layout_grid_to_dict(most_efficient_horizontal),
     "bottleneck_small" : layout_grid_to_dict(bottleneck_small),
