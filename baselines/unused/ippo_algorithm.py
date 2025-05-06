@@ -132,7 +132,7 @@ class Config:
     # Wandb settings
     wandb_mode: str = "online"
     entity: Optional[str] = ""
-    project: str = "ippo_continual"
+    project: str = "COOX"
 
     # to be computed during runtime
     num_actors: int = 0
