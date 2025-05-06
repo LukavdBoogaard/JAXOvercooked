@@ -398,7 +398,7 @@ def make_task_onehot(task_idx: int, num_tasks: int) -> jnp.ndarray:
 
 @dataclass
 class Config:
-    reg_coef: float = 5e7
+    reg_coef: float = 2e7
     lr: float = 3e-4
     num_envs: int = 16
     num_steps: int = 128
@@ -420,6 +420,8 @@ class Config:
     use_multihead: bool = False
     shared_backbone: bool = False
     normalize_fisher: bool = False
+    fisher_episodes: int = 5
+    fisher_steps: int = 500
     regularize_critic: bool = False
     regularize_heads: bool = True
 
@@ -1257,8 +1259,8 @@ def main():
 
             # --- Compute new Fisher, then update ewc_state for next tasks ---
             # fisher = compute_fisher_with_rollouts(config, train_state, envs[i], network, i, r, config.use_task_id, seq_length, i, config.normalize_fisher)
-            fisher = compute_fisher_with_rollouts(config, train_state, envs[i], network, i, r,
-                                                  normalize_fisher=config.normalize_fisher)
+            fisher = compute_fisher_with_rollouts(config, train_state, envs[i], network, i, r, config.fisher_episodes,
+                                                  config.fisher_steps, config.normalize_fisher)
             cl_state = update_ewc_state(cl_state, train_state.params, fisher)
 
             # Generate & log a GIF after finishing task i
