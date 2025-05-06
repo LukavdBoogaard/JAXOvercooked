@@ -1,8 +1,11 @@
+import os
 import jax
 import jax.numpy as jnp
 from typing import NamedTuple, Any
 from flax.core.frozen_dict import FrozenDict, freeze, unfreeze
 from flax.linen import Module
+from matplotlib import pyplot as plt
+import seaborn as sns
 import numpy as np
 from functools import partial
 
@@ -82,36 +85,94 @@ def compute_fwt(matrix):
 
     num_tasks = matrix.shape[1]
 
-    # Create a 2D array to store the forward transfer values
-    fwt = jnp.full((num_tasks,), jnp.nan)
+    fwt_matrix = np.full((num_tasks, num_tasks), np.nan)
 
-    for i in range(num_tasks):
-        # the first task has no forward transfer
-        if i == 0:
-            continue
-        # Compute the forward transfer for task i
-        fwt = fwt.at[i].set(matrix[i, i] - matrix[0, i]) 
+    for i in range(1, num_tasks):
+        for j in range(i):  # j < i
+            before_learning = matrix[0, i]
+            after_task_j = matrix[j + 1, i]
+            fwt_matrix[i, j] = after_task_j - before_learning
 
-    avg_fwt = jnp.nanmean(fwt)
-    return fwt, avg_fwt
+    return fwt_matrix
 
 def compute_bwt(matrix):
     """
     Computes the backward transfer for all tasks in a sequence
     param matrix: a 2D array of shape (num_tasks + 1, num_tasks) where each entry is the performance of the model on the task
     """
-    # Assert that the matrix has the correct shape
     assert matrix.shape[0] == matrix.shape[1] + 1, "Matrix must have shape (num_tasks + 1, num_tasks)"
-
     num_tasks = matrix.shape[1]
-    bwt_series = []
-    # Create a 2D array to store the backward transfer values
-    bwt_avg = jnp.full((num_tasks,), jnp.nan)
+
+    bwt_matrix = jnp.full((num_tasks, num_tasks), jnp.nan)
 
     for i in range(num_tasks-1):
-        difference = matrix[i+2, i+1] - matrix[i+1,i+1]
-        bwt_series.append(difference)
-        bwt_avg = bwt_avg.at[i].set(jnp.nanmean(difference))
+        for j in range(i + 1, num_tasks):
+            after_j = matrix[j+1, i]   # performance on task i after learning task j
+            after_i = matrix[i+1, i]   # performance on task i after learning task i
+            bwt_matrix = bwt_matrix.at[i, j].set(after_j - after_i)
 
-    return bwt_series, bwt_avg
+    return bwt_matrix
 
+
+def show_heatmap_bwt(matrix, run_name, save_folder="heatmap_images"):
+    # Ensure the save folder exists
+    if not os.path.exists(save_folder):
+        os.makedirs(save_folder)
+
+    bwt_matrix = compute_bwt(matrix)
+    avg_bwt_per_step = np.nanmean(bwt_matrix, axis=0)
+
+    fig, ax = plt.subplots(figsize=(10, 7))
+    sns.heatmap(bwt_matrix, annot=True, cmap="coolwarm", center=0, fmt=".2f",
+                xticklabels=[f"Task {j}" for j in range(bwt_matrix.shape[1])],
+                yticklabels=[f"Task {i}" for i in range(bwt_matrix.shape[0])],
+                cbar_kws={"label": "BWT"})
+    ax.set_title("Progressive Backward Transfer Matrix")
+    ax.set_xlabel("Task B")
+    ax.set_ylabel("Task A")
+    plt.xticks(rotation=45, ha='right', rotation_mode='anchor')
+
+    # Add average BWT per step below the heatmap
+    for j, val in enumerate(avg_bwt_per_step):
+        if not np.isnan(val):
+            ax.text(j + 0.5, len(avg_bwt_per_step) + 0.2, f"{val:.2f}", 
+                    ha='center', va='bottom', fontsize=9, color='black')
+    plt.text(-0.7, len(avg_bwt_per_step) + 0.2, "Avg", fontsize=10, va='bottom', weight='bold')
+
+    plt.tight_layout()
+
+    # Save the figure
+    file_path = os.path.join(save_folder, f"{run_name}_bwt_heatmap.png")
+    plt.savefig(file_path)
+    plt.close() 
+
+def show_heatmap_fwt(matrix, run_name, save_folder="heatmap_images"):
+    if not os.path.exists(save_folder):
+        os.makedirs(save_folder)
+
+    fwt_matrix = compute_fwt(matrix)
+    avg_fwt_per_step = np.nanmean(fwt_matrix, axis=0)
+
+    fig, ax = plt.subplots(figsize=(10, 7))
+    sns.heatmap(fwt_matrix, annot=True, cmap="coolwarm", center=0, fmt=".2f",
+                xticklabels=[f"Task {j}" for j in range(fwt_matrix.shape[1])],
+                yticklabels=[f"Task {i}" for i in range(fwt_matrix.shape[0])],
+                cbar_kws={"label": "FWT"})
+    ax.set_title("Progressive Forward Transfer Matrix")
+    ax.set_xlabel("Task B")
+    ax.set_ylabel("Task A")
+
+    plt.xticks(rotation=45, ha='right', rotation_mode='anchor')
+
+    for j, val in enumerate(avg_fwt_per_step):
+        if not np.isnan(val):
+            ax.text(j + 0.5, len(avg_fwt_per_step) + 0.2, f"{val:.2f}", 
+                    ha='center', va='bottom', fontsize=9, color='black')
+
+    plt.text(-0.7, len(avg_fwt_per_step) + 0.2, "Avg", fontsize=10, va='bottom', weight='bold')
+
+    plt.tight_layout()
+
+    file_path = os.path.join(save_folder, f"{run_name}_fwt_heatmap.png")
+    plt.savefig(file_path)
+    plt.close()

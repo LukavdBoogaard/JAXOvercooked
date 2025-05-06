@@ -27,7 +27,13 @@ from jax_marl.environments.env_selection import generate_sequence
 from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
 from architectures.decoupled_mlp import Actor, Critic
 from cl_methods.Packnet import Packnet, PacknetState
-from baselines.utils import Transition, batchify, unbatchify, sample_discrete_action
+from baselines.utils import (Transition, 
+                             batchify, 
+                             unbatchify, 
+                             sample_discrete_action,
+                             make_task_onehot,
+                             show_heatmap_bwt,
+                             show_heatmap_fwt,)
 from dotenv import load_dotenv
 import os
 os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
@@ -456,8 +462,7 @@ def main():
         end_value=0.,
         transition_steps=config.reward_shaping_horizon
     )
-
-
+    
     actor = Actor(
         action_dim=temp_env.action_space().n, 
         activation=config.activation
@@ -1053,11 +1058,20 @@ def main():
         @param envs: the environments
         returns the runner state and the metrics
         '''
+        actor_train_state, critic_train_state = train_states
+
         # split the random number generator for training on the environments
         rng, *env_rngs = jax.random.split(rng, len(envs)+1)
 
         # counter for the environment 
         env_counter = 1
+
+        evaluation_matrix = jnp.zeros(((len(envs)+1), len(envs)))
+
+        # Evaluate the model on all environments before training
+        rng, eval_rng = jax.random.split(rng)
+        evaluations = evaluate_model(actor_train_state, eval_rng)
+        evaluation_matrix = evaluation_matrix.at[0,:].set(evaluations)
 
         for env_rng, env in zip(env_rngs, envs):
             # Call the train_on_environment function - CHANGE THIS LINE:
@@ -1066,12 +1080,20 @@ def main():
             # unpack the runner state
             train_states, env_state, packnet_state, last_obs, update_step, grads, rng = runner_state
 
+            # Evaluate at the end of training to get the average performance of the task right after training
+            evaluations = evaluate_model(train_states[0], rng)
+            evaluation_matrix = evaluation_matrix.at[env_counter,:].set(evaluations)
+
             # save the model
             path = f"checkpoints/overcooked/{run_name}/model_env_{env_counter}"
             save_params(path, train_states)
 
             # update the environment counter
             env_counter += 1
+        
+        # calculate the forward transfer and backward transfer
+        show_heatmap_bwt(evaluation_matrix, run_name)
+        show_heatmap_fwt(evaluation_matrix, run_name)
 
         return runner_state
 

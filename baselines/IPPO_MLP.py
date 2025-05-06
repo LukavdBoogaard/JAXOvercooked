@@ -27,8 +27,8 @@ from baselines.utils import (Transition,
                              batchify, 
                              unbatchify, 
                              sample_discrete_action,
-                             compute_bwt,
-                             compute_fwt)
+                             show_heatmap_bwt,
+                             show_heatmap_fwt,)
 
 from dotenv import load_dotenv
 import os
@@ -62,7 +62,7 @@ class Config:
     alg_name: str = "ippo"
     network_architecture: str = "mlp"
 
-    seq_length: int = 3
+    seq_length: int = 2
     strategy: str = "random"
     layouts: Optional[Sequence[str]] = field(default_factory=lambda: ["asymm_advantages", "smallest_kitchen", "cramped_room", "easy_layout", "square_arena", "no_cooperation"])
     env_kwargs: Optional[Sequence[dict]] = None
@@ -347,7 +347,7 @@ def main():
             avg_reward = jnp.mean(all_rewards)
             all_avg_rewards.append(avg_reward)
 
-        return all_avg_rewards
+        return jnp.array(all_avg_rewards)
     
     def get_rollout_for_visualization():
         '''
@@ -898,7 +898,7 @@ def main():
         # Evaluate the model on all environments before training
         rng, eval_rng = jax.random.split(rng)
         evaluations = evaluate_model(train_state, network, eval_rng)
-        evaluation_matrix.at[0].set(evaluations)
+        evaluation_matrix = evaluation_matrix.at[0,:].set(evaluations)
 
         for env_rng, env in zip(env_rngs, envs):
             runner_state, metrics = train_on_environment(env_rng, train_state, env, env_counter)
@@ -908,7 +908,7 @@ def main():
 
             # Evaluate at the end of training to get the average performance of the task right after training
             evaluations = evaluate_model(train_state, network, rng)
-            evaluation_matrix.at[env_counter].set(evaluations)
+            evaluation_matrix = evaluation_matrix.at[env_counter,:].set(evaluations)
 
             # save the model
             path = f"checkpoints/overcooked/{run_name}/model_env_{env_counter}"
@@ -918,20 +918,10 @@ def main():
             env_counter += 1
         
         # calculate the forward transfer and backward transfer
-        fwt, avg_fwt = compute_fwt(evaluation_matrix)
-        bwt, avg_bwt = compute_bwt(evaluation_matrix)
+        show_heatmap_bwt(evaluation_matrix, run_name)
+        show_heatmap_fwt(evaluation_matrix, run_name)
 
-        print("Forward Transfer: ", fwt)
-        print("Average Forward Transfer: ", avg_fwt)
-        print("Backward Transfer: ", bwt)
-        print("Average Backward Transfer: ", avg_bwt)
-
-        # save the forward and backward transfer as a table
-        import pandas as pd
-        fwt_table = pd.DataFrame(fwt, columns=["Forward Transfer"])
-        bwt_table = pd.DataFrame(bwt, columns=["Backward Transfer"])
-        fwt_table.to_csv(f"checkpoints/overcooked/{run_name}/fwt.csv", index=False)
-        bwt_table.to_csv(f"checkpoints/overcooked/{run_name}/bwt.csv", index=False)
+        
 
         return runner_state
 
