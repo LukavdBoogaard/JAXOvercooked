@@ -165,9 +165,9 @@ def main():
         '''
         envs = []
         for env_args in config.env_kwargs:
-                # Create the environment
-                env = make(config.env_name, **env_args)
-                envs.append(env)
+            # Create the environment
+            env = make(config.env_name, **env_args)
+            envs.append(env)
 
         # find the environment with the largest observation space
         max_width, max_height = 0, 0
@@ -548,7 +548,6 @@ def main():
         returns the runner state and the metrics
         '''
         print("Training on environment")
-
         actor_train_state, critic_train_state = train_states
 
         # reset the learning rate and the optimizer
@@ -900,7 +899,10 @@ def main():
                     # add the general metrics to the metric dictionary
                     metric["General/update_step"] = update_step
                     metric["General/env_step"] = update_step * config.num_steps * config.num_envs
-                    metric["General/learning_rate"] = linear_schedule(update_step * config.num_minibatches * config.update_epochs)
+                    if config.anneal_lr:
+                        metric["General/learning_rate"] = linear_schedule(update_step * config.num_minibatches * config.update_epochs)
+                    else:
+                        metric["General/learning_rate"] = config.lr
 
                     # Losses section
                     metric["Losses/total_loss"] = loss_info["total_loss"].mean()
@@ -922,6 +924,7 @@ def main():
                     # Evaluation section
                     for i in range(len(config.layout_name)):
                         metric[f"Evaluation/{config.layout_name[i]}"] = jnp.nan
+                        metric[f"Scaled returns/evaluation_{config.layout_name[i]}_scaled"] = jnp.nan
 
                     evaluations = evaluate_model(actor_train_state_eval, eval_rng)
                     for i, layout_name in enumerate(config.layout_name):

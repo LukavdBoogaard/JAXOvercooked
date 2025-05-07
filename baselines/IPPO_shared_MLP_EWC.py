@@ -372,7 +372,6 @@ def main():
 
         return all_avg_rewards
 
-    # step 1: make sure all envs are the same size and create the environments
     padded_envs = pad_observation_space()
 
     envs = []
@@ -465,16 +464,13 @@ def main():
         obsv, env_state = jax.vmap(env.reset, in_axes=(0,))(reset_rng)
 
         # TRAIN
-        # @profile
         def _update_step(runner_state, _):
             '''
             perform a single update step in the training loop
             @param runner_state: the carry state that contains all important training information
             returns the updated runner state and the metrics
             '''
-
             # COLLECT TRAJECTORIES
-            # @profile
             def _env_step(runner_state, _):
                 '''
                 selects an action based on the policy, calculates the log probability of the action,
@@ -485,7 +481,6 @@ def main():
                 # Unpack the runner state
                 train_state, env_state, last_obs, update_step, steps_for_env, rng = runner_state
 
-                # SELECT ACTION
                 # split the random number generator for action selection
                 rng, _rng = jax.random.split(rng)
 
@@ -515,17 +510,17 @@ def main():
 
                 log_prob = pi.log_prob(action)
 
+                # format the actions to be compatible with the environment
+                env_act = unbatchify(action, env.agents, config.num_envs, env.num_agents)
+                env_act = {k:v.flatten() for k,v in env_act.items()}
+
                 # STEP ENV
                 # split the random number generator for stepping the environment
                 rng, _rng = jax.random.split(rng)
                 rng_step = jax.random.split(_rng, config.num_envs)
 
-                # format the actions to be compatible with the environment
-                env_act = unbatchify(action, env.agents, config.num_envs, env.num_agents)
-                env_act = {k: v.flatten() for k, v in env_act.items()}
-
                 # simultaniously step all environments with the selected actions (parallelized over the number of environments with vmap)
-                obsv, env_state, reward, done, info = jax.vmap(env.step, in_axes=(0, 0, 0))(
+                obsv, env_state, reward, done, info = jax.vmap(env.step, in_axes=(0,0,0))(
                     rng_step, env_state, env_act
                 )
 
@@ -613,7 +608,7 @@ def main():
 
                     return (gae, value), gae
 
-                # iteratively apply the _get_advantages function to calculate the advantage for each step in the trajectory batch
+                
                 _, advantages = jax.lax.scan(
                     f=_get_advantages,
                     init=(jnp.zeros_like(last_val), last_val),
@@ -672,18 +667,18 @@ def main():
                         gae = (gae - gae.mean()) / (gae.std() + 1e-8)
                         loss_actor_unclipped = ratio * gae
                         loss_actor_clipped = (
-                                jnp.clip(
-                                    ratio,
-                                    1.0 - config.clip_eps,
-                                    1.0 + config.clip_eps,
-                                )
-                                * gae
+                            jnp.clip(
+                                ratio,
+                                1.0 - config.clip_eps,
+                                1.0 + config.clip_eps,
+                            )
+                            * gae
                         )
 
                         loss_actor = -jnp.minimum(loss_actor_unclipped,
-                                                  loss_actor_clipped)  # calculate the actor loss as the minimum of the clipped and unclipped actor loss
-                        loss_actor = loss_actor.mean()  # calculate the mean of the actor loss
-                        entropy = pi.entropy().mean()  # calculate the entropy of the policy
+                                                  loss_actor_clipped) 
+                        loss_actor = loss_actor.mean()
+                        entropy = pi.entropy().mean()
 
                         # EWC penalty
                         ewc_penalty = compute_ewc_loss(params, cl_state, config.reg_coef)
@@ -708,13 +703,12 @@ def main():
                     # Of course we also need to add the network to the carry here
                     return train_state, loss_information
 
-                # unpack the update_state (because of the scan function)
                 train_state, traj_batch, advantages, targets, steps_for_env, rng = update_state
 
                 # set the batch size and check if it is correct
                 batch_size = config.minibatch_size * config.num_minibatches
                 assert (
-                        batch_size == config.num_steps * config.num_actors
+                    batch_size == config.num_steps * config.num_actors
                 ), "batch size must be equal to number of steps * number of actors"
 
                 # create a batch of the trajectory, advantages, and targets
@@ -733,7 +727,7 @@ def main():
                 # shuffle the batch
                 shuffled_batch = jax.tree_util.tree_map(
                     lambda x: jnp.take(x, permutation, axis=0), batch
-                )  # outputs a tuple of the batch, advantages, and targets shuffled
+                ) # outputs a tuple of the batch, advantages, and targets shuffled
 
                 minibatches = jax.tree_util.tree_map(
                     f=(lambda x: jnp.reshape(x, [config.num_minibatches, -1] + list(x.shape[1:]))), tree=shuffled_batch,
@@ -764,8 +758,6 @@ def main():
             train_state, traj_batch, advantages, targets, steps_for_env, rng = update_state
             metric = info
             current_timestep = update_step * config.num_steps * config.num_envs
-
-            # update the metric with the current timestep
             metric = jax.tree_util.tree_map(lambda x: x.mean(), metric)
 
             # General section
@@ -778,8 +770,10 @@ def main():
             metric["General/update_step"] = update_step
             metric["General/steps_for_env"] = steps_for_env
             metric["General/env_step"] = update_step * config.num_steps * config.num_envs
-            metric["General/learning_rate"] = linear_schedule(
-                update_step * config.num_minibatches * config.update_epochs)
+            if config.anneal_lr:
+                metric["General/learning_rate"] = linear_schedule(update_step * config.num_minibatches * config.update_epochs)
+            else:
+                metric["General/learning_rate"] = config.lr
 
             # Losses section
             total_loss, (value_loss, loss_actor, entropy, ewc_loss) = loss_info
@@ -819,14 +813,13 @@ def main():
                         metric[f"Evaluation/{layout_name}"] = evaluations[i]
                         
                         # Add error handling for missing baseline entries
-                        bare_layout = layout_name.split("__")[1]
+                        bare_layout = layout_name.split("__")[1].strip()
                         try:
                             if bare_layout in practical_baselines:
                                 baseline_reward = practical_baselines[bare_layout]["avg_rewards"]
                                 metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i] / baseline_reward
                             else:
                                 print(f"Warning: No baseline data for environment '{bare_layout}'")
-                                # Use 1.0 as default normalization factor (no scaling)
                                 metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
                         except Exception as e:
                             print(f"Error scaling rewards for {layout_name}: {e}")
@@ -929,7 +922,6 @@ def main():
         show_heatmap_bwt(evaluation_matrix, run_name)
         show_heatmap_fwt(evaluation_matrix, run_name)
 
-        return runner_state
 
     def save_params(path, train_state):
         '''
@@ -998,7 +990,6 @@ def record_gif_of_episode(config, train_state, env, network, env_idx=0, max_step
         states.append(state)
 
     return states
-
 
 if __name__ == "__main__":
     print("Running main...")

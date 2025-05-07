@@ -106,7 +106,7 @@ def main():
         layout_name = layout_config["layout"]
         layout_config["layout"] = overcooked_layouts[layout_name]
     
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    timestamp = datetime.now().strftime("%m-%d_%H-%M")
     run_name = f'{config.alg_name}_{config.network_architecture}_seq{config.seq_length}_{config.strategy}_{timestamp}'
     exp_dir = os.path.join("runs", run_name)
 
@@ -121,6 +121,7 @@ def main():
         mode=config.wandb_mode,
         name=run_name,
         tags=wandb_tags,
+        group="no_cl"
     )
 
     # Set up Tensorboard
@@ -145,9 +146,9 @@ def main():
         '''
         envs = []
         for env_args in config.env_kwargs:
-                # Create the environment
-                env = make(config.env_name, **env_args)
-                envs.append(env)
+            # Create the environment
+            env = make(config.env_name, **env_args)
+            envs.append(env)
 
         # find the environment with the largest observation space
         max_width, max_height = 0, 0
@@ -289,7 +290,7 @@ def main():
                 # Environment step
                 next_obs, next_state, reward, done_step, info = env.step(key_s, state_env, actions)
                 done = done_step["__all__"]
-                reward = reward["agent_0"]  
+                reward = reward["agent_0"]
                 total_reward += reward
                 step_count += 1
 
@@ -476,8 +477,7 @@ def main():
         obsv, env_state = jax.vmap(env.reset, in_axes=(0,))(reset_rng) 
         
         # TRAIN 
-        # @profile
-        def _update_step(runner_state, unused):
+        def _update_step(runner_state, _):
             '''
             perform a single update step in the training loop
             @param runner_state: the carry state that contains all important training information
@@ -485,8 +485,7 @@ def main():
             '''
 
             # COLLECT TRAJECTORIES
-            # @profile
-            def _env_step(runner_state, unused):
+            def _env_step(runner_state, _):
                 '''
                 selects an action based on the policy, calculates the log probability of the action, 
                 and performs the selected action in the environment
@@ -762,7 +761,10 @@ def main():
             # add the general metrics to the metric dictionary
             metric["General/update_step"] = update_step
             metric["General/env_step"] = update_step * config.num_steps * config.num_envs
-            metric["General/learning_rate"] = linear_schedule(update_step * config.num_minibatches * config.update_epochs)
+            if config.anneal_lr:
+                metric["General/learning_rate"] = linear_schedule(update_step * config.num_minibatches * config.update_epochs)
+            else:
+                metric["General/learning_rate"] = config.lr
 
             # Losses section
             total_loss, (value_loss, loss_actor, entropy) = loss_info
@@ -790,21 +792,20 @@ def main():
             def evaluate_and_log(rng, update_step):
                 rng, eval_rng = jax.random.split(rng)
                 train_state_eval = jax.tree_util.tree_map(lambda x: x.copy(), train_state)
-
                 def log_metrics(metric, update_step):
                     evaluations = evaluate_model(train_state_eval, network, eval_rng)
+
                     for i, layout_name in enumerate(config.layout_name):
                         metric[f"Evaluation/{layout_name}"] = evaluations[i]
                         
                         # Add error handling for missing baseline entries
-                        bare_layout = layout_name.split("__")[1]
+                        bare_layout = layout_name.split("__")[1].strip()
                         try:
                             if bare_layout in practical_baselines:
                                 baseline_reward = practical_baselines[bare_layout]["avg_rewards"]
                                 metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i] / baseline_reward
                             else:
                                 print(f"Warning: No baseline data for environment '{bare_layout}'")
-                                # Use 1.0 as default normalization factor (no scaling)
                                 metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
                         except Exception as e:
                             print(f"Error scaling rewards for {layout_name}: {e}")
@@ -928,4 +929,3 @@ def main():
 if __name__ == "__main__":
     print("Running main...")
     main()
-

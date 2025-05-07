@@ -773,8 +773,10 @@ def main():
             metric["General/update_step"] = update_step
             metric["General/steps_for_env"] = steps_for_env
             metric["General/env_step"] = update_step * config.num_steps * config.num_envs
-            metric["General/learning_rate"] = linear_schedule(
-                update_step * config.num_minibatches * config.update_epochs)
+            if config.anneal_lr:
+                metric["General/learning_rate"] = linear_schedule(update_step * config.num_minibatches * config.update_epochs)
+            else:
+                metric["General/learning_rate"] = config.lr
 
             # Losses section
             total_loss, (value_loss, loss_actor, entropy, l2_loss) = loss_info

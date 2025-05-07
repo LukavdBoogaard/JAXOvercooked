@@ -16,7 +16,7 @@ from flax.core.frozen_dict import FrozenDict, freeze, unfreeze
 from typing import Sequence, NamedTuple, Any, Optional, List
 from flax.training.train_state import TrainState
 import distrax
-from gymnax.wrappers.purerl import LogWrapper, FlattenObservationWrapper
+# from gymnax.wrappers.purerl import LogWrapper, FlattenObservationWrapper
 from jax_marl.registration import make
 from jax_marl.wrappers.baselines import LogWrapper
 from jax_marl.environments.overcooked_environment import overcooked_layouts
@@ -127,6 +127,7 @@ def main():
         mode=config.wandb_mode,
         name=run_name,
         tags=wandb_tags,
+        group="no_cl"
     )
 
     # Set up Tensorboard
@@ -546,7 +547,6 @@ def main():
                 )
 
                 # REWARD SHAPING IN NEW VERSION
-                # add the reward of one of the agents to the info dictionary
                 info["reward"] = reward["agent_0"]
 
                 current_timestep = update_step * config.num_steps * config.num_envs
@@ -812,9 +812,6 @@ def main():
                 def log_metrics(metric, update_step):
                     evaluations = evaluate_model(train_state_eval, network, eval_rng)
 
-                            # Store evaluations for continual learning metrics
-                    global_step = (env_counter-1) * config.num_updates + update_step
-
                     for i, layout_name in enumerate(config.layout_name):
                         metric[f"Evaluation/{layout_name}"] = evaluations[i]
                         
@@ -834,7 +831,7 @@ def main():
                     def callback(args):
                         metric, update_step, env_counter = args
                         real_step = (int(env_counter)-1) * config.num_updates + int(update_step)
-                        
+
                         env_name = config.layout_name[env_counter-1]
                         bare_layout = env_name.split("__")[1].strip()
                         if bare_layout in practical_baselines:
@@ -846,7 +843,6 @@ def main():
 
                         for key, value in metric.items():
                             writer.add_scalar(key, value, real_step)
-
 
                     jax.experimental.io_callback(callback, None, (metric, update_step, env_counter))
                     return None
@@ -920,11 +916,8 @@ def main():
             # update the environment counter
             env_counter += 1
         
-        # calculate the forward transfer and backward transfer
         show_heatmap_bwt(evaluation_matrix, run_name)
         show_heatmap_fwt(evaluation_matrix, run_name)
-
-        
 
         return runner_state
 
@@ -949,9 +942,6 @@ def main():
     rng, train_rng = jax.random.split(rng)
     # apply the loop_over_envs function to the environments
     runner_state = loop_over_envs(train_rng, train_state, envs)
-
-
-
 
 if __name__ == "__main__":
     print("Running main...")
