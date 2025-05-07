@@ -17,7 +17,6 @@ from typing import Sequence, NamedTuple, Any, Optional, List
 from flax.training.train_state import TrainState
 import distrax
 from gymnax.wrappers.purerl import LogWrapper, FlattenObservationWrapper
-from baselines.cl_metrics import ContinualLearningMetrics
 from jax_marl.registration import make
 from jax_marl.wrappers.baselines import LogWrapper
 from jax_marl.environments.overcooked_environment import overcooked_layouts
@@ -72,7 +71,7 @@ class Config:
     eval_num_steps: int = 1000
     eval_num_episodes: int = 5
     
-    anneal_lr: bool = False
+    anneal_lr: bool = True
     seed: int = 30
     num_seeds: int = 1
     
@@ -475,7 +474,6 @@ def main():
     with open(yaml_loc, "r") as f:
         practical_baselines = OmegaConf.load(f)
 
-    cl_metrics = ContinualLearningMetrics()
 
     @partial(jax.jit, static_argnums=(2))
     def train_on_environment(rng, train_state, env, env_counter):
@@ -808,7 +806,6 @@ def main():
 
                             # Store evaluations for continual learning metrics
                     global_step = (env_counter-1) * config.num_updates + update_step
-                    cl_metrics.record_evaluation(env_counter-1, global_step, evaluations)
 
                     for i, layout_name in enumerate(config.layout_name):
                         metric[f"Evaluation/{layout_name}"] = evaluations[i]
@@ -819,9 +816,6 @@ def main():
                             if bare_layout in practical_baselines:
                                 baseline_reward = practical_baselines[bare_layout]["avg_rewards"]
                                 metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i] / baseline_reward
-                                if i not in cl_metrics.optimal_performance:
-                                    cl_metrics.optimal_performance[i] = baseline_reward
-                                    cl_metrics.random_performance[i] = 0.0
                             else:
                                 print(f"Warning: No baseline data for environment '{bare_layout}'")
                                 metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
