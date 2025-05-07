@@ -71,7 +71,7 @@ class Config:
     eval_num_steps: int = 1000
     eval_num_episodes: int = 5
     
-    anneal_lr: bool = True
+    anneal_lr: bool = False
     seed: int = 30
     num_seeds: int = 1
     
@@ -436,6 +436,11 @@ def main():
         '''
         frac = 1.0 - (count // (config.num_minibatches * config.update_epochs)) / config.num_updates
         return config.lr * frac
+    
+    def gentle_linear_schedule(count):
+        min_frac = 0.2  
+        frac = 1.0 - (1.0 - min_frac) * (count // (config.num_minibatches * config.update_epochs)) / config.num_updates
+        return config.lr * frac
 
     rew_shaping_anneal = optax.linear_schedule(
         init_value=1.,
@@ -455,7 +460,7 @@ def main():
     # Initialize the optimizer
     tx = optax.chain(
         optax.clip_by_global_norm(config.max_grad_norm),
-        optax.adam(learning_rate=linear_schedule if config.anneal_lr else config.lr, eps=1e-5)
+        optax.adam(learning_rate=gentle_linear_schedule if config.anneal_lr else config.lr, eps=1e-5)
     )
 
     # jit the apply function
@@ -486,7 +491,7 @@ def main():
         # reset the learning rate and the optimizer
         tx = optax.chain(
         optax.clip_by_global_norm(config.max_grad_norm), 
-            optax.adam(learning_rate=linear_schedule if config.anneal_lr else config.lr, eps=1e-5)
+            optax.adam(learning_rate=gentle_linear_schedule if config.anneal_lr else config.lr, eps=1e-5)
         )
         train_state = train_state.replace(tx=tx)
         
@@ -773,7 +778,10 @@ def main():
             # add the general metrics to the metric dictionary
             metric["General/update_step"] = update_step
             metric["General/env_step"] = update_step * config.num_steps * config.num_envs
-            metric["General/learning_rate"] = linear_schedule(update_step * config.num_minibatches * config.update_epochs)
+            if config.anneal_lr:
+                metric["General/learning_rate"] = gentle_linear_schedule(update_step * config.num_minibatches * config.update_epochs)
+            else:
+                metric["General/learning_rate"] = config.lr
 
             # Losses section
             total_loss, (value_loss, loss_actor, entropy) = loss_info

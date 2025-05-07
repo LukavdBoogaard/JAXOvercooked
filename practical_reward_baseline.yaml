@@ -46,6 +46,12 @@
 0__forced_teamwork:
   avg_rewards: 0.0
   max_rewards: 0.0
+0__most_efficient:
+  avg_rewards: 390.0
+  max_rewards: 400.0
+0__most_efficient_horizontal:
+  avg_rewards: 316.0
+  max_rewards: 340.0
 0__no_cooperation:
   avg_rewards: 222.0
   max_rewards: 240.0
