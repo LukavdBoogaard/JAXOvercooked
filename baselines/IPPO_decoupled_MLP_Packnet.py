@@ -254,7 +254,7 @@ def main():
 
         return padded_envs
     
-    @partial(jax.jit, static_argnums=(1))
+    @partial(jax.jit)
     def evaluate_model(actor_train_state, key):
         '''
         Evaluates the model by running 10 episodes on all environments and returns the average reward

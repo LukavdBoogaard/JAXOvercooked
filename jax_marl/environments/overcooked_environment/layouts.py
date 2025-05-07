@@ -422,7 +422,7 @@ WA  X   W
 WWWWWWWWW
 """
 
-c_kichten = """
+c_kitchen = """
 WWWWWPWWWW
 WA       W
 W  WWW   W
