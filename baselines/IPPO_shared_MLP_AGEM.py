@@ -20,7 +20,13 @@ from jax_marl.registration import make
 from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
 from jax_marl.wrappers.baselines import LogWrapper
 from architectures.shared_mlp import ActorCritic
-from baselines.utils import Transition, batchify, unbatchify, make_task_onehot
+from baselines.utils import (Transition, 
+                             batchify, 
+                             unbatchify, 
+                             sample_discrete_action,
+                             make_task_onehot,
+                             show_heatmap_bwt,
+                             show_heatmap_fwt,)
 from cl_methods.AGEM import (
     init_agem_memory, 
     sample_memory, 
@@ -65,7 +71,7 @@ class Config:
     max_memory_size: int = 10000
 
     # Environment
-    seq_length: int = 6
+    seq_length: int = 2
     strategy: str = "random"
     layouts: Optional[Sequence[str]] = field(
         default_factory=lambda: [
@@ -985,6 +991,13 @@ def main():
 
         visualizer = OvercookedVisualizer()
 
+        evaluation_matrix = jnp.zeros(((len(envs)+1), len(envs)))
+
+        # Evaluate the model on all environments before training
+        rng, eval_rng = jax.random.split(rng)
+        evaluations = evaluate_model(train_state, eval_rng, 0)
+        evaluation_matrix = evaluation_matrix.at[0,:].set(evaluations)
+
         runner_state = None
         for i, (rng, env) in enumerate(zip(env_rngs, envs)):
             (train_state, rng, agem_mem) = train_on_environment(rng, train_state, env, i, agem_mem)
@@ -994,9 +1007,17 @@ def main():
             states = record_gif_of_episode(config, train_state, env, network, env_idx=i, max_steps=config.gif_len)
             visualizer.animate(states, agent_view_size=5, task_idx=i, task_name=env_name, exp_dir=exp_dir)
 
+            # Evaluate at the end of training to get the average performance of the task right after training
+            evaluations = evaluate_model(train_state, rng, i)
+            evaluation_matrix = evaluation_matrix.at[i,:].set(evaluations)
+
             # save the model
             path = f"checkpoints/overcooked/AGEM/{run_name}/model_env_{i + 1}"
             save_params(path, train_state)
+
+        # calculate the forward transfer and backward transfer
+        show_heatmap_bwt(evaluation_matrix, run_name)
+        show_heatmap_fwt(evaluation_matrix, run_name)
 
         return runner_state
 

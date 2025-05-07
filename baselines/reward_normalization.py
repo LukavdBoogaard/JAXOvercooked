@@ -77,7 +77,7 @@ class Config:
     env_name: str = "overcooked"
     alg_name: str = "reward_normalization"
 
-    seq_length: int = 21
+    seq_length: int = 1
     strategy: str = "random"
     layouts: Optional[Sequence[str]] = None
     env_kwargs: Optional[Sequence[dict]] = None
@@ -166,12 +166,13 @@ def main():
     wandb_tags = config.tags if config.tags is not None else []
     wandb.login(key=os.environ.get("WANDB_API_KEY"))
     wandb.init(
-        project='Continual_IPPO', 
+        project='COOX', 
         config=config,
         sync_tensorboard=True,
         mode=config.wandb_mode,
         name=run_name,
         tags=wandb_tags,
+        group="single_layouts",
     )
 
     # Set up Tensorboard
@@ -904,7 +905,7 @@ def main():
 
         environment_returns = {}
 
-        for i, (r, _) in enumerate(zip(sub_rngs, envs)):
+        for i, (r, env) in enumerate(zip(sub_rngs, envs)):
             # --- Train on environment i using the *current* ewc_state ---
             runner_state, metrics = train_on_environment(r, train_state, env, env_counter)
             train_state = runner_state[0]
@@ -923,10 +924,9 @@ def main():
                 "max_rewards": float(jnp.mean(jnp.array(max_rewards)))
             }
             
-            print(environment_returns)
 
             current_folder = "/home/lvdenboogaard/JAXOvercooked"
-            save_path = f"{current_folder}/practical_baseline.yaml"
+            save_path = f"{current_folder}/practical_reward_baseline.yaml"
 
             # load existing data from the yaml 
             existing_data = {}
@@ -937,15 +937,19 @@ def main():
                     except yaml.YAMLError: 
                         existing_data = {}
 
-            existing_data.update(environment_returns)
+            if env_name not in existing_data:
+                print(f"Adding new environment {env_name} to YAML")
+                existing_data[env_name] = environment_returns[env_name]
 
-            # Write back the complete updated data
-            with open(save_path, "w") as f:
-                yaml.dump(existing_data, f)
+                # Write back the complete updated data
+                with open(save_path, "w") as f:
+                    yaml.dump(existing_data, f)
+            else:
+                print("Environment already exists in YAML, skipping update.")
             
             # Generate & log a GIF after finishing task i
-            states = record_gif_of_episode(train_state, envs[i], network)
-            visualizer.animate(states, agent_view_size=5, task_idx=i, task_name=envs[i].name, exp_dir=exp_dir)
+            states = record_gif_of_episode(train_state, env, network)
+            visualizer.animate(states, agent_view_size=5, task_idx=i, task_name=env_name, exp_dir=exp_dir)
 
             # save the model
             path = f"checkpoints/overcooked/{run_name}/model_env_{env_counter}"

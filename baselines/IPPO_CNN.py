@@ -11,7 +11,13 @@ from typing import Sequence, NamedTuple, Any, Optional, List
 from flax.training.train_state import TrainState
 from gymnax.wrappers.purerl import LogWrapper
 from architectures.cnn import ActorCritic
-from baselines.utils import Transition_CNN, batchify, unbatchify, sample_discrete_action
+from baselines.utils import (Transition_CNN, 
+                             batchify, 
+                             unbatchify, 
+                             sample_discrete_action,
+                             make_task_onehot,
+                             show_heatmap_bwt,
+                             show_heatmap_fwt,)
 
 from jax_marl.registration import make
 from jax_marl.wrappers.baselines import LogWrapper
@@ -868,11 +874,22 @@ def main():
         # counter for the environment 
         env_counter = 1
 
+        evaluation_matrix = jnp.zeros(((len(envs)+1), len(envs)))
+
+        # Evaluate the model on all environments before training
+        rng, eval_rng = jax.random.split(rng)
+        evaluations = evaluate_model(train_state, network, eval_rng)
+        evaluation_matrix = evaluation_matrix.at[0,:].set(evaluations)
+
         for env_rng, env in zip(env_rngs, envs):
             runner_state, metrics = train_on_environment(env_rng, train_state, env, env_counter)
 
             # unpack the runner state
             train_state, env_state, last_obs, update_step, rng = runner_state
+
+            # Evaluate at the end of training to get the average performance of the task right after training
+            evaluations = evaluate_model(train_state, network, rng)
+            evaluation_matrix = evaluation_matrix.at[env_counter,:].set(evaluations)
 
             # save the model
             path = f"checkpoints/overcooked/{run_name}/model_env_{env_counter}"
@@ -880,6 +897,9 @@ def main():
 
             # update the environment counter
             env_counter += 1
+        
+        show_heatmap_bwt(evaluation_matrix, run_name)
+        show_heatmap_fwt(evaluation_matrix, run_name)
 
         return runner_state
 

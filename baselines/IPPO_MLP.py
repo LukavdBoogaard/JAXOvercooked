@@ -17,14 +17,20 @@ from typing import Sequence, NamedTuple, Any, Optional, List
 from flax.training.train_state import TrainState
 import distrax
 from gymnax.wrappers.purerl import LogWrapper, FlattenObservationWrapper
-
+from baselines.cl_metrics import ContinualLearningMetrics
 from jax_marl.registration import make
 from jax_marl.wrappers.baselines import LogWrapper
 from jax_marl.environments.overcooked_environment import overcooked_layouts
 from jax_marl.environments.env_selection import generate_sequence
 from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
 from architectures.mlp import ActorCritic
-from baselines.utils import Transition, batchify, unbatchify, sample_discrete_action
+from baselines.utils import (Transition, 
+                             batchify, 
+                             unbatchify, 
+                             sample_discrete_action,
+                             show_heatmap_bwt,
+                             show_heatmap_fwt,)
+
 from dotenv import load_dotenv
 import os
 os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
@@ -57,7 +63,7 @@ class Config:
     alg_name: str = "ippo"
     network_architecture: str = "mlp"
 
-    seq_length: int = 6
+    seq_length: int = 2
     strategy: str = "random"
     layouts: Optional[Sequence[str]] = field(default_factory=lambda: ["asymm_advantages", "smallest_kitchen", "cramped_room", "easy_layout", "square_arena", "no_cooperation"])
     env_kwargs: Optional[Sequence[dict]] = None
@@ -73,7 +79,7 @@ class Config:
     # Wandb settings
     wandb_mode: str = "online"
     entity: Optional[str] = ""
-    project: str = "COOX"
+    project: str = "COOX_benchmark"
     tags: List[str] = field(default_factory=list)
 
     # to be computed during runtime
@@ -342,7 +348,7 @@ def main():
             avg_reward = jnp.mean(all_rewards)
             all_avg_rewards.append(avg_reward)
 
-        return all_avg_rewards
+        return jnp.array(all_avg_rewards)
     
     def get_rollout_for_visualization():
         '''
@@ -468,6 +474,8 @@ def main():
     yaml_loc = os.path.join(repo_root, "practical_reward_baseline_results.yaml")
     with open(yaml_loc, "r") as f:
         practical_baselines = OmegaConf.load(f)
+
+    cl_metrics = ContinualLearningMetrics()
 
     @partial(jax.jit, static_argnums=(2))
     def train_on_environment(rng, train_state, env, env_counter):
@@ -795,9 +803,13 @@ def main():
             def evaluate_and_log(rng, update_step):
                 rng, eval_rng = jax.random.split(rng)
                 train_state_eval = jax.tree_util.tree_map(lambda x: x.copy(), train_state)
-
                 def log_metrics(metric, update_step):
                     evaluations = evaluate_model(train_state_eval, network, eval_rng)
+
+                            # Store evaluations for continual learning metrics
+                    global_step = (env_counter-1) * config.num_updates + update_step
+                    cl_metrics.record_evaluation(env_counter-1, global_step, evaluations)
+
                     for i, layout_name in enumerate(config.layout_name):
                         metric[f"Evaluation/{layout_name}"] = evaluations[i]
                         
@@ -807,9 +819,11 @@ def main():
                             if bare_layout in practical_baselines:
                                 baseline_reward = practical_baselines[bare_layout]["avg_rewards"]
                                 metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i] / baseline_reward
+                                if i not in cl_metrics.optimal_performance:
+                                    cl_metrics.optimal_performance[i] = baseline_reward
+                                    cl_metrics.random_performance[i] = 0.0
                             else:
                                 print(f"Warning: No baseline data for environment '{bare_layout}'")
-                                # Use 1.0 as default normalization factor (no scaling)
                                 metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
                         except Exception as e:
                             print(f"Error scaling rewards for {layout_name}: {e}")
@@ -880,11 +894,22 @@ def main():
         # counter for the environment 
         env_counter = 1
 
+        evaluation_matrix = jnp.zeros(((len(envs)+1), len(envs)))
+
+        # Evaluate the model on all environments before training
+        rng, eval_rng = jax.random.split(rng)
+        evaluations = evaluate_model(train_state, network, eval_rng)
+        evaluation_matrix = evaluation_matrix.at[0,:].set(evaluations)
+
         for env_rng, env in zip(env_rngs, envs):
             runner_state, metrics = train_on_environment(env_rng, train_state, env, env_counter)
 
             # unpack the runner state
             train_state, env_state, last_obs, update_step, rng = runner_state
+
+            # Evaluate at the end of training to get the average performance of the task right after training
+            evaluations = evaluate_model(train_state, network, rng)
+            evaluation_matrix = evaluation_matrix.at[env_counter,:].set(evaluations)
 
             # save the model
             path = f"checkpoints/overcooked/{run_name}/model_env_{env_counter}"
@@ -892,6 +917,12 @@ def main():
 
             # update the environment counter
             env_counter += 1
+        
+        # calculate the forward transfer and backward transfer
+        show_heatmap_bwt(evaluation_matrix, run_name)
+        show_heatmap_fwt(evaluation_matrix, run_name)
+
+        
 
         return runner_state
 
@@ -916,6 +947,9 @@ def main():
     rng, train_rng = jax.random.split(rng)
     # apply the loop_over_envs function to the environments
     runner_state = loop_over_envs(train_rng, train_state, envs)
+
+
+
 
 if __name__ == "__main__":
     print("Running main...")

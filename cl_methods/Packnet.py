@@ -41,10 +41,6 @@ class Packnet():
         self.prune_instructions = prune_instructions
         self.train_finetune_split = train_finetune_split
         self.prunable_layers = prunable_layers
-        
-        # Create the pruning instructions based on the sequence length
-        if seq_length: 
-            self.create_pruning_instructions()
 
     def init_mask_tree(self, params):
         '''
@@ -133,23 +129,15 @@ class Packnet():
             return leaf[task_id]
         return jax.tree_util.tree_map(slice_mask_leaf, mask_tree)        
 
-    def create_pruning_instructions(self):
+    def create_pruning_percentage(self, state: PacknetState):
         '''
         Creates the pruning instructions based on the sequence length
         '''
         assert self.seq_length is not None, "Sequence length not provided"
 
-        if not isinstance(self.prune_instructions, list):
-            # Check if the pruning instruction is a percentage 
-            assert 0 < self.prune_instructions < 1, (
-                "Pruning instructions should be a percentage"
-                )
-            # Create a list of pruning instructions for all tasks 
-            self.prune_instructions = [self.prune_instructions] * (self.seq_length-1)
-
-        assert len(self.prune_instructions) == self.seq_length-1, (
-            "Must provide pruning instructions for each task"
-            )
+        num_tasks_left = self.seq_length - state.current_task
+        prune_percentage = num_tasks_left/(num_tasks_left + 1)
+        return prune_percentage
         
     def layer_is_prunable(self, layer_name):
         '''
@@ -162,7 +150,7 @@ class Packnet():
                 return True
         return False
     
-    def prune(self, params, prune_quantile, state: PacknetState):
+    def prune(self, params, state: PacknetState):
         '''
         Prunes the model based on the pruning instructions
         @param model: the model to prune
@@ -179,7 +167,10 @@ class Packnet():
         )
 
         state = state.replace(masks=masks)
-        
+
+        # Compute the pruning quantile
+        prune_perc = self.create_pruning_percentage(state)
+
         # Get the combined mask of all previous tasks
         combined_mask = self.combine_masks(state.masks, state.current_task)
         sparsity_mask = self.compute_sparsity(combined_mask)
@@ -200,7 +191,7 @@ class Packnet():
                     if p.size > 0: 
                         all_prunable = jnp.concatenate([all_prunable.reshape(-1), p.reshape(-1)], axis=0)
 
-        cutoff = jnp.nanquantile(jnp.abs(all_prunable), prune_quantile)
+        cutoff = jnp.nanquantile(jnp.abs(all_prunable), prune_perc)
         jax.debug.print("cutoff: {cutoff}", cutoff=cutoff)
         # count the number of params under the cutoff
         num_pruned = jnp.sum(jnp.abs(all_prunable) < cutoff)
@@ -408,16 +399,12 @@ class Packnet():
         # change the mode to finetuning
         state = state.replace(train_mode=False)
 
-        prune_instructions = jnp.array(self.prune_instructions)
-
         def last_task(params):
             # if we are on the last task, mask all remaining parameters
             return self.mask_remaining_params(params, state)
              
         def other_tasks(params):
-            # if we are not on the last task, prune the model
-            prune_value = jnp.take(prune_instructions, state.current_task)
-            return self.prune(params, prune_value, state)
+            return self.prune(params, state)
             
         
         new_params, state = jax.lax.cond(
@@ -436,20 +423,6 @@ class Packnet():
         '''
         state = state.replace(current_task=state.current_task+1, train_mode=True)
         
-        # def first_task_biases(grads):
-        #     return self.fix_biases(grads)
-        
-        # def other_tasks(grads):
-        #     return grads
-        
-        # # apply the first task biases if we are on the first task
-        # new_gradients = jax.lax.cond(
-        #     state.current_task == 1,
-        #     first_task_biases, 
-        #     other_tasks, 
-        #     grads
-        #     )
-        # new_gradients = {"params": new_gradients}
         return state
 
     def on_backwards_end(self, state: PacknetState, actor_train_state, params_copy):
