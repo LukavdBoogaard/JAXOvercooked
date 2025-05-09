@@ -42,7 +42,7 @@ PYTHONPATH=\$HOME/JAXOvercooked python3 \$HOME/JAXOvercooked/baselines/IPPO_MLP.
   --lr $lr \
   --seed $seed \
   $anneal_flag \
-  --tags $lr $tag
+  --tags $lr $tag "experiment_1"
 EOF
 
     done
