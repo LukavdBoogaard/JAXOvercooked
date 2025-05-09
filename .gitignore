@@ -27,3 +27,4 @@ models/
 events.out*
 model_*
 *.gif
+*.png

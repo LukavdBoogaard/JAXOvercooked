@@ -78,7 +78,7 @@ class Config:
     # Wandb settings
     wandb_mode: str = "online"
     entity: Optional[str] = ""
-    project: str = "COOX_benchmark"
+    project: str = "COOX"
     tags: List[str] = field(default_factory=list)
 
     # to be computed during runtime
