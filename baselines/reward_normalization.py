@@ -18,17 +18,13 @@ from flax.core.frozen_dict import FrozenDict, freeze, unfreeze
 from typing import Sequence, NamedTuple, Any, Optional, List
 from flax.training.train_state import TrainState
 import distrax
-from gymnax.wrappers.purerl import LogWrapper, FlattenObservationWrapper
-
 from jax_marl.registration import make
 from jax_marl.wrappers.baselines import LogWrapper
 from jax_marl.environments.overcooked_environment import overcooked_layouts
 from jax_marl.environments.env_selection import generate_sequence
 from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
-from jax_marl.environments.overcooked_environment.layouts import counter_circuit_grid
 from architectures.mlp import ActorCritic
 from dotenv import load_dotenv
-import hydra
 import os
 os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
 
@@ -82,9 +78,10 @@ class Config:
     layouts: Optional[Sequence[str]] = None
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
-    log_interval: int = 50 # log every 200 calls to update step
-    eval_num_steps: int = 1000 # number of steps to evaluate the model
-    eval_num_episodes: int = 20 # number of episodes to evaluate the model
+    log_interval: int = 50
+    eval_num_steps: int = 1000
+    eval_num_episodes: int = 20
+    gif_len: int = 300
     
     anneal_lr: bool = False
     seed: int = 30
@@ -144,14 +141,13 @@ def main():
     
     config = tyro.cli(Config)
 
-    # generate a sequence of tasks
-    seq_length = config.seq_length
-    strategy = config.strategy
-    layouts = config.layouts
-    config.env_kwargs, config.layout_name = generate_sequence(seq_length, strategy, layout_names=layouts, seed=config.seed)
-
+    config.env_kwargs, config.layout_name = generate_sequence(
+        sequence_length=config.seq_length, 
+        strategy=config.strategy, 
+        layout_names=config.layouts, 
+        seed=config.seed
+    )
     print(config.layout_name)
-
 
     for layout_config in config.env_kwargs:
         layout_name = layout_config["layout"]
@@ -166,7 +162,7 @@ def main():
     wandb_tags = config.tags if config.tags is not None else []
     wandb.login(key=os.environ.get("WANDB_API_KEY"))
     wandb.init(
-        project='COOX', 
+        project=config.project, 
         config=config,
         sync_tensorboard=True,
         mode=config.wandb_mode,
@@ -981,8 +977,8 @@ def main():
     rng, train_rng = jax.random.split(rng)
     # apply the loop_over_envs function to the environments
     runner_state = loop_over_envs(train_rng, train_state, envs)
-    
-def record_gif_of_episode(train_state, env, network, max_steps=300):
+
+def record_gif_of_episode(config, train_state, env, network, env_idx=0, max_steps=300):
     rng = jax.random.PRNGKey(0)
     rng, env_rng = jax.random.split(rng)
     obs, state = env.reset(env_rng)
@@ -991,16 +987,29 @@ def record_gif_of_episode(train_state, env, network, max_steps=300):
     states = [state]
 
     while not done and step_count < max_steps:
-        flat_obs = {k: v.flatten() for k, v in obs.items()}
-        act_keys = jax.random.split(rng, env.num_agents)
+        flat_obs = {}
+        for agent_id, obs_v in obs.items():
+            # Determine the expected raw shape for this agent.
+            expected_shape = env.observation_space().shape
+            # If the observation is unbatched, add a batch dimension.
+            if obs_v.ndim == len(expected_shape):
+                obs_b = jnp.expand_dims(obs_v, axis=0)  # now (1, ...)
+            else:
+                obs_b = obs_v
+            # Flatten the nonbatch dimensions.
+            flattened = jnp.reshape(obs_b, (obs_b.shape[0], -1))
+            flat_obs[agent_id] = flattened
+
         actions = {}
+        act_keys = jax.random.split(rng, env.num_agents)
         for i, agent_id in enumerate(env.agents):
             pi, _ = network.apply(train_state.params, flat_obs[agent_id])
-            actions[agent_id] = pi.sample(seed=act_keys[i])
+            actions[agent_id] = jnp.squeeze(pi.sample(seed=act_keys[i]), axis=0)
 
         rng, key_step = jax.random.split(rng)
         next_obs, next_state, reward, done_info, info = env.step(key_step, state, actions)
         done = done_info["__all__"]
+
         obs, state = next_obs, next_state
         step_count += 1
         states.append(state)
@@ -1017,4 +1026,3 @@ def sample_discrete_action(key, action_space):
 if __name__ == "__main__":
     print("Running main...")
     main()
-

@@ -67,9 +67,11 @@ class Config:
     layouts: Optional[Sequence[str]] = field(default_factory=lambda: ["asymm_advantages", "smallest_kitchen", "cramped_room", "easy_layout", "square_arena", "no_cooperation"])
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
+    evaluation: bool = False
     log_interval: int = 75
     eval_num_steps: int = 1000
     eval_num_episodes: int = 5
+    gif_len: int = 300
     
     anneal_lr: bool = False
     seed: int = 30
@@ -353,71 +355,6 @@ def main():
 
         return jnp.array(all_avg_rewards)
     
-    def get_rollout_for_visualization():
-        '''
-        Simulates the environment using the network
-        @param train_state: the current state of the training
-        @param config: the configuration of the training
-        returns the state sequence
-        '''
-
-        # Add the padding
-        envs = pad_observation_space()
-
-        state_sequences = []
-        for env_layout in envs:
-            env = make(config.env_name, layout=env_layout)
-
-            key = jax.random.PRNGKey(0)
-            key, key_r, key_a = jax.random.split(key, 3)
-
-            done = False
-
-            obs, state = env.reset(key_r)
-            state_seq = [state]
-            rewards = []
-            shaped_rewards = []
-            while not done:
-                key, key_a0, key_a1, key_s = jax.random.split(key, 4)
-
-                # Get the action space for each agent (assuming it's uniform and doesn't depend on the agent_id)
-                action_space_0 = env.action_space()  # Assuming the method needs to be called
-                action_space_1 = env.action_space()  # Same as above since action_space is uniform
-
-                # Sample actions for each agent
-                action_0 = sample_discrete_action(key_a0, action_space_0).item()  # Ensure it's a Python scalar
-                action_1 = sample_discrete_action(key_a1, action_space_1).item()
-
-                actions = {
-                    "agent_0": action_0,
-                    "agent_1": action_1
-                }
-
-                # STEP ENV
-                obs, state, reward, done, info = env.step(key_s, state, actions)
-                done = done["__all__"]
-                rewards.append(reward["agent_0"])
-                shaped_rewards.append(info["shaped_reward"]["agent_0"])
-
-                state_seq.append(state)
-            state_sequences.append(state_seq)
-
-        return state_sequences
-        
-    def visualize_environments():
-        '''
-        Visualizes the environments using the OvercookedVisualizer
-        @param config: the configuration of the training
-        returns None
-        '''
-        state_sequences = get_rollout_for_visualization()
-        visualizer = OvercookedVisualizer()
-        # animate all environments in the sequence
-        for i, env in enumerate(state_sequences):
-            visualizer.animate(state_seq=env, agent_view_size=5, filename=f"~/JAXOvercooked/environment_layouts/env_{config.layouts[i]}.gif")
-
-        return None
-
     # pad all environments
     padded_envs = pad_observation_space()
 
@@ -865,9 +802,10 @@ def main():
             metric["Advantage_Targets/targets"] = targets.mean()
 
             # Evaluation section
-            for i in range(len(config.layout_name)):
-                metric[f"Evaluation/{config.layout_name[i]}"] = jnp.nan
-                metric[f"Scaled returns/evaluation_{config.layout_name[i]}_scaled"] = jnp.nan
+            if config.evaluation:
+                for i in range(len(config.layout_name)):
+                    metric[f"Evaluation/{config.layout_name[i]}"] = jnp.nan
+                    metric[f"Scaled returns/evaluation_{config.layout_name[i]}_scaled"] = jnp.nan
 
             def evaluate_and_log(rng, update_step, train_states):
                 rng, eval_rng = jax.random.split(rng)
@@ -876,23 +814,24 @@ def main():
 
                 actor_train_state_eval = jax.tree_util.tree_map(lambda x: x.copy(), actor_train_state)
                 def log_metrics(metric, update_step):
-                    evaluations = evaluate_model(actor_train_state_eval, eval_rng)
+                    if config.evaluation:
+                        evaluations = evaluate_model(actor_train_state_eval, eval_rng)
 
-                    for i, layout_name in enumerate(config.layout_name):
-                        metric[f"Evaluation/{layout_name}"] = evaluations[i]
-                        
-                        # Add error handling for missing baseline entries
-                        bare_layout = layout_name.split("__")[1].strip()
-                        try:
-                            if bare_layout in practical_baselines:
-                                baseline_reward = practical_baselines[bare_layout]["avg_rewards"]
-                                metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i] / baseline_reward
-                            else:
-                                print(f"Warning: No baseline data for environment '{bare_layout}'")
+                        for i, layout_name in enumerate(config.layout_name):
+                            metric[f"Evaluation/{layout_name}"] = evaluations[i]
+                            
+                            # Add error handling for missing baseline entries
+                            bare_layout = layout_name.split("__")[1].strip()
+                            try:
+                                if bare_layout in practical_baselines:
+                                    baseline_reward = practical_baselines[bare_layout]["avg_rewards"]
+                                    metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i] / baseline_reward
+                                else:
+                                    print(f"Warning: No baseline data for environment '{bare_layout}'")
+                                    metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
+                            except Exception as e:
+                                print(f"Error scaling rewards for {layout_name}: {e}")
                                 metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
-                        except Exception as e:
-                            print(f"Error scaling rewards for {layout_name}: {e}")
-                            metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
                     
                     def callback(args):
                         metric, update_step, env_counter = args
@@ -957,25 +896,33 @@ def main():
         # split the random number generator for training on the environments
         rng, *env_rngs = jax.random.split(rng, len(envs)+1)
 
+        visualizer = OvercookedVisualizer()
+
         # counter for the environment 
         env_counter = 1
 
-        evaluation_matrix = jnp.zeros(((len(envs)+1), len(envs)))
+        if config.evaluation:
+            evaluation_matrix = jnp.zeros(((len(envs)+1), len(envs)))
+            rng, eval_rng = jax.random.split(rng)
+            evaluations = evaluate_model(actor_train_state, eval_rng)
+            evaluation_matrix = evaluation_matrix.at[0,:].set(evaluations)
 
-        # Evaluate the model on all environments before training
-        rng, eval_rng = jax.random.split(rng)
-        evaluations = evaluate_model(actor_train_state, eval_rng)
-        evaluation_matrix = evaluation_matrix.at[0,:].set(evaluations)
-
-        for env_rng, env in zip(env_rngs, envs):
+        for i, (env_rng, env) in enumerate(zip(env_rngs, envs)):
             runner_state, metrics = train_on_environment(env_rng, train_states, env, env_counter)
 
             # unpack the runner state
             train_states, env_state, last_obs, update_step, rng = runner_state
 
-            # Evaluate at the end of training to get the average performance of the task right after training
-            evaluations = evaluate_model(train_states[0], rng)
-            evaluation_matrix = evaluation_matrix.at[env_counter,:].set(evaluations)
+            # Generate & log a GIF after finishing task i
+            env_name = config.layout_name[i]
+            states = record_gif_of_episode(config, actor_train_state, env, actor, env_idx=i, max_steps=config.gif_len)
+            visualizer.animate(states, agent_view_size=5, task_idx=i, task_name=env_name, exp_dir=exp_dir)
+
+
+            if config.evaluation:
+                # Evaluate at the end of training to get the average performance of the task right after training
+                evaluations = evaluate_model(train_states[0], rng)
+                evaluation_matrix = evaluation_matrix.at[env_counter,:].set(evaluations)
 
             # save the model
             path = f"checkpoints/overcooked/{run_name}/model_env_{env_counter}"
@@ -984,9 +931,9 @@ def main():
             # update the environment counter
             env_counter += 1
         
-        # calculate the forward transfer and backward transfer
-        show_heatmap_bwt(evaluation_matrix, run_name)
-        show_heatmap_fwt(evaluation_matrix, run_name)
+        if config.evaluation:
+            show_heatmap_bwt(evaluation_matrix, run_name)
+            show_heatmap_fwt(evaluation_matrix, run_name)
 
         return runner_state
 
@@ -1014,7 +961,43 @@ def main():
     # apply the loop_over_envs function to the environments
     runner_state = loop_over_envs(train_rng, train_states, envs)
 
+def record_gif_of_episode(config, train_state, env, network, env_idx=0, max_steps=300):
+    rng = jax.random.PRNGKey(0)
+    rng, env_rng = jax.random.split(rng)
+    obs, state = env.reset(env_rng)
+    done = False
+    step_count = 0
+    states = [state]
 
+    while not done and step_count < max_steps:
+        flat_obs = {}
+        for agent_id, obs_v in obs.items():
+            # Determine the expected raw shape for this agent.
+            expected_shape = env.observation_space().shape
+            # If the observation is unbatched, add a batch dimension.
+            if obs_v.ndim == len(expected_shape):
+                obs_b = jnp.expand_dims(obs_v, axis=0)  # now (1, ...)
+            else:
+                obs_b = obs_v
+            # Flatten the nonbatch dimensions.
+            flattened = jnp.reshape(obs_b, (obs_b.shape[0], -1))
+            flat_obs[agent_id] = flattened
+
+        actions = {}
+        act_keys = jax.random.split(rng, env.num_agents)
+        for i, agent_id in enumerate(env.agents):
+            pi = network.apply(train_state.params, flat_obs[agent_id])
+            actions[agent_id] = jnp.squeeze(pi.sample(seed=act_keys[i]), axis=0)
+
+        rng, key_step = jax.random.split(rng)
+        next_obs, next_state, reward, done_info, info = env.step(key_step, state, actions)
+        done = done_info["__all__"]
+
+        obs, state = next_obs, next_state
+        step_count += 1
+        states.append(state)
+
+    return states
 
 
 if __name__ == "__main__":

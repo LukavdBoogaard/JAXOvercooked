@@ -81,6 +81,7 @@ class Config:
     )
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
+    evaluation: bool = True
     log_interval: int = 75
     eval_num_steps: int = 1000
     eval_num_episodes: int = 5
@@ -870,32 +871,34 @@ def main():
                 metric[key] = val.mean()
 
             # Evaluation section
-            for i in range(len(config.layout_name)):
-                metric[f"Evaluation/{config.layout_name[i]}"] = jnp.nan
-                metric[f"Scaled returns/evaluation_{config.layout_name[i]}_scaled"] = jnp.nan
+            if config.evaluation:
+                for i in range(len(config.layout_name)):
+                    metric[f"Evaluation/{config.layout_name[i]}"] = jnp.nan
+                    metric[f"Scaled returns/evaluation_{config.layout_name[i]}_scaled"] = jnp.nan
 
             def evaluate_and_log(rng, update_step):
                 rng, eval_rng = jax.random.split(rng)
                 train_state_eval = jax.tree_util.tree_map(lambda x: x.copy(), train_state)
 
                 def log_metrics(metric, update_step):
-                    evaluations = evaluate_model(train_state_eval, eval_rng, env_idx)
-                    for i, layout_name in enumerate(config.layout_name):
-                        metric[f"Evaluation/{layout_name}"] = evaluations[i]
-                        
-                        # Add error handling for missing baseline entries
-                        bare_layout = layout_name.split("__")[1]
-                        try:
-                            if bare_layout in practical_baselines:
-                                baseline_reward = practical_baselines[bare_layout]["avg_rewards"]
-                                metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i] / baseline_reward
-                            else:
-                                print(f"Warning: No baseline data for environment '{bare_layout}'")
-                                # Use 1.0 as default normalization factor (no scaling)
+                    if config.evaluation:
+                        evaluations = evaluate_model(train_state_eval, eval_rng, env_idx)
+                        for i, layout_name in enumerate(config.layout_name):
+                            metric[f"Evaluation/{layout_name}"] = evaluations[i]
+                            
+                            # Add error handling for missing baseline entries
+                            bare_layout = layout_name.split("__")[1]
+                            try:
+                                if bare_layout in practical_baselines:
+                                    baseline_reward = practical_baselines[bare_layout]["avg_rewards"]
+                                    metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i] / baseline_reward
+                                else:
+                                    print(f"Warning: No baseline data for environment '{bare_layout}'")
+                                    # Use 1.0 as default normalization factor (no scaling)
+                                    metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
+                            except Exception as e:
+                                print(f"Error scaling rewards for {layout_name}: {e}")
                                 metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
-                        except Exception as e:
-                            print(f"Error scaling rewards for {layout_name}: {e}")
-                            metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
                     
                     def callback(args):
                         metric, update_step, env_counter = args
@@ -991,13 +994,12 @@ def main():
         rng, *env_rngs = jax.random.split(rng, len(envs)+1)
 
         visualizer = OvercookedVisualizer()
-
-        evaluation_matrix = jnp.zeros(((len(envs)+1), len(envs)))
-
         # Evaluate the model on all environments before training
-        rng, eval_rng = jax.random.split(rng)
-        evaluations = evaluate_model(train_state, eval_rng, 0)
-        evaluation_matrix = evaluation_matrix.at[0,:].set(evaluations)
+        if config.evaluation:
+            evaluation_matrix = jnp.zeros(((len(envs)+1), len(envs)))
+            rng, eval_rng = jax.random.split(rng)
+            evaluations = evaluate_model(train_state, eval_rng, 0)
+            evaluation_matrix = evaluation_matrix.at[0,:].set(evaluations)
 
         runner_state = None
         for i, (rng, env) in enumerate(zip(env_rngs, envs)):
@@ -1008,17 +1010,19 @@ def main():
             states = record_gif_of_episode(config, train_state, env, network, env_idx=i, max_steps=config.gif_len)
             visualizer.animate(states, agent_view_size=5, task_idx=i, task_name=env_name, exp_dir=exp_dir)
 
-            # Evaluate at the end of training to get the average performance of the task right after training
-            evaluations = evaluate_model(train_state, rng, i)
-            evaluation_matrix = evaluation_matrix.at[i,:].set(evaluations)
+            if config.evaluation:
+                # Evaluate at the end of training to get the average performance of the task right after training
+                evaluations = evaluate_model(train_state, rng, i)
+                evaluation_matrix = evaluation_matrix.at[i,:].set(evaluations)
 
             # save the model
             path = f"checkpoints/overcooked/AGEM/{run_name}/model_env_{i + 1}"
             save_params(path, train_state)
 
         # calculate the forward transfer and backward transfer
-        show_heatmap_bwt(evaluation_matrix, run_name)
-        show_heatmap_fwt(evaluation_matrix, run_name)
+        if config.evaluation:
+            show_heatmap_bwt(evaluation_matrix, run_name)
+            show_heatmap_fwt(evaluation_matrix, run_name)
 
         return runner_state
 
