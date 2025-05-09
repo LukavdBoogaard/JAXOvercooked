@@ -6,7 +6,7 @@ import unittest
 from typing import List, Tuple, Dict, Any, NamedTuple
 
 # Import your PackNet implementation
-from baselines.IPPO_MLP_Packnet import Packnet, PacknetState
+from baselines.unused.IPPO_MLP_Packnet import Packnet, PacknetState
 
 class TestPacknet(unittest.TestCase):
     """Tests for the PackNet implementation."""
