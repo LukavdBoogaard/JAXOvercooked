@@ -15,7 +15,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Dict, List
+from typing import List
 
 import numpy as np
 import wandb
@@ -28,6 +28,7 @@ FORBIDDEN_TAGS = {"TEST", "LOCAL"}
 EVAL_PREFIX = "Evaluation/"
 KEY_PATTERN = re.compile(rf"^{re.escape(EVAL_PREFIX)}(\d+)__(.+)")
 
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -38,14 +39,15 @@ def cli() -> argparse.Namespace:
     p.add_argument("--format", choices=["json", "npz"], default="json",
                    help="Output file format")
     p.add_argument("--seq_length", type=int, nargs="+", default=[6])
-    p.add_argument("--seeds", type=int, nargs="+", default=[1,2,3,4,5])
-    p.add_argument("--strategy", choices=["ordered","random"], default=None)
+    p.add_argument("--seeds", type=int, nargs="+", default=[1, 2, 3, 4, 5])
+    p.add_argument("--strategy", choices=["ordered", "random"], default=None)
     p.add_argument("--algos", nargs="+", default=[], help="Filter by alg_name")
     p.add_argument("--cl_methods", nargs="+", default=[], help="Filter by cl_method")
     p.add_argument("--wandb_tags", nargs="+", default=[], help="Require at least one tag")
     p.add_argument("--include_runs", nargs="+", default=[], help="Include runs by substring")
     p.add_argument("--overwrite", action="store_true", help="Overwrite existing files")
     return p.parse_args()
+
 
 # ---------------------------------------------------------------------------
 # FILTER
@@ -64,6 +66,7 @@ def want(run: Run, args: argparse.Namespace) -> bool:
     if tags.intersection(FORBIDDEN_TAGS) and not tags.intersection(args.wandb_tags): return False
     return True
 
+
 # ---------------------------------------------------------------------------
 # HELPERS
 # ---------------------------------------------------------------------------
@@ -71,10 +74,12 @@ def discover_eval_keys(run: Run) -> List[str]:
     """Retrieve and sort all Evaluation/{idx}__{name} keys from the run history."""
     df = run.history(samples=1)
     keys = [k for k in df.columns if k.startswith(EVAL_PREFIX)]
+
     # sort by numeric idx
     def idx_of(key: str) -> int:
         m = KEY_PATTERN.match(key)
         return int(m.group(1)) if m else 0
+
     return sorted(keys, key=idx_of)
 
 
@@ -96,6 +101,7 @@ def store_array(arr: List[float], path: Path, fmt: str) -> None:
     else:
         np.savez_compressed(path.with_suffix('.npz'), data=np.asarray(arr, dtype=np.float32))
 
+
 # ---------------------------------------------------------------------------
 # MAIN
 # ---------------------------------------------------------------------------
@@ -109,14 +115,14 @@ def main() -> None:
             continue
 
         cfg = run.config
-        algo      = cfg.get("alg_name")
+        algo = cfg.get("alg_name")
         cl_method = cfg.get("cl_method", "UNKNOWN_CL")
         # fallback hacks:
         if 'EWC' in run.name: cl_method = 'EWC'
         if 'MAS' in run.name: cl_method = 'MAS'
-        strategy  = cfg.get("strategy")
-        seq_len   = cfg.get("seq_length")
-        seed      = max(cfg.get("seed",1), 1)
+        strategy = cfg.get("strategy")
+        seq_len = cfg.get("seq_length")
+        seed = max(cfg.get("seed", 1), 1)
 
         # find eval keys as W&B actually logged them
         eval_keys = discover_eval_keys(run)
@@ -130,7 +136,7 @@ def main() -> None:
         # iterate keys, skipping existing files unless overwrite
         for key in eval_keys:
             idx, name = KEY_PATTERN.match(key).groups()
-            ext = 'json' if args.format=='json' else 'npz'
+            ext = 'json' if args.format == 'json' else 'npz'
             out = out_base / f"{idx}_{name}_success.{ext}"
             if out.exists() and not args.overwrite:
                 print(f"→ {out} exists, skip")
@@ -142,6 +148,7 @@ def main() -> None:
                 continue
             print(f"→ writing {out}")
             store_array(series, out, args.format)
+
 
 if __name__ == '__main__':
     try:
