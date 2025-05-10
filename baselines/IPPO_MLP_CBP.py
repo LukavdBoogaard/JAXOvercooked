@@ -140,7 +140,7 @@ def main():
         mode=config.wandb_mode,
         name=run_name,
         tags=wandb_tags,
-        group="CBP"
+        group=config.cl_method,
     )
 
     # Set up Tensorboard

@@ -141,7 +141,7 @@ def main():
         sync_tensorboard=True,
         mode=config.wandb_mode,
         tags=wandb_tags,
-        group="EWC",
+        group=config.cl_method,
         name=run_name
     )
 
