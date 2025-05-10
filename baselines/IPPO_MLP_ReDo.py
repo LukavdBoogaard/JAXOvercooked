@@ -80,6 +80,7 @@ class RedoDense(nn.Module):
 
 # -----------------------------------------------------------
 class ActorCritic(nn.Module):
+    """Two-layer actor & critic with ReDo-enabled hidden layers."""
     action_dim: int
     activation: str = "tanh"
     redo_decay: float = 0.0
@@ -219,7 +220,6 @@ def redo_step(params: FrozenDict,
     )
 
     return freeze(p), freeze(s), rng
-
 
 
 class TrainStateReDo(TrainState):
