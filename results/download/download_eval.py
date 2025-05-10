@@ -129,22 +129,14 @@ def to_list(x) -> List[str]:
     raise ValueError("config.layouts is neither list nor str: %s" % x)
 
 
-def fetch_all_eval(run: Run, eval_keys: List[str]) -> Dict[str, List[float]]:
-    """
-    Guaranteed-complete download of every evaluation curve.
-
-    W&B will sample/merge rows as soon as you ask for >1 key, so we fetch
-    each key individually.  Returns a dict {key: [v0, v1, ...]}.
-    """
-    out: Dict[str, List[float]] = {}
-    for key in eval_keys:
-        series = [
-            row[key]
-            for row in run.scan_history(keys=[key], page_size=1000)
-            if key in row and row[key] is not None
-        ]
-        out[key] = series
-    return out
+def fetch_series(run: Run, key: str) -> List[float]:
+    """Fetch complete time series for a single eval key."""
+    vals: List[float] = []
+    for row in run.scan_history(keys=[key], page_size=10000):
+        v = row.get(key)
+        if v is not None:
+            vals.append(v)
+    return vals
 
 
 def store_array(arr: List[float], path: Path, format: str, overwrite: bool):
@@ -188,21 +180,26 @@ def main() -> None:
             print(f"[warn] {run.name}: len(layouts)={len(layouts)} != seq_len={seq_len}")
             layouts = layouts[:seq_len]
 
-        eval_keys = [f"Evaluation/{idx}__{name}" for idx, name in enumerate(layouts)]
-        series = fetch_all_eval(run, eval_keys)
-
         base_dir = Path(__file__).resolve().parent.parent
         base = base_dir / Path(args.output) / algo / cl_method / f"{strategy}_{seq_len}" / f"seed_{seed}"
 
         for idx, name in enumerate(layouts):
             key = f"Evaluation/{idx}__{name}"
-            arr = series.get(key)
-            if not arr:
-                continue  # not logged
-            file_name = f"{idx}_{name}_success.{'json' if args.format == 'json' else 'npz'}"
-            out = base / file_name
-            print("→", out)
-            store_array(arr, out, args.format, args.overwrite)
+
+            ext  = 'json' if args.format=='json' else 'npz'
+            out  = base / f"{idx}_{name}_success.{ext}"
+
+            # skip if already exists and no overwrite
+            if out.exists() and not args.overwrite:
+                print(f"→ {out} (exists)")
+                continue
+
+            # fetch and store
+            series = fetch_series(run, key)
+            if not series:
+                continue
+            print(f"→ {out}")
+            store_array(series, out, args.format)
 
 
 if __name__ == "__main__":
