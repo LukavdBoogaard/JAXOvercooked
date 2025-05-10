@@ -1,32 +1,13 @@
 #!/usr/bin/env python3
-"""Download evaluation curves *per environment* for the MARL continual‑learning
-benchmark and store them one metric per file, just like the original RL
-benchmark.
+"""Download evaluation curves *per environment* for the MARL continual-learning
+benchmark and store them one metric per file.
 
-Changes vs. the previous version
---------------------------------
-* **Env names come from `config.layouts`** (this preserves the actual order
-  the run used).  We prefix the index in the filename: `0_easy_layout_success.json`.
-* **Single streaming pass** over the run history: we fetch all evaluation keys
-  at once with `run.scan_history(keys=eval_keys, page_size=5000)` and build the
-  arrays in one go – roughly 10× faster than one call per key.
-* Keeps folder structure: `data/<algo>/<cl_method>/<strategy>_<seq_len>/seed_<seed>/`.
-* If you ever need smaller / faster files, set `--format npz` to store
-  compressed NumPy arrays instead of JSON.
-
-Usage
------
-```bash
-python dl_eval_curves.py \
-  --project your_entity/your_project \
-  --algos IPPO \
-  --cl_methods EWC MAS FT \
-  --seq_length 6  \
-  --strategy ordered \
-  --seeds 1 2 3 4 5
-```
+Optimized logic:
+1. Discover available evaluation keys per run via `run.history(samples=1)`.
+2. Fetch each key's full time series separately, only once.
+3. Skip keys whose output files already exist (unless `--overwrite`).
+4. Write files in `data/<algo>/<cl_method>/<strategy>_<seq_len>/seed_<seed>/`.
 """
-
 from __future__ import annotations
 
 import argparse
@@ -44,93 +25,61 @@ from wandb.apis.public import Run
 # CONSTANTS
 # ---------------------------------------------------------------------------
 FORBIDDEN_TAGS = {"TEST", "LOCAL"}
-EVAL_PAT = re.compile(r"Evaluation/(\d+)__(.+)")  # captures idx, env_name
-
-# critical value for 95 % CI – handy to have around when plotting
-CRIT95 = 1.96
-
+EVAL_PREFIX = "Evaluation/"
+KEY_PATTERN = re.compile(rf"^{re.escape(EVAL_PREFIX)}(\d+)__(.+)")
 
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
-
 def cli() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--project", required=True)
-
-    p.add_argument("--output", default="data",
-                   help="Base folder where the arrays will be written")
+    p.add_argument("--output", default="data", help="Base folder for output")
     p.add_argument("--format", choices=["json", "npz"], default="json",
-                   help="Storage format for arrays")
-
+                   help="Output file format")
     p.add_argument("--seq_length", type=int, nargs="+", default=[6])
-    p.add_argument("--seeds", type=int, nargs="+", default=[1, 2, 3, 4, 5])
-    p.add_argument("--strategy", choices=["ordered", "random"], default=None)
-
+    p.add_argument("--seeds", type=int, nargs="+", default=[1,2,3,4,5])
+    p.add_argument("--strategy", choices=["ordered","random"], default=None)
     p.add_argument("--algos", nargs="+", default=[], help="Filter by alg_name")
     p.add_argument("--cl_methods", nargs="+", default=[], help="Filter by cl_method")
-    p.add_argument("--wandb_tags", nargs="+", default=[], help="Require at least one of these tags")
-    p.add_argument("--include_runs", nargs="+", default=[], help="Always include these runs by name substr")
-
+    p.add_argument("--wandb_tags", nargs="+", default=[], help="Require at least one tag")
+    p.add_argument("--include_runs", nargs="+", default=[], help="Include runs by substring")
     p.add_argument("--overwrite", action="store_true", help="Overwrite existing files")
     return p.parse_args()
 
-
 # ---------------------------------------------------------------------------
-# RUN FILTERING
+# FILTER
 # ---------------------------------------------------------------------------
-
 def want(run: Run, args: argparse.Namespace) -> bool:
     cfg = run.config
-
-    # include‑list shortcut
-    if any(tok in run.name for tok in args.include_runs):
-        return True
-
-    if run.state != "finished":
-        return False
-
-    if args.seeds and cfg.get("seed") not in args.seeds:
-        return False
-
-    if args.algos and cfg.get("alg_name") not in args.algos:
-        return False
-
-    if args.cl_methods and cfg.get("cl_method") not in args.cl_methods:
-        return False
-
-    if args.seq_length and cfg.get("seq_length") not in args.seq_length:
-        return False
-
-    if args.strategy and cfg.get("strategy") != args.strategy:
-        return False
-
-    run_tags = set(cfg.get("wandb_tags", []))
-    if args.wandb_tags and not run_tags.intersection(args.wandb_tags):
-        return False
-
-    if run_tags.intersection(FORBIDDEN_TAGS) and not run_tags.intersection(args.wandb_tags):
-        return False
-
+    if any(tok in run.name for tok in args.include_runs): return True
+    if run.state != "finished": return False
+    if args.seeds and cfg.get("seed") not in args.seeds: return False
+    if args.algos and cfg.get("alg_name") not in args.algos: return False
+    if args.cl_methods and cfg.get("cl_method") not in args.cl_methods: return False
+    if args.seq_length and cfg.get("seq_length") not in args.seq_length: return False
+    if args.strategy and cfg.get("strategy") != args.strategy: return False
+    tags = set(cfg.get("wandb_tags", []))
+    if args.wandb_tags and not tags.intersection(args.wandb_tags): return False
+    if tags.intersection(FORBIDDEN_TAGS) and not tags.intersection(args.wandb_tags): return False
     return True
 
-
 # ---------------------------------------------------------------------------
-# MAIN LOGIC
+# HELPERS
 # ---------------------------------------------------------------------------
+def discover_eval_keys(run: Run) -> List[str]:
+    """Retrieve and sort all Evaluation/{idx}__{name} keys from the run history."""
+    df = run.history(samples=1)
+    keys = [k for k in df.columns if k.startswith(EVAL_PREFIX)]
+    # sort by numeric idx
+    def idx_of(key: str) -> int:
+        m = KEY_PATTERN.match(key)
+        return int(m.group(1)) if m else 0
+    return sorted(keys, key=idx_of)
 
-def to_list(x) -> List[str]:
-    """Attempt to coerce cfg.layouts into a list of env names."""
-    if isinstance(x, list):
-        return x
-    if isinstance(x, str):
-        # assume comma or space separated
-        return re.split(r"[ ,]+", x.strip())
-    raise ValueError("config.layouts is neither list nor str: %s" % x)
 
-
-def fetch_series(run: Run, key: str) -> List[float]:
-    """Fetch complete time series for a single eval key."""
+def fetch_full_series(run: Run, key: str) -> List[float]:
+    """Fetch every recorded value for a single key via scan_history."""
     vals: List[float] = []
     for row in run.scan_history(keys=[key], page_size=10000):
         v = row.get(key)
@@ -139,70 +88,62 @@ def fetch_series(run: Run, key: str) -> List[float]:
     return vals
 
 
-def store_array(arr: List[float], path: Path, format: str, overwrite: bool):
-    if not overwrite and path.exists():
-        return
+def store_array(arr: List[float], path: Path, fmt: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    if format == "json":
+    if fmt == "json":
         with path.open("w") as f:
             json.dump(arr, f)
-    else:  # npz – compressed binary, ~10× smaller & faster
-        np.savez_compressed(path.with_suffix(".npz"), data=np.asarray(arr, dtype=np.float32))
-
+    else:
+        np.savez_compressed(path.with_suffix('.npz'), data=np.asarray(arr, dtype=np.float32))
 
 # ---------------------------------------------------------------------------
-# ENTRY
+# MAIN
 # ---------------------------------------------------------------------------
-
 def main() -> None:
     args = cli()
     api = wandb.Api()
+    base_workspace = Path(__file__).resolve().parent.parent
 
     for run in api.runs(args.project):
         if not want(run, args):
             continue
 
         cfg = run.config
-        algo = cfg["alg_name"]
+        algo      = cfg.get("alg_name")
         cl_method = cfg.get("cl_method", "UNKNOWN_CL")
-        strategy = cfg["strategy"]
-        seq_len = cfg["seq_length"]
-        seed = max(cfg.get("seed", 1), 1)
+        # fallback hacks:
+        if 'EWC' in run.name: cl_method = 'EWC'
+        if 'MAS' in run.name: cl_method = 'MAS'
+        strategy  = cfg.get("strategy")
+        seq_len   = cfg.get("seq_length")
+        seed      = max(cfg.get("seed",1), 1)
 
-        # Temporary hack to determine the cl_method
-        if 'EWC' in run.name:
-            cl_method = 'EWC'
-        elif 'MAS' in run.name:
-            cl_method = 'MAS'
+        # find eval keys as W&B actually logged them
+        eval_keys = discover_eval_keys(run)
+        if not eval_keys:
+            print(f"[warn] {run.name} has no Evaluation/ keys")
+            continue
 
-        layouts = to_list(cfg["layouts"])
-        if len(layouts) != seq_len:
-            print(f"[warn] {run.name}: len(layouts)={len(layouts)} != seq_len={seq_len}")
-            layouts = layouts[:seq_len]
+        out_base = (base_workspace / args.output / algo / cl_method /
+                    f"{strategy}_{seq_len}" / f"seed_{seed}")
 
-        base_dir = Path(__file__).resolve().parent.parent
-        base = base_dir / Path(args.output) / algo / cl_method / f"{strategy}_{seq_len}" / f"seed_{seed}"
-
-        for idx, name in enumerate(layouts):
-            key = f"Evaluation/{idx}__{name}"
-
-            ext  = 'json' if args.format=='json' else 'npz'
-            out  = base / f"{idx}_{name}_success.{ext}"
-
-            # skip if already exists and no overwrite
+        # iterate keys, skipping existing files unless overwrite
+        for key in eval_keys:
+            idx, name = KEY_PATTERN.match(key).groups()
+            ext = 'json' if args.format=='json' else 'npz'
+            out = out_base / f"{idx}_{name}_success.{ext}"
             if out.exists() and not args.overwrite:
-                print(f"→ {out} (exists)")
+                print(f"→ {out} exists, skip")
                 continue
-
-            # fetch and store
-            series = fetch_series(run, key)
+            # fetch & write
+            series = fetch_full_series(run, key)
             if not series:
+                print(f"→ {out} no data, skip")
                 continue
-            print(f"→ {out}")
+            print(f"→ writing {out}")
             store_array(series, out, args.format)
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     try:
         main()
     except KeyboardInterrupt:
