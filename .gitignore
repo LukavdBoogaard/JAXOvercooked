@@ -19,6 +19,7 @@ wandb/
 runs/
 outputs/
 models/
+/results/data/
 *.dat
 
 .idea
