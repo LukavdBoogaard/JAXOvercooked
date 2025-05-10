@@ -41,7 +41,7 @@ def parse_args():
     p.add_argument('--seeds',     type=int, nargs='+', default=[1,2,3,4,5])
     p.add_argument('--sigma',     type=float, default=2.0)
     p.add_argument('--confidence',type=float, default=0.95, choices=[0.9,0.95,0.99])
-    p.add_argument('--plot_name', default='avg_success_normalized')
+    p.add_argument('--plot_name', default='avg_success')
     p.add_argument('--legend_anchor', type=float, default=0.0)
     p.add_argument('--baseline_file', default='practical_reward_baseline_results.yaml',
                    help="YAML with avg_rewards for each env")
