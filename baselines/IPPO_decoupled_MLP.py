@@ -60,6 +60,7 @@ class Config:
     activation: str = "tanh"
     env_name: str = "overcooked"
     alg_name: str = "ippo"
+    cl_method: str = None
     network_architecture: str = "mlp_decoupled"
 
     seq_length: int = 2

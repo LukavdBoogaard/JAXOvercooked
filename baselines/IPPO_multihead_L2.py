@@ -61,6 +61,7 @@ class Config:
     activation: str = "tanh"
     env_name: str = "overcooked"
     alg_name: str = "ippo"
+    cl_method: str = "L2"
     network_architecture: str = "multihead_mlp"
     use_task_id: bool = False
     use_multihead: bool = False
