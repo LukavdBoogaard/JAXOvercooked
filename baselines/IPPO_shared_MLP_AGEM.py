@@ -144,7 +144,7 @@ def main():
         mode=config.wandb_mode,
         name=run_name,
         tags=wandb_tags,
-        group="AGEM",
+        group=config.cl_method,
     )
 
     # Set up Tensorboard

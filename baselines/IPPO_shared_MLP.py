@@ -138,7 +138,7 @@ def main():
         mode=config.wandb_mode,
         name=run_name,
         tags=wandb_tags,
-        group="no_cl"
+        group="no_cl",
     )
 
     # Set up Tensorboard
