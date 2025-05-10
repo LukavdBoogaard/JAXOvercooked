@@ -987,16 +987,13 @@ def record_gif_of_episode(config, train_state, env, network, env_idx=0, max_step
                 obs_b = obs_v
             # Flatten the nonbatch dimensions.
             flattened = jnp.reshape(obs_b, (obs_b.shape[0], -1))
-            if config.use_task_id:
-                onehot = make_task_onehot(env_idx, config.seq_length)  # (seq_length,)
-                onehot = jnp.expand_dims(onehot, axis=0)  # (1, seq_length)
-                flattened = jnp.concatenate([flattened, onehot], axis=1)
             flat_obs[agent_id] = flattened
 
         actions = {}
         act_keys = jax.random.split(rng, env.num_agents)
         for i, agent_id in enumerate(env.agents):
-            pi, _ = network.apply(train_state.params, flat_obs[agent_id], env_idx=env_idx)
+            vars_all = {"params": train_state.params, "cbp": train_state.cbp_state}
+            pi, _ = train_state.apply_fn(vars_all, flat_obs[agent_id], train=False)
             actions[agent_id] = jnp.squeeze(pi.sample(seed=act_keys[i]), axis=0)
 
         rng, key_step = jax.random.split(rng)
