@@ -66,6 +66,7 @@ class Config:
     env_name: str = "overcooked"
     alg_name: str = "ippo"
     cl_method: str = "CBP"
+    shared_backbone: bool = False
     # ------ CBP (Continual Backprop) ------
     cbp_replace_rate: float = 1e-4
     cbp_maturity: int = 10_000
@@ -124,9 +125,9 @@ def main():
     for layout_config in config.env_kwargs:
         layout_name = layout_config["layout"]
         layout_config["layout"] = overcooked_layouts[layout_name]
-
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    run_name = f'{config.alg_name}_seq{config.seq_length}_{config.strategy}_{timestamp}'
+    network = "shared_mlp" if config.shared_backbone else "mlp"
+    run_name = f'{config.alg_name}_{config.cl_method}_{network}_seq{config.seq_length}_{config.strategy}_seed_{config.seed}_{timestamp}'
     exp_dir = os.path.join("runs", run_name)
 
     # Initialize WandB
@@ -139,6 +140,7 @@ def main():
         sync_tensorboard=True,
         mode=config.wandb_mode,
         name=run_name,
+        id=run_name,
         tags=wandb_tags,
         group=config.cl_method,
     )
