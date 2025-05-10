@@ -377,17 +377,10 @@ def main():
         frac = 1.0 - (count // (config.num_minibatches * config.update_epochs)) / config.num_updates
         return config.lr * frac
     
-    def gentle_linear_schedule(count):
-        min_frac = 0.2  
-        frac = 1.0 - (1.0 - min_frac) * (count // (config.num_minibatches * config.update_epochs)) / config.num_updates
-        return config.lr * frac
-
-    rew_shaping_anneal = optax.linear_schedule(
-        init_value=1.,
-        end_value=0.,
-        transition_steps=config.reward_shaping_horizon
-    )
-
+    # def gentle_linear_schedule(count):
+    #     min_frac = 0.2  
+    #     frac = 1.0 - (1.0 - min_frac) * (count // (config.num_minibatches * config.update_epochs)) / config.num_updates
+    #     return config.lr * frac
 
     network = ActorCritic(temp_env.action_space().n, activation=config.activation)
 
@@ -400,7 +393,7 @@ def main():
     # Initialize the optimizer
     tx = optax.chain(
         optax.clip_by_global_norm(config.max_grad_norm),
-        optax.adam(learning_rate=gentle_linear_schedule if config.anneal_lr else config.lr, eps=1e-5)
+        optax.adam(learning_rate=linear_schedule if config.anneal_lr else config.lr, eps=1e-5)
     )
 
     # jit the apply function
@@ -431,14 +424,22 @@ def main():
         # reset the learning rate and the optimizer
         tx = optax.chain(
         optax.clip_by_global_norm(config.max_grad_norm), 
-            optax.adam(learning_rate=gentle_linear_schedule if config.anneal_lr else config.lr, eps=1e-5)
+            optax.adam(learning_rate=linear_schedule if config.anneal_lr else config.lr, eps=1e-5)
         )
-        train_state = train_state.replace(tx=tx)
-        
+        new_optimizer = tx.init(train_state.params)
+        train_state = train_state.replace(tx=tx, opt_state=new_optimizer)
+
         # Initialize and reset the environment 
         rng, env_rng = jax.random.split(rng) 
         reset_rng = jax.random.split(env_rng, config.num_envs) 
         obsv, env_state = jax.vmap(env.reset, in_axes=(0,))(reset_rng) 
+
+        # set the reward shaping for each environment
+        rew_shaping_anneal = optax.linear_schedule(
+            init_value=1.,
+            end_value=0.,
+            transition_steps=config.reward_shaping_horizon
+        )
         
         # TRAIN 
         def _update_step(runner_state, _):
@@ -718,7 +719,7 @@ def main():
             metric["General/update_step"] = update_step
             metric["General/env_step"] = update_step * config.num_steps * config.num_envs
             if config.anneal_lr:
-                metric["General/learning_rate"] = gentle_linear_schedule(update_step * config.num_minibatches * config.update_epochs)
+                metric["General/learning_rate"] = linear_schedule(update_step * config.num_minibatches * config.update_epochs)
             else:
                 metric["General/learning_rate"] = config.lr
 
