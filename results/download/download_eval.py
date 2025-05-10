@@ -137,7 +137,7 @@ def main() -> None:
         for key in eval_keys:
             idx, name = KEY_PATTERN.match(key).groups()
             ext = 'json' if args.format == 'json' else 'npz'
-            out = out_base / f"{idx}_{name}_success.{ext}"
+            out = out_base / f"{idx}_{name}_reward.{ext}"
             if out.exists() and not args.overwrite:
                 print(f"→ {out} exists, skip")
                 continue
