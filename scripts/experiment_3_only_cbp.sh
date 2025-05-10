@@ -1,13 +1,8 @@
 #!/bin/bash
 
 seeds=(0 1 2 3 4)
-models=(IPPO_shared_MLP IPPO_multihead_L2 IPPO_shared_MLP_AGEM IPPO_shared_MLP_EWC IPPO_shared_MLP_MAS IPPO_MLP_CBP)
+models=(IPPO_MLP_CBP)
 tags=(
-  "MLP shared baseline"
-  "L2 regularization"
-  "AGEM"
-  "EWC"
-  "MAS"
   "CBP"
 )
 
