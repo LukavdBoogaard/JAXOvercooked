@@ -59,6 +59,7 @@ class Config:
     activation: str = "tanh"
     env_name: str = "overcooked"
     alg_name: str = "ippo"
+    cl_method: str = None
     network_architecture: str = "shared_mlp"
 
     use_task_id: bool = False

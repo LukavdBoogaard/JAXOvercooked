@@ -66,6 +66,7 @@ class Config:
     activation: str = "tanh"
     env_name: str = "overcooked"
     alg_name: str = "ippo"
+    cl_method: str = "PackNet"
     network_architecture: str = "mlp_decoupled"
 
     # Packnet settings

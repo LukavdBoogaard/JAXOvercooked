@@ -64,7 +64,8 @@ class Config:
     reward_shaping_horizon: float = 2.5e6
     activation: str = "tanh"
     env_name: str = "overcooked"
-    alg_name: str = "ippo_cbp"
+    alg_name: str = "ippo"
+    cl_method: str = "CBP"
     # ------ CBP (Continual Backprop) ------
     cbp_replace_rate: float = 1e-4
     cbp_maturity: int = 10_000
