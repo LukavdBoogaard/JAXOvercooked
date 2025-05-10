@@ -108,33 +108,16 @@ class ActorCritic(nn.Module):
         # Global step counter for the maintenance frequency
         self.variable("redo", "global_step", lambda: jnp.zeros((), jnp.int32))
 
-    def _maybe_kernel(self, module_name: str, shape):
-        """Return real kernel if it exists, else zeros (during init)."""
-        if self.has_variable("params", module_name):
-            return self.scope.get_variable("params", module_name)["kernel"]
-        return jnp.zeros(shape, dtype=jnp.float32)
-
-
     def __call__(self, x, *, train: bool):
-        # shapes used only for the dummy kernel during init
-        dummy_hid = (128, 128)
-        dummy_out = (128, self.action_dim)
-
-        # ----- get weights (kernels) of next_layer -------
-        k_a2   = self._maybe_kernel("actor_fc2_d",  dummy_hid)
-        k_aout = self._maybe_kernel("actor_out",    dummy_out)
-        k_c2   = self._maybe_kernel("critic_fc2_d", dummy_hid)
-        k_cout = self._maybe_kernel("critic_out",   (128, 1))
-
         # ---------- actor ----------
-        h1 = self.a_fc1(x, next_kernel=k_a2, train=train)
-        h2 = self.a_fc2(h1, next_kernel=k_aout, train=train)
+        h1 = self.a_fc1(x, train=train)
+        h2 = self.a_fc2(h1, train=train)
         logits = self.actor_out(h2)
         pi = distrax.Categorical(logits=logits)
 
         # ---------- critic ----------
-        hc1 = self.c_fc1(x, next_kernel=k_c2, train=train)
-        hc2 = self.c_fc2(hc1, next_kernel=k_cout, train=train)
+        hc1 = self.c_fc1(x, train=train)
+        hc2 = self.c_fc2(hc1, train=train)
         value = jnp.squeeze(self.critic_out(hc2), axis=-1)
         return pi, value
 
