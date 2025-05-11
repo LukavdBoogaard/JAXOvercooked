@@ -139,16 +139,16 @@ def evaluate_grid(grid):
     for row in rows:
         if len(row) != width:
             valid = False
-    
+
     # check if the grid has at least one of each required symbol
     required_symbols = ['W', 'X', 'O', 'B', 'P', 'A']
     for symbol in required_symbols:
         if symbol not in grid:
             valid = False
-    
+
     if grid.count('A') != 2:
         valid = False
-    
+
     # check if the grid is completely enclosed by walls
     valid_walls = ['W', 'X', 'B', 'O', 'P']
 
@@ -159,7 +159,7 @@ def evaluate_grid(grid):
                     valid = False
         if row[0] not in valid_walls or row[-1] not in valid_walls:
             valid = False
-    
+
 
     # transform the grid into a matrix
     grid_matrix = [list(row) for row in rows]
@@ -193,7 +193,7 @@ def evaluate_grid(grid):
         for j, char in enumerate(row):
             if char == 'A':
                 agent_positions.append((i, j))
-    
+
     # Step 2: determine the reachability of the agents
     # For Agent 1
     visited1 = [[False for _ in range(len(grid_matrix[0]))] for _ in range(len(grid_matrix))]
@@ -275,7 +275,7 @@ def dfs(i, j, grid_matrix, visited, reachable):
         return
     directions = [(0, 1), (0, -1), (1, 0), (-1, 0)]
     for dx, dy in directions:
-        dfs(i + dx, j + dy, grid_matrix, visited, reachable)  
+        dfs(i + dx, j + dy, grid_matrix, visited, reachable)
 
 
 # Create new environments
@@ -477,25 +477,25 @@ overcooked_layouts = {
     "asymm_advantages" : FrozenDict(asymm_advantages),
     "coord_ring" : FrozenDict(coord_ring),
     "forced_coord" : FrozenDict(forced_coord),
-    "counter_circuit" : FrozenDict(counter_circuit_grid),
-    "square_arena" : FrozenDict(square_arena),
-    "split_kitchen" : FrozenDict(split_kitchen),
-    "basic_kitchen_large" : FrozenDict(basic_kitchen_large),
-    "basic_kitchen_small" : FrozenDict(basic_kitchen_small),
-    "shared_wall" : FrozenDict(shared_wall),
-    "smallest_kitchen" : FrozenDict(smallest_kitchen), 
-    "easy_layout" : FrozenDict(easy_layout),
-    "big_kitchen" : FrozenDict(big_kitchen),
-    "no_cooperation" : FrozenDict(no_cooperation),
-    "forced_coord_2" : FrozenDict(foorced_coord_2),
-    "basic_cooperative" : FrozenDict(basic_cooperative),
-    "corridor_challenge" : FrozenDict(corridor_challenge),
-    "split_work" : FrozenDict(split_work),
-    "resource_sharing" : FrozenDict(resource_sharing),
-    "efficiency_test" : FrozenDict(efficiency_test),
-    "c_kitchen" : FrozenDict(c_kitchen),
-    "most_efficient" : FrozenDict(most_efficient),
-    "most_efficient_horizontal" : FrozenDict(most_efficient_horizontal),
-    "bottleneck_small" : FrozenDict(bottleneck_small),
-    "bottleneck_large" : FrozenDict(bottleneck_large)
+    "counter_circuit" : layout_grid_to_dict(counter_circuit_grid),
+    "square_arena" : layout_grid_to_dict(square_arena),
+    "split_kitchen" : layout_grid_to_dict(split_kitchen),
+    "basic_kitchen_large" : layout_grid_to_dict(basic_kitchen_large),
+    "basic_kitchen_small" : layout_grid_to_dict(basic_kitchen_small),
+    "shared_wall" : layout_grid_to_dict(shared_wall),
+    "smallest_kitchen" : layout_grid_to_dict(smallest_kitchen),
+    "easy_layout" : layout_grid_to_dict(easy_layout),
+    "big_kitchen" : layout_grid_to_dict(big_kitchen),
+    "no_cooperation" : layout_grid_to_dict(no_cooperation),
+    "forced_coord_2" : layout_grid_to_dict(foorced_coord_2),
+    "basic_cooperative" : layout_grid_to_dict(basic_cooperative),
+    "corridor_challenge" : layout_grid_to_dict(corridor_challenge),
+    "split_work" : layout_grid_to_dict(split_work),
+    "resource_sharing" : layout_grid_to_dict(resource_sharing),
+    "efficiency_test" : layout_grid_to_dict(efficiency_test),
+    "c_kitchen" : layout_grid_to_dict(c_kitchen),
+    "most_efficient" : layout_grid_to_dict(most_efficient),
+    "most_efficient_horizontal" : layout_grid_to_dict(most_efficient_horizontal),
+    "bottleneck_small" : layout_grid_to_dict(bottleneck_small),
+    "bottleneck_large" : layout_grid_to_dict(bottleneck_large)
 }
