@@ -25,8 +25,9 @@ from wandb.apis.public import Run
 # CONSTANTS
 # ---------------------------------------------------------------------------
 FORBIDDEN_TAGS = {"TEST", "LOCAL"}
-EVAL_PREFIX = "Evaluation/"
-KEY_PATTERN = re.compile(rf"^{re.escape(EVAL_PREFIX)}(\d+)__(.+)")
+EVAL_PREFIX = "Scaled_returns/evaluation_"
+KEY_PATTERN = re.compile(rf"^{re.escape(EVAL_PREFIX)}(\d+)__(.+)_scaled$")
+TRAINING_KEY = "Scaled_returns/returned_episode_returns_scaled"
 
 
 # ---------------------------------------------------------------------------
@@ -36,8 +37,7 @@ def cli() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--project", required=True)
     p.add_argument("--output", default="data", help="Base folder for output")
-    p.add_argument("--format", choices=["json", "npz"], default="json",
-                   help="Output file format")
+    p.add_argument("--format", choices=["json", "npz"], default="json", help="Output file format")
     p.add_argument("--seq_length", type=int, nargs="+", default=[6])
     p.add_argument("--seeds", type=int, nargs="+", default=[1, 2, 3, 4, 5])
     p.add_argument("--strategy", choices=["ordered", "random"], default=None)
@@ -71,14 +71,18 @@ def want(run: Run, args: argparse.Namespace) -> bool:
 # HELPERS
 # ---------------------------------------------------------------------------
 def discover_eval_keys(run: Run) -> List[str]:
-    """Retrieve and sort all Evaluation/{idx}__{name} keys from the run history."""
+    """Retrieve & sort eval keys, plus the one training key if present."""
     df = run.history(samples=1)
-    keys = [k for k in df.columns if k.startswith(EVAL_PREFIX)]
+    # only exact eval keys
+    keys = [k for k in df.columns if KEY_PATTERN.match(k)]
+    # include training series, if logged
+    if TRAINING_KEY in df.columns:
+        keys.append(TRAINING_KEY)
 
-    # sort by numeric idx
+    # sort eval ones by idx, leave training last
     def idx_of(key: str) -> int:
         m = KEY_PATTERN.match(key)
-        return int(m.group(1)) if m else 0
+        return int(m.group(1)) if m else 10 ** 6
 
     return sorted(keys, key=idx_of)
 
@@ -109,6 +113,7 @@ def main() -> None:
     args = cli()
     api = wandb.Api()
     base_workspace = Path(__file__).resolve().parent.parent
+    ext = 'json' if args.format == 'json' else 'npz'
 
     for run in api.runs(args.project):
         if not want(run, args):
@@ -117,9 +122,15 @@ def main() -> None:
         cfg = run.config
         algo = cfg.get("alg_name")
         cl_method = cfg.get("cl_method", "UNKNOWN_CL")
-        # fallback hacks:
-        if 'EWC' in run.name: cl_method = 'EWC'
-        if 'MAS' in run.name: cl_method = 'MAS'
+
+        # Temporary fallback:
+        if 'EWC' in run.name:
+            cl_method = 'EWC'
+        elif 'MAS' in run.name:
+            cl_method = 'MAS'
+        elif cl_method is None:
+            cl_method = "FT"
+
         strategy = cfg.get("strategy")
         seq_len = cfg.get("seq_length")
         seed = max(cfg.get("seed", 1), 1)
@@ -134,18 +145,24 @@ def main() -> None:
                     f"{strategy}_{seq_len}" / f"seed_{seed}")
 
         # iterate keys, skipping existing files unless overwrite
-        for key in eval_keys:
-            idx, name = KEY_PATTERN.match(key).groups()
-            ext = 'json' if args.format == 'json' else 'npz'
-            out = out_base / f"{idx}_{name}_reward.{ext}"
+        for key in discover_eval_keys(run):
+            # choose filename
+            if key == TRAINING_KEY:
+                filename = f"training_reward.{ext}"
+            else:
+                idx, name = KEY_PATTERN.match(key).groups()
+                filename = f"{idx}_{name}_reward.{ext}"
+
+            out = out_base / filename
             if out.exists() and not args.overwrite:
                 print(f"→ {out} exists, skip")
                 continue
-            # fetch & write
+
             series = fetch_full_series(run, key)
             if not series:
                 print(f"→ {out} no data, skip")
                 continue
+
             print(f"→ writing {out}")
             store_array(series, out, args.format)
 
