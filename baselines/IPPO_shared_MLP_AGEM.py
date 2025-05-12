@@ -407,7 +407,7 @@ def main():
     rew_shaping_anneal = optax.linear_schedule(
         init_value=1.,
         end_value=0.,
-        transition_steps=config.total_timesteps
+        transition_steps=config.reward_shaping_horizon
     )
 
     # global network
