@@ -28,7 +28,9 @@ from baselines.utils import (Transition,
                              unbatchify, 
                              sample_discrete_action,
                              show_heatmap_bwt,
-                             show_heatmap_fwt,)
+                             show_heatmap_fwt,
+                             compute_normalized_evaluation_rewards,
+                             compute_normalized_returns)
 
 from dotenv import load_dotenv
 import os
@@ -69,13 +71,13 @@ class Config:
         "square_arena", "no_cooperation"])
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
-    evaluation: bool = False
+    evaluation: bool = True
     log_interval: int = 75
     eval_num_steps: int = 1000
     eval_num_episodes: int = 5
     gif_len: int = 300
     
-    anneal_lr: bool = False
+    anneal_lr: bool = True
     seed: int = 30
     num_seeds: int = 1
     
@@ -376,11 +378,6 @@ def main():
         '''
         frac = 1.0 - (count // (config.num_minibatches * config.update_epochs)) / config.num_updates
         return config.lr * frac
-    
-    # def gentle_linear_schedule(count):
-    #     min_frac = 0.2  
-    #     frac = 1.0 - (1.0 - min_frac) * (count // (config.num_minibatches * config.update_epochs)) / config.num_updates
-    #     return config.lr * frac
 
     network = ActorCritic(temp_env.action_space().n, activation=config.activation)
 
@@ -408,10 +405,9 @@ def main():
 
     # Load the practical baseline yaml file as a dictionary
     repo_root = Path(__file__).resolve().parent.parent
-    yaml_loc = os.path.join(repo_root, "practical_reward_baseline_results.yaml")
+    yaml_loc = os.path.join(repo_root, "practical_reward_baseline.yaml")
     with open(yaml_loc, "r") as f:
         practical_baselines = OmegaConf.load(f)
-
 
     @partial(jax.jit, static_argnums=(2))
     def train_on_environment(rng, train_state, env, env_counter):
@@ -754,35 +750,20 @@ def main():
                     if config.evaluation:
                         evaluations = evaluate_model(train_state_eval, eval_rng)
 
-                        for i, layout_name in enumerate(config.layout_name):
-                            metric[f"Evaluation/{layout_name}"] = evaluations[i]
-                            
-                            # Add error handling for missing baseline entries
-                            bare_layout = layout_name.split("__")[1].strip()
-                            try:
-                                if bare_layout in practical_baselines:
-                                    baseline_reward = practical_baselines[bare_layout]["avg_rewards"]
-                                    metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i] / baseline_reward
-                                else:
-                                    print(f"Warning: No baseline data for environment '{bare_layout}'")
-                                    metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
-                            except Exception as e:
-                                print(f"Error scaling rewards for {layout_name}: {e}")
-                                metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
+                        metric = compute_normalized_evaluation_rewards(evaluations, 
+                                                            config.layout_name, 
+                                                            practical_baselines, 
+                                                            metric)
                     
                     def callback(args):
                         metric, update_step, env_counter = args
                         real_step = (int(env_counter)-1) * config.num_updates + int(update_step)
 
-                        env_name = config.layout_name[env_counter-1]
-                        bare_layout = env_name.split("__")[1].strip()
-                        if bare_layout in practical_baselines:
-                            metric["Scaled returns/returned_episode_returns_scaled"] = (
-                                metric["returned_episode_returns"] / practical_baselines[bare_layout]["avg_rewards"])
-                        else:
-                            print("Warning: No baseline data for environment: ", bare_layout)
-                            metric["Scaled returns/returned_episode_returns_scaled"] = metric["returned_episode_returns"]  
-
+                        metric = compute_normalized_returns(config.layout_name, 
+                                                            practical_baselines, 
+                                                            metric, 
+                                                            env_counter)
+                        
                         for key, value in metric.items():
                             writer.add_scalar(key, value, real_step)
 
@@ -792,7 +773,10 @@ def main():
                 def do_not_log(metric, update_step):
                     return None
                 
-                jax.lax.cond((update_step % config.log_interval) == 0, log_metrics, do_not_log, metric, update_step)
+                jax.lax.cond((update_step % config.log_interval) == 0, 
+                             log_metrics, do_not_log, 
+                             metric, 
+                             update_step)
             
 
             # Evaluate the model and log the metrics
