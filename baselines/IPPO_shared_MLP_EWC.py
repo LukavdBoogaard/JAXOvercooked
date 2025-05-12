@@ -397,11 +397,10 @@ def main():
         frac = 1.0 - (count // (config.num_minibatches * config.update_epochs)) / config.num_updates
         return config.lr * frac
 
-    reward_shaping_horizon = config.total_timesteps / 2
     rew_shaping_anneal = optax.linear_schedule(
         init_value=1.,
         end_value=0.,
-        transition_steps=config.total_timesteps
+        transition_steps=config.reward_shaping_horizon
     )
 
     network = ActorCritic(temp_env.action_space().n, activation=config.activation, use_multihead=config.use_multihead,
