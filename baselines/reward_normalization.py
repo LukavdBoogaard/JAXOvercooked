@@ -919,7 +919,7 @@ def main():
             }
             
 
-            current_folder = "/home/lvdenboogaard/JAXOvercooked"
+            current_folder = Path(__file__).resolve().parent.parent
             save_path = f"{current_folder}/practical_reward_baseline.yaml"
 
             # load existing data from the yaml 
