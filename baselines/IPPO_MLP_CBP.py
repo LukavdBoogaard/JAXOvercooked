@@ -1,50 +1,37 @@
 import os
+from dataclasses import dataclass, field
 # os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 from datetime import datetime
-import copy
-import pickle
-import math
+from functools import partial
+from pathlib import Path
+from typing import Sequence, NamedTuple, Any, Optional, List
+
 import flax
-import flax.linen as nn
 import jax
 import jax.experimental
 import jax.numpy as jnp
-import numpy as np
 import optax
-from flax.linen.initializers import constant, orthogonal
-from flax.core.frozen_dict import FrozenDict, freeze, unfreeze
-from typing import Sequence, NamedTuple, Any, Optional, List, Tuple
-from flax.training.train_state import TrainState
-import distrax
-from gymnax.wrappers.purerl import LogWrapper, FlattenObservationWrapper
-
-from jax_marl.registration import make
-from jax_marl.wrappers.baselines import LogWrapper
-from jax_marl.environments.overcooked_environment import overcooked_layouts
-from jax_marl.environments.env_selection import generate_sequence
-from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
-from dotenv import load_dotenv
-from architectures.CBP_actorcritic import ActorCritic
-from cl_methods.CBP import (CBPDense,
-                            weight_reinit,
-                            cbp_step,
-                            TrainStateCBP)
-from baselines.utils import (Transition, 
-                             batchify, 
-                             unbatchify, 
-                             sample_discrete_action,
-                             show_heatmap_bwt,
-                             show_heatmap_fwt,
-                             make_task_onehot)
-
-from omegaconf import OmegaConf
-import matplotlib.pyplot as plt
-import wandb
-from functools import partial
-from dataclasses import dataclass, field
 import tyro
+import wandb
+from dotenv import load_dotenv
+from flax.core.frozen_dict import freeze, unfreeze
+from gymnax.wrappers.purerl import LogWrapper
+from omegaconf import OmegaConf
 from tensorboardX import SummaryWriter
-from pathlib import Path
+
+from architectures.CBP_actorcritic import ActorCritic
+from baselines.utils import (Transition,
+                             batchify,
+                             unbatchify,
+                             show_heatmap_bwt,
+                             show_heatmap_fwt)
+from cl_methods.CBP import (cbp_step,
+                            TrainStateCBP)
+from jax_marl.environments.env_selection import generate_sequence
+from jax_marl.environments.overcooked_environment import overcooked_layouts
+from jax_marl.registration import make
+from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
+from jax_marl.wrappers.baselines import LogWrapper
 
 
 @dataclass
@@ -69,24 +56,25 @@ class Config:
     cbp_replace_rate: float = 1e-4
     cbp_maturity: int = 10_000
     cbp_decay: float = 0.0
+    cbp_replace_interval: int = 25   # run CBP every n PPO updates
 
     seq_length: int = 2
     strategy: str = "random"
     layouts: Optional[Sequence[str]] = field(default_factory=lambda: [
-        "asymm_advantages", "smallest_kitchen", "cramped_room", 
+        "asymm_advantages", "smallest_kitchen", "cramped_room",
         "easy_layout", "square_arena", "no_cooperation"])
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
     evaluation: bool = True
-    log_interval: int = 75 # log every 200 calls to update step
-    eval_num_steps: int = 1000 # number of steps to evaluate the model
-    eval_num_episodes: int = 5 # number of episodes to evaluate the model
+    log_interval: int = 75  # log every 200 calls to update step
+    eval_num_steps: int = 1000  # number of steps to evaluate the model
+    eval_num_episodes: int = 5  # number of episodes to evaluate the model
     gif_len: int = 300
-    
+
     anneal_lr: bool = False
     seed: int = 30
     num_seeds: int = 1
-    
+
     # Wandb settings
     wandb_mode: str = "online"
     entity: Optional[str] = ""
@@ -97,6 +85,7 @@ class Config:
     num_actors: int = 0
     num_updates: int = 0
     minibatch_size: int = 0
+
 
 ############################
 ##### MAIN FUNCTION    #####
@@ -250,7 +239,7 @@ def main():
             env["height"] = max_height
             env["width"] = max_width
 
-            padded_envs.append(freeze(env)) # Freeze the environment to prevent further modifications
+            padded_envs.append(freeze(env))  # Freeze the environment to prevent further modifications
 
         return padded_envs
 
@@ -267,6 +256,7 @@ def main():
             """
             Run a single episode using jax.lax.while_loop
             """
+
             class EvalState(NamedTuple):
                 key: Any
                 state: Any
@@ -309,7 +299,6 @@ def main():
                     vars_all = {"params": train_state.params, "cbp": train_state.cbp_state}
                     pi, value = train_state.apply_fn(vars_all, obs, train=False)
                     return pi.sample(seed=rng), value
-
 
                 # Get action distributions
                 action_a1, _ = select_action(train_state, key_a0, flat_obs["agent_0"])
@@ -361,7 +350,7 @@ def main():
             all_avg_rewards.append(avg_reward)
 
         return all_avg_rewards
-    
+
     # pad all environments
     padded_envs = pad_observation_space()
 
@@ -370,7 +359,6 @@ def main():
         env = make(config.env_name, layout=env_layout)
         env = LogWrapper(env, replace_info=False)
         envs.append(env)
-
 
     # set extra config parameters based on the environment
     temp_env = envs[0]
@@ -392,9 +380,8 @@ def main():
         transition_steps=config.reward_shaping_horizon
     )
 
-
-    network = ActorCritic(temp_env.action_space().n, 
-                          activation=config.activation, 
+    network = ActorCritic(temp_env.action_space().n,
+                          activation=config.activation,
                           cbp_eta=config.cbp_decay)
 
     # Initialize the network
@@ -430,7 +417,6 @@ def main():
 
     apply_net = jax.jit(apply_net, static_argnames=("train_flag",))
 
-
     # Load the practical baseline yaml file as a dictionary
     # repo_root = "/home/luka/repo/JAXOvercooked"
     repo_root = Path(__file__).resolve().parent.parent
@@ -448,9 +434,11 @@ def main():
 
         print("Training on environment")
 
+        cbp_step_jit = jax.jit(cbp_step, static_argnames=("maturity", "rho"))
+
         # reset the learning rate and the optimizer
         tx = optax.chain(
-        optax.clip_by_global_norm(config.max_grad_norm),
+            optax.clip_by_global_norm(config.max_grad_norm),
             optax.adam(learning_rate=linear_schedule if config.anneal_lr else config.lr, eps=1e-5)
         )
         train_state = train_state.replace(tx=tx)
@@ -499,7 +487,7 @@ def main():
 
                 # format the actions to be compatible with the environment
                 env_act = unbatchify(action, env.agents, config.num_envs, env.num_agents)
-                env_act = {k:v.flatten() for k,v in env_act.items()}
+                env_act = {k: v.flatten() for k, v in env_act.items()}
 
                 # STEP ENV
                 # split the random number generator for stepping the environment
@@ -507,7 +495,7 @@ def main():
                 rng_step = jax.random.split(_rng, config.num_envs)
 
                 # simultaniously step all environments with the selected actions (parallelized over the number of environments with vmap)
-                obsv, env_state, reward, done, info = jax.vmap(env.step, in_axes=(0,0,0))(
+                obsv, env_state, reward, done, info = jax.vmap(env.step, in_axes=(0, 0, 0))(
                     rng_step, env_state, env_act
                 )
 
@@ -519,11 +507,11 @@ def main():
                 current_timestep = update_step * config.num_steps * config.num_envs
 
                 # add the shaped reward to the normal reward
-                reward = jax.tree_util.tree_map(lambda x,y: 
-                                                x+y * rew_shaping_anneal(current_timestep), 
-                                                reward, 
+                reward = jax.tree_util.tree_map(lambda x, y:
+                                                x + y * rew_shaping_anneal(current_timestep),
+                                                reward,
                                                 info["shaped_reward"]
-                                            )
+                                                )
 
                 transition = Transition(
                     batchify(done, env.agents, config.num_actors).squeeze(),
@@ -555,6 +543,7 @@ def main():
             # _, last_val = network.apply(train_state.params, last_obs_batch)
             vars_all = {"params": train_state.params, "cbp": train_state.cbp_state}
             _, last_val = train_state.apply_fn(vars_all, last_obs_batch, train=False)
+
             # this returns the value network for the last observation batch
 
             # @profile
@@ -565,6 +554,7 @@ def main():
                 @param last_val: the value of the last state
                 returns the advantages and the targets
                 '''
+
                 def _get_advantages(gae_and_next_value, transition):
                     '''
                     calculates the advantage for a single transition
@@ -578,11 +568,11 @@ def main():
                         transition.value,
                         transition.reward,
                     )
-                    delta = reward + config.gamma * next_value * (1 - done) - value # calculate the temporal difference
+                    delta = reward + config.gamma * next_value * (1 - done) - value  # calculate the temporal difference
                     gae = (
-                        delta
-                        + config.gamma * config.gae_lambda * (1 - done) * gae
-                    ) # calculate the GAE (used instead of the standard advantage estimate in PPO)
+                            delta
+                            + config.gamma * config.gae_lambda * (1 - done) * gae
+                    )  # calculate the GAE (used instead of the standard advantage estimate in PPO)
 
                     return (gae, value), gae
 
@@ -637,7 +627,8 @@ def main():
                         log_prob = pi.log_prob(traj_batch.action)
 
                         # calculate critic loss
-                        value_pred_clipped = traj_batch.value + (value - traj_batch.value).clip(-config.clip_eps, config.clip_eps)
+                        value_pred_clipped = traj_batch.value + (value - traj_batch.value).clip(-config.clip_eps,
+                                                                                                config.clip_eps)
                         value_losses = jnp.square(value - targets)
                         value_losses_clipped = jnp.square(value_pred_clipped - targets)
                         value_loss = (0.5 * jnp.maximum(value_losses, value_losses_clipped).mean())
@@ -678,15 +669,6 @@ def main():
                     # add the gradients to the network parameters
                     train_state = train_state.apply_gradients(grads=grads)
 
-                    # ---- Continual-Backprop neuron replacement ----
-                    rng, cbp_rng = jax.random.split(rng)
-                    new_p, new_c, _ = cbp_step(train_state.params,
-                                               train_state.cbp_state,
-                                               rng=cbp_rng,
-                                               maturity=config.cbp_maturity,
-                                               rho=config.cbp_replace_rate)
-                    train_state = train_state.replace(params=new_p, cbp_state=new_c)
-
                     # Of course we also need to add the network to the carry here
                     return (train_state, rng), loss_information
 
@@ -696,7 +678,7 @@ def main():
                 # set the batch size and check if it is correct
                 batch_size = config.minibatch_size * config.num_minibatches
                 assert (
-                batch_size == config.num_steps * config.num_actors
+                        batch_size == config.num_steps * config.num_actors
                 ), "batch size must be equal to number of steps * number of actors"
 
                 # create a batch of the trajectory, advantages, and targets
@@ -704,7 +686,7 @@ def main():
 
                 # reshape the batch to be compatible with the network
                 batch = jax.tree_util.tree_map(
-                f=(lambda x: x.reshape((batch_size,) + x.shape[2:])), tree=batch
+                    f=(lambda x: x.reshape((batch_size,) + x.shape[2:])), tree=batch
                 )
                 # split the random number generator for shuffling the batch
                 rng, _rng = jax.random.split(rng)
@@ -714,19 +696,29 @@ def main():
 
                 # shuffle the batch
                 shuffled_batch = jax.tree_util.tree_map(
-                lambda x: jnp.take(x, permutation, axis=0), batch
+                    lambda x: jnp.take(x, permutation, axis=0), batch
                 )  # outputs a tuple of the batch, advantages, and targets shuffled
 
                 minibatches = jax.tree_util.tree_map(
-                f=(lambda x: jnp.reshape(x, [config.num_minibatches, -1] + list(x.shape[1:]))), tree=shuffled_batch,
+                    f=(lambda x: jnp.reshape(x, [config.num_minibatches, -1] + list(x.shape[1:]))), tree=shuffled_batch,
                 )
 
                 carry_init = (train_state, rng)
                 (train_state, rng), loss_information = jax.lax.scan(
-                f=_update_minbatch,
-                init=carry_init,
-                xs=minibatches
+                    f=_update_minbatch,
+                    init=carry_init,
+                    xs=minibatches
                 )
+
+                # ---- Continual-Backprop neuron replacement ----
+                if update_step % config.cbp_replace_interval == 0:
+                    rng, cbp_rng = jax.random.split(rng)
+                    new_p, new_c, _ = cbp_step_jit(train_state.params,
+                                                   train_state.cbp_state,
+                                                   rng=cbp_rng,
+                                                   maturity=config.cbp_maturity,
+                                                   rho=config.cbp_replace_rate)
+                    train_state = train_state.replace(params=new_p, cbp_state=new_c)
 
                 total_loss, grads = loss_information
                 avg_grads = jax.tree_util.tree_map(lambda x: jnp.mean(x, axis=0), grads)
@@ -761,7 +753,8 @@ def main():
             metric["General/update_step"] = update_step
             metric["General/env_step"] = update_step * config.num_steps * config.num_envs
             if config.anneal_lr:
-                metric["General/learning_rate"] = linear_schedule(update_step * config.num_minibatches * config.update_epochs)
+                metric["General/learning_rate"] = linear_schedule(
+                    update_step * config.num_minibatches * config.update_epochs)
             else:
                 metric["General/learning_rate"] = config.lr
             # Losses section
@@ -775,8 +768,12 @@ def main():
             metric["General/shaped_reward_agent0"] = metric["shaped_reward"]["agent_0"]
             metric["General/shaped_reward_agent1"] = metric["shaped_reward"]["agent_1"]
             metric.pop("shaped_reward", None)
-            metric["General/shaped_reward_annealed_agent0"] = metric["General/shaped_reward_agent0"] * rew_shaping_anneal(current_timestep)
-            metric["General/shaped_reward_annealed_agent1"] = metric["General/shaped_reward_agent1"] * rew_shaping_anneal(current_timestep)
+            metric["General/shaped_reward_annealed_agent0"] = metric[
+                                                                  "General/shaped_reward_agent0"] * rew_shaping_anneal(
+                current_timestep)
+            metric["General/shaped_reward_annealed_agent1"] = metric[
+                                                                  "General/shaped_reward_agent1"] * rew_shaping_anneal(
+                current_timestep)
 
             # Advantages and Targets section
             metric["Advantage_Targets/advantages"] = advantages.mean()
@@ -803,7 +800,8 @@ def main():
                             try:
                                 if bare_layout in practical_baselines:
                                     baseline_reward = practical_baselines[bare_layout]["avg_rewards"]
-                                    metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i] / baseline_reward
+                                    metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[
+                                                                                                    i] / baseline_reward
                                 else:
                                     print(f"Warning: No baseline data for environment '{bare_layout}'")
                                     metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
@@ -817,16 +815,18 @@ def main():
                     # Same error handling for callback function
                     def callback(args):
                         metric, update_step, env_counter = args
-                        real_step = (int(env_counter)-1) * config.num_updates + int(update_step)
+                        real_step = (int(env_counter) - 1) * config.num_updates + int(update_step)
 
-                        env_name = config.layout_name[env_counter-1]
+                        env_name = config.layout_name[env_counter - 1]
                         bare_layout = env_name.split("__")[1].strip()
                         if bare_layout in practical_baselines:
                             metric["Scaled returns/returned_episode_returns_scaled"] = (
-                                metric["returned_episode_returns"] / practical_baselines[bare_layout]["avg_rewards"])
+                                    metric["returned_episode_returns"] / practical_baselines[bare_layout][
+                                "avg_rewards"])
                         else:
                             print("Warning: No baseline data for environment: ", bare_layout)
-                            metric["Scaled returns/returned_episode_returns_scaled"] = metric["returned_episode_returns"]  
+                            metric["Scaled returns/returned_episode_returns_scaled"] = metric[
+                                "returned_episode_returns"]
 
                         for key, value in metric.items():
                             writer.add_scalar(key, value, real_step)
@@ -878,94 +878,98 @@ def main():
 
             return runner_state, metric
 
-        rng, train_rng = jax.random.split(rng)
-
-        # initialize a carrier that keeps track of the states and observations of the agents
-        runner_state = (train_state, env_state, obsv, 0, train_rng)
-
-        # run the _update_step function a series of times, while keeping track of the state
-        runner_state, metric = jax.lax.scan(
-            f=_update_step,
-            init=runner_state,
-            xs=None,
-            length=config.num_updates
-        )
-
-        # Return the runner state after the training loop, and the metric arrays
-        return runner_state, metric
-
-    def loop_over_envs(rng, train_state, envs):
-        '''
-        Loops over the environments and trains the network
-        @param rng: random number generator
-        @param train_state: the current state of the training
-        @param envs: the environments
-        returns the runner state and the metrics
-        '''
-        # split the random number generator for training on the environments
-        rng, *env_rngs = jax.random.split(rng, len(envs)+1)
-
-        visualizer = OvercookedVisualizer()
-
-        # counter for the environment 
-        env_counter = 1
-
-        # Evaluate the model on all environments before training
-        if config.evaluation:
-            evaluation_matrix = jnp.zeros(((len(envs)+1), len(envs)))
-            rng, eval_rng = jax.random.split(rng)
-            evaluations = evaluate_model(train_state, eval_rng)
-            evaluation_matrix = evaluation_matrix.at[0,:].set(evaluations)
-
-        for i, (env_rng, env) in enumerate(zip(env_rngs, envs)):
-            runner_state, metrics = train_on_environment(env_rng, train_state, env, env_counter)
-
-            # unpack the runner state
-            train_state, env_state, last_obs, update_step, rng = runner_state
-
-            # Generate & log a GIF after finishing task i
-            env_name = config.layout_name[i]
-            states = record_gif_of_episode(config, train_state, env, network, env_idx=i, max_steps=config.gif_len)
-            visualizer.animate(states, agent_view_size=5, task_idx=i, task_name=env_name, exp_dir=exp_dir)
-
-            if config.evaluation:
-                # Evaluate at the end of training to get the average performance of the task right after training
-                evaluations = evaluate_model(train_state, rng)
-                evaluation_matrix = evaluation_matrix.at[env_counter,:].set(evaluations)
-
-            # save the model
-            path = f"checkpoints/overcooked/{run_name}/model_env_{env_counter}"
-            save_params(path, train_state)
-
-            # update the environment counter
-            env_counter += 1
-
-        if config.evaluation:
-            show_heatmap_bwt(evaluation_matrix, run_name)
-            show_heatmap_fwt(evaluation_matrix, run_name)
-
-        return runner_state
-
-    def save_params(path, train_state):
-        '''
-        Saves the parameters of the network
-        @param path: the path to save the parameters
-        @param train_state: the current state of the training
-        returns None
-        '''
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "wb") as f:
-            f.write(
-                flax.serialization.to_bytes(
-                    {"params": train_state.params}
-                )
-            )
-        print('model saved to', path)
-
-    # Run the model
     rng, train_rng = jax.random.split(rng)
-    # run the loop_over_envs function to the environments
-    runner_state = loop_over_envs(train_rng, train_state, envs)
+
+    # initialize a carrier that keeps track of the states and observations of the agents
+    runner_state = (train_state, env_state, obsv, 0, train_rng)
+
+    # run the _update_step function a series of times, while keeping track of the state
+    runner_state, metric = jax.lax.scan(
+        f=_update_step,
+        init=runner_state,
+        xs=None,
+        length=config.num_updates
+    )
+
+    # Return the runner state after the training loop, and the metric arrays
+    return runner_state, metric
+
+
+def loop_over_envs(rng, train_state, envs):
+    '''
+    Loops over the environments and trains the network
+    @param rng: random number generator
+    @param train_state: the current state of the training
+    @param envs: the environments
+    returns the runner state and the metrics
+    '''
+    # split the random number generator for training on the environments
+    rng, *env_rngs = jax.random.split(rng, len(envs) + 1)
+
+    visualizer = OvercookedVisualizer()
+
+    # counter for the environment
+    env_counter = 1
+
+    # Evaluate the model on all environments before training
+    if config.evaluation:
+        evaluation_matrix = jnp.zeros(((len(envs) + 1), len(envs)))
+        rng, eval_rng = jax.random.split(rng)
+        evaluations = evaluate_model(train_state, eval_rng)
+        evaluation_matrix = evaluation_matrix.at[0, :].set(evaluations)
+
+    for i, (env_rng, env) in enumerate(zip(env_rngs, envs)):
+        runner_state, metrics = train_on_environment(env_rng, train_state, env, env_counter)
+
+        # unpack the runner state
+        train_state, env_state, last_obs, update_step, rng = runner_state
+
+        # Generate & log a GIF after finishing task i
+        env_name = config.layout_name[i]
+        states = record_gif_of_episode(config, train_state, env, network, env_idx=i, max_steps=config.gif_len)
+        visualizer.animate(states, agent_view_size=5, task_idx=i, task_name=env_name, exp_dir=exp_dir)
+
+        if config.evaluation:
+            # Evaluate at the end of training to get the average performance of the task right after training
+            evaluations = evaluate_model(train_state, rng)
+            evaluation_matrix = evaluation_matrix.at[env_counter, :].set(evaluations)
+
+        # save the model
+        path = f"checkpoints/overcooked/{run_name}/model_env_{env_counter}"
+        save_params(path, train_state)
+
+        # update the environment counter
+        env_counter += 1
+
+    if config.evaluation:
+        show_heatmap_bwt(evaluation_matrix, run_name)
+        show_heatmap_fwt(evaluation_matrix, run_name)
+
+    return runner_state
+
+
+def save_params(path, train_state):
+    '''
+    Saves the parameters of the network
+    @param path: the path to save the parameters
+    @param train_state: the current state of the training
+    returns None
+    '''
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(
+            flax.serialization.to_bytes(
+                {"params": train_state.params}
+            )
+        )
+    print('model saved to', path)
+
+
+# Run the model
+rng, train_rng = jax.random.split(rng)
+# run the loop_over_envs function to the environments
+runner_state = loop_over_envs(train_rng, train_state, envs)
+
 
 def record_gif_of_episode(config, train_state, env, network, env_idx=0, max_steps=300):
     rng = jax.random.PRNGKey(0)
