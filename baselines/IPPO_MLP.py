@@ -62,7 +62,7 @@ class Config:
     activation: str = "tanh"
     env_name: str = "overcooked"
     alg_name: str = "ippo"
-    cl_method: str = None
+    cl_method: str = "FT"
     shared_backbone: bool = False
 
     seq_length: int = 2
