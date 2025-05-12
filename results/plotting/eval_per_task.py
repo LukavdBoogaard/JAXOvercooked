@@ -21,7 +21,6 @@ from typing import List
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
-import yaml
 from scipy.ndimage import gaussian_filter1d
 
 # plotting defaults ---------------------------------------------------
@@ -69,11 +68,13 @@ def collect_env_curves(base: Path, algo: str, method: str, strat: str,
     # discover envs
     for seed in seeds:
         sd = folder / f"seed_{seed}"
-        if not sd.exists(): continue
-        files = sorted(sd.glob(f"*_reward.*"))
-        if not files: continue
+        if not sd.exists():
+            continue
+        files = sorted(f for f in sd.glob(f"*_reward.*") if "training" not in f.name)
+        if not files:
+            continue
         suffix = "_reward"
-        env_names = [f.name.split('_',1)[1].rsplit(suffix,1)[0] for f in files]
+        env_names = [f.name.split('_', 1)[1].rsplit(suffix, 1)[0] for f in files]
         per_env_seed = [[] for _ in env_names]
         break
     if not env_names: raise RuntimeError(f'No data for {method}')
@@ -87,86 +88,88 @@ def collect_env_curves(base: Path, algo: str, method: str, strat: str,
             if not fp.exists(): fp = sd / f"{idx}_{env}_reward.npz"
             if not fp.exists(): continue
             arr = load_series(fp)
-            if metric=='success':
-                b=baselines.get(env,{}).get('avg_rewards')
-                arr = arr/b if b else np.full_like(arr,np.nan)
+            # if metric=='success':
+            #     b=baselines.get(env,{}).get('avg_rewards')
+            #     arr = arr/b if b else np.full_like(arr,np.nan)
             per_env_seed[idx].append(arr)
 
-    T_max = max(max(map(len,curves)) for curves in per_env_seed if curves)
+    T_max = max(max(map(len, curves)) for curves in per_env_seed if curves)
     curves = []
     for env_curves in per_env_seed:
         if env_curves:
-            stacked = np.vstack([np.pad(a,(0,T_max-len(a)),constant_values=np.nan)
+            stacked = np.vstack([np.pad(a, (0, T_max - len(a)), constant_values=np.nan)
                                  for a in env_curves])
         else:
-            stacked = np.full((1,T_max),np.nan)
+            stacked = np.full((1, T_max), np.nan)
         curves.append(stacked)
 
     return env_names, curves
 
 
 def smooth_and_ci(data: np.ndarray, sigma: float, conf: float):
-    mean = gaussian_filter1d(np.nanmean(data,axis=0),sigma=sigma)
-    sd = gaussian_filter1d(np.nanstd(data,axis=0),sigma=sigma)
-    ci = CRIT[conf]*sd/np.sqrt(data.shape[0])
+    mean = gaussian_filter1d(np.nanmean(data, axis=0), sigma=sigma)
+    sd = gaussian_filter1d(np.nanstd(data, axis=0), sigma=sigma)
+    ci = CRIT[conf] * sd / np.sqrt(data.shape[0])
     return mean, ci
 
 
 def plot():
     args = parse_args()
-    data_root = Path(__file__).resolve().parent.parent/args.data_root
+    data_root = Path(__file__).resolve().parent.parent / args.data_root
 
     baselines = {}
-    if args.metric=='success':
-        with open(Path(__file__).resolve().parent.parent.parent/args.baseline_file) as f:
-            baselines = yaml.safe_load(f)
+    # if args.metric=='success':
+    #     with open(Path(__file__).resolve().parent.parent.parent/args.baseline_file) as f:
+    #         baselines = yaml.safe_load(f)
 
-    total = args.seq_len*args.steps_per_task
-    colours = sns.color_palette("husl",args.seq_len)
-    boundaries = [i*args.steps_per_task for i in range(args.seq_len+1)]
-    mids = [(boundaries[i]+boundaries[i+1])/2 for i in range(args.seq_len)]
+    total = args.seq_len * args.steps_per_task
+    colours = sns.color_palette("hls", args.seq_len)
+    boundaries = [i * args.steps_per_task for i in range(args.seq_len + 1)]
+    mids = [(boundaries[i] + boundaries[i + 1]) / 2 for i in range(args.seq_len)]
 
     methods = args.methods
-    fig_h = 2.5*len(methods) if len(methods)>1 else 2.8
-    fig,axes=plt.subplots(len(methods),1,sharex=False,sharey=True,figsize=(12,fig_h))
-    if len(methods)==1: axes=[axes]
+    fig_h = 2.5 * len(methods) if len(methods) > 1 else 2.8
+    fig, axes = plt.subplots(len(methods), 1, sharex=False, sharey=True, figsize=(12, fig_h))
+    if len(methods) == 1: axes = [axes]
 
-    for m_idx,method in enumerate(methods):
-        ax=axes[m_idx]
-        envs,curves=collect_env_curves(data_root,args.algo,method,args.strategy,
-                                       args.seq_len,args.seeds,args.metric,baselines)
+    for m_idx, method in enumerate(methods):
+        ax = axes[m_idx]
+        envs, curves = collect_env_curves(data_root, args.algo, method, args.strategy,
+                                          args.seq_len, args.seeds, args.metric, baselines)
 
         ax.set_xticks(boundaries)
-        ax.ticklabel_format(style='scientific',axis='x',scilimits=(0,0))
-        for b in boundaries: ax.axvline(b,linestyle='--',linewidth=0.5,color='gray')
+        ax.ticklabel_format(style='scientific', axis='x', scilimits=(0, 0))
+        for b in boundaries: ax.axvline(b, linestyle='--', linewidth=0.5, color='gray')
 
-        for i,curve in enumerate(curves):
-            mean,ci=smooth_and_ci(curve,args.sigma,args.confidence)
-            x=np.linspace(0,total,len(mean))
-            ax.plot(x,mean,color=colours[i])
-            ax.fill_between(x,mean-ci,mean+ci,alpha=0.2,color=colours[i])
+        for i, curve in enumerate(curves):
+            mean, ci = smooth_and_ci(curve, args.sigma, args.confidence)
+            x = np.linspace(0, total, len(mean))
+            ax.plot(x, mean, color=colours[i])
+            ax.fill_between(x, mean - ci, mean + ci, alpha=0.2, color=colours[i])
 
-        ax.set_xlim(0,total)
-        ax.set_ylim(0,1)
+        ax.set_xlim(0, total)
+        ax.set_ylim(0, 1)
         ax.set_ylabel(args.metric.capitalize())
-        ax.set_title(method,fontsize=11)
+        ax.set_title(method, fontsize=11)
 
-        twin=ax.twiny()
+        twin = ax.twiny()
         twin.set_xlim(ax.get_xlim())
         twin.set_xticks(mids)
-        labels=[f"Task {i+1}" for i in range(args.seq_len)]
-        twin.set_xticklabels(labels,fontsize=10)
-        twin.tick_params(axis='x',length=0)
-        for idx,label in enumerate(twin.get_xticklabels()):
+        labels = [f"Task {i + 1}" for i in range(args.seq_len)]
+        twin.set_xticklabels(labels, fontsize=10)
+        twin.tick_params(axis='x', length=0)
+        for idx, label in enumerate(twin.get_xticklabels()):
             label.set_color(colours[idx])
 
     axes[-1].set_xlabel('Environment Steps')
     plt.tight_layout()
-    out=Path(__file__).resolve().parent.parent/'plots'
+    out = Path(__file__).resolve().parent.parent / 'plots'
     out.mkdir(exist_ok=True)
-    name=args.plot_name or f"forgetting_{args.metric}"
-    plt.savefig(out/f"{name}.png")
-    plt.savefig(out/f"{name}.pdf")
+    name = args.plot_name or f"forgetting_{args.metric}"
+    plt.savefig(out / f"{name}.png")
+    plt.savefig(out / f"{name}.pdf")
     plt.show()
 
-if __name__=='__main__': plot()
+
+if __name__ == '__main__':
+    plot()
