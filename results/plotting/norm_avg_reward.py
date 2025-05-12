@@ -49,13 +49,12 @@ def parse_args():
     p.add_argument('--sigma', type=float, default=1.5)
     p.add_argument('--confidence', type=float, default=0.95,
                    choices=[0.9, 0.95, 0.99])
-    p.add_argument('--metric', choices=['success', 'reward'],
-                   default='success')
+    p.add_argument('--metric', choices=['reward'], default='reward')
     p.add_argument('--plot_name', default=None)
     p.add_argument('--legend_anchor', type=float, default=0.0)
     p.add_argument('--baseline_file',
                    default='practical_reward_baseline_results.yaml',
-                   help="Only used when --metric success")
+                   help="Normalize reward curves by the baseline results from this file")
     return p.parse_args()
 
 
@@ -163,7 +162,7 @@ def plot():
     plt.tight_layout()
     out = Path(__file__).resolve().parent.parent / 'plots'
     out.mkdir(exist_ok=True)
-    stem = args.plot_name or f"avg_{args.metric}"
+    stem = args.plot_name or f"avg_norm_{args.metric}"
     plt.savefig(out / f"{stem}.png")
     plt.savefig(out / f"{stem}.pdf")
     plt.show()

@@ -40,14 +40,8 @@ def parse_args():
     p.add_argument('--steps_per_task', type=float, default=8e6)
     p.add_argument('--seeds', type=int, nargs='+', default=[1, 2, 3, 4, 5])
     p.add_argument('--sigma', type=float, default=1.5)
-    p.add_argument('--confidence', type=float, default=0.95,
-                   choices=[0.9, 0.95, 0.99])
-    p.add_argument('--metric', choices=['success', 'reward'],
-                   default='success')
+    p.add_argument('--confidence', type=float, default=0.95, choices=[0.9, 0.95, 0.99])
     p.add_argument('--plot_name', default=None)
-    p.add_argument('--baseline_file',
-                   default='practical_reward_baseline_results.yaml',
-                   help="Only used when --metric success")
     return p.parse_args()
 
 
@@ -60,8 +54,7 @@ def load_series(fp: Path) -> np.ndarray:
 
 
 def collect_env_curves(base: Path, algo: str, method: str, strat: str,
-                       seq_len: int, seeds: List[int], metric: str,
-                       baselines: dict | None):
+                       seq_len: int, seeds: List[int]):
     folder = base / algo / method / f"{strat}_{seq_len}"
     env_names, per_env_seed = [], []
 
@@ -88,9 +81,6 @@ def collect_env_curves(base: Path, algo: str, method: str, strat: str,
             if not fp.exists(): fp = sd / f"{idx}_{env}_reward.npz"
             if not fp.exists(): continue
             arr = load_series(fp)
-            # if metric=='success':
-            #     b=baselines.get(env,{}).get('avg_rewards')
-            #     arr = arr/b if b else np.full_like(arr,np.nan)
             per_env_seed[idx].append(arr)
 
     T_max = max(max(map(len, curves)) for curves in per_env_seed if curves)
@@ -117,11 +107,6 @@ def plot():
     args = parse_args()
     data_root = Path(__file__).resolve().parent.parent / args.data_root
 
-    baselines = {}
-    # if args.metric=='success':
-    #     with open(Path(__file__).resolve().parent.parent.parent/args.baseline_file) as f:
-    #         baselines = yaml.safe_load(f)
-
     total = args.seq_len * args.steps_per_task
     colours = sns.color_palette("hls", args.seq_len)
     boundaries = [i * args.steps_per_task for i in range(args.seq_len + 1)]
@@ -134,8 +119,7 @@ def plot():
 
     for m_idx, method in enumerate(methods):
         ax = axes[m_idx]
-        envs, curves = collect_env_curves(data_root, args.algo, method, args.strategy,
-                                          args.seq_len, args.seeds, args.metric, baselines)
+        envs, curves = collect_env_curves(data_root, args.algo, method, args.strategy, args.seq_len, args.seeds)
 
         ax.set_xticks(boundaries)
         ax.ticklabel_format(style='scientific', axis='x', scilimits=(0, 0))
@@ -149,7 +133,7 @@ def plot():
 
         ax.set_xlim(0, total)
         ax.set_ylim(0, 1)
-        ax.set_ylabel(args.metric.capitalize())
+        ax.set_ylabel("Normalized Score")
         ax.set_title(method, fontsize=11)
 
         twin = ax.twiny()
@@ -165,7 +149,7 @@ def plot():
     plt.tight_layout()
     out = Path(__file__).resolve().parent.parent / 'plots'
     out.mkdir(exist_ok=True)
-    name = args.plot_name or f"forgetting_{args.metric}"
+    name = args.plot_name or f"per_task_norm_reward"
     plt.savefig(out / f"{name}.png")
     plt.savefig(out / f"{name}.pdf")
     plt.show()
