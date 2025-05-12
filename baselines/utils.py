@@ -186,9 +186,6 @@ def compute_normalized_evaluation_rewards(evaluations, layouts, practical_baseli
     @param metric: dictionary to store the metrics
     """
 
-    print("Evaluations: ", evaluations)
-    print("Layouts: ", layouts)
-    print("Practical Baselines: ", practical_baselines)
 
     for i, layout_name in enumerate(layouts):
         metric[f"Evaluation/{layout_name}"] = evaluations[i]
@@ -196,20 +193,22 @@ def compute_normalized_evaluation_rewards(evaluations, layouts, practical_baseli
         # Add error handling for missing baseline entries
         bare_layout = layout_name.split("__")[1].strip()
         baseline_format = f"0__{bare_layout}"
+        scaled_reward = 0
         try:
             if baseline_format in practical_baselines:
                 baseline_reward = practical_baselines[baseline_format]["avg_rewards"]
                 if baseline_reward == 0:
                     print(f"Warning: Baseline reward for environment '{bare_layout}' is zero.")
-                    metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i] / evaluations[i]
                 else:
-                    metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i] / baseline_reward
+                    scaled_reward = evaluations[i] / baseline_reward
             else:
                 print(f"Warning: No baseline data for environment '{bare_layout}'")
-                metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i] / evaluations[i]
         except Exception as e:
             print(f"Error scaling rewards for {layout_name}: {e}")
-            metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i] / evaluations[i]
+            
+        if np.isnan(scaled_reward) or np.isinf(scaled_reward):
+            print(f"Warning: Scaled reward for {layout_name} is {scaled_reward}.")
+        metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = scaled_reward
     
     return metric
 
@@ -225,12 +224,17 @@ def compute_normalized_returns(layouts, practical_baselines, metric, env_counter
     bare_layout = env_name.split("__")[1].strip()
     baseline_format = f"0__{bare_layout}"
 
+    baseline_result = practical_baselines[baseline_format]["avg_rewards"]
+
     if baseline_format in practical_baselines:
-        metric["Scaled returns/returned_episode_returns_scaled"] = (
-            metric["returned_episode_returns"] / practical_baselines[baseline_format]["avg_rewards"])
+        if baseline_result == 0:
+            print(f"Warning: Baseline reward for environment '{bare_layout}' is zero.")
+        else:
+            metric["Scaled returns/returned_episode_returns_scaled"] = (
+                metric["returned_episode_returns"] / baseline_result)
     else:
         print("Warning: No baseline data for environment: ", bare_layout)
-        metric["Scaled returns/returned_episode_returns_scaled"] = metric["returned_episode_returns"] 
+        metric["Scaled returns/returned_episode_returns_scaled"] = 1
     return metric
 
 

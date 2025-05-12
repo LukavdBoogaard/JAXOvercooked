@@ -34,7 +34,7 @@ from baselines.utils import (Transition,
 
 from dotenv import load_dotenv
 import os
-os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
+# os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
 
 from omegaconf import OmegaConf
 import wandb
@@ -765,7 +765,10 @@ def main():
                                                             env_counter)
                         
                         for key, value in metric.items():
+                            # if np.isnan(value) or np.isinf(value):
+                            #     value = 0.0
                             writer.add_scalar(key, value, real_step)
+                            pass
 
                     jax.experimental.io_callback(callback, None, (metric, update_step, env_counter))
                     return None
