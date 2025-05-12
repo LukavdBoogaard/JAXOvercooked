@@ -24,6 +24,7 @@ BASE_REW_SHAPING_PARAMS = {
     "PLACEMENT_IN_POT_REW": 3, # reward for putting ingredients 
     "PLATE_PICKUP_REWARD": 3, # reward for picking up a plate
     "SOUP_PICKUP_REWARD": 5, # reward for picking up a ready soup
+    # "PLACE_COUNTER_REW": 3, # reward for placing an item on a counter
     "DISH_DISP_DISTANCE_REW": 0,
     "POT_DISTANCE_REW": 0,
     "SOUP_DISTANCE_REW": 0,
@@ -618,6 +619,7 @@ class Overcooked(MultiAgentEnv):
         no_plates_on_counters = jnp.sum(plate_loc_layer) == 0
 
         shaped_reward += no_plates_on_counters*has_picked_up_plate*is_dish_picku_useful*BASE_REW_SHAPING_PARAMS["PLATE_PICKUP_REWARD"]
+        # shaped_reward += successful_drop*BASE_REW_SHAPING_PARAMS["PLACE_COUNTER_REW"]
 
         inventory = new_object_in_inv
 
