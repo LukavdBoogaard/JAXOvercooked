@@ -176,3 +176,65 @@ def show_heatmap_fwt(matrix, run_name, save_folder="heatmap_images"):
     file_path = os.path.join(save_folder, f"{run_name}_fwt_heatmap.png")
     plt.savefig(file_path)
     plt.close()
+
+def compute_normalized_evaluation_rewards(evaluations, layouts, practical_baselines, metric):
+    """
+    computes the normalized rewards based on the practical baselines
+    @param evaluations: list of evaluations
+    @param layouts: list of layouts
+    @param practical_baselines: dictionary of practical baselines
+    @param metric: dictionary to store the metrics
+    """
+
+
+    for i, layout_name in enumerate(layouts):
+        metric[f"Evaluation/{layout_name}"] = evaluations[i]
+        
+        # Add error handling for missing baseline entries
+        bare_layout = layout_name.split("__")[1].strip()
+        baseline_format = f"0__{bare_layout}"
+        scaled_reward = 0
+        try:
+            if baseline_format in practical_baselines:
+                baseline_reward = practical_baselines[baseline_format]["avg_rewards"]
+                if baseline_reward == 0:
+                    print(f"Warning: Baseline reward for environment '{bare_layout}' is zero.")
+                else:
+                    scaled_reward = evaluations[i] / baseline_reward
+            else:
+                print(f"Warning: No baseline data for environment '{bare_layout}'")
+        except Exception as e:
+            print(f"Error scaling rewards for {layout_name}: {e}")
+            
+        if np.isnan(scaled_reward) or np.isinf(scaled_reward):
+            print(f"Warning: Scaled reward for {layout_name} is {scaled_reward}.")
+        metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = scaled_reward
+    
+    return metric
+
+def compute_normalized_returns(layouts, practical_baselines, metric, env_counter):
+    """
+    computes the normalized returns based on the practical baselines
+    @param layouts: list of layouts
+    @param practical_baselines: dictionary of practical baselines
+    @param metric: dictionary to store the metrics
+    @param env_counter: counter for the environment
+    """
+    env_name = layouts[env_counter-1]
+    bare_layout = env_name.split("__")[1].strip()
+    baseline_format = f"0__{bare_layout}"
+
+    baseline_result = practical_baselines[baseline_format]["avg_rewards"]
+
+    if baseline_format in practical_baselines:
+        if baseline_result == 0:
+            print(f"Warning: Baseline reward for environment '{bare_layout}' is zero.")
+        else:
+            metric["Scaled returns/returned_episode_returns_scaled"] = (
+                metric["returned_episode_returns"] / baseline_result)
+    else:
+        print("Warning: No baseline data for environment: ", bare_layout)
+        metric["Scaled returns/returned_episode_returns_scaled"] = 1
+    return metric
+
+

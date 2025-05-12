@@ -31,7 +31,6 @@ for seed in "${seeds[@]}"; do
     echo "Running with seed: $seed"
     for lr in "${learning_rates[@]}"; do
         echo "Running with learning rate: $lr"
-        # Run your command here, replacing <command> with the actual command you want to run
         PYTHONPATH=$HOME/JAXOvercooked python3 ~/JAXOvercooked/baselines/IPPO_MLP.py --seq_length=5 --lr="$lr" --seed="$seed" --no-anneal_lr --tags "$lr"  "constant_lr"
         PYTHONPATH=$HOME/JAXOvercooked python3 ~/JAXOvercooked/baselines/IPPO_MLP.py --seq_length=5 --lr="$lr" --seed="$seed" --anneal_lr --tags "$lr" "anneal_lr"
     done
