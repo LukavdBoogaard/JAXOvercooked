@@ -435,7 +435,7 @@ def main():
 
     # Load the practical baseline yaml file as a dictionary
     repo_root = Path(__file__).resolve().parent.parent
-    yaml_loc = os.path.join(repo_root, "practical_reward_baseline_results.yaml")
+    yaml_loc = os.path.join(repo_root, "practical_reward_baseline.yaml")
     with open(yaml_loc, "r") as f:
         practical_baselines = OmegaConf.load(f)
 
