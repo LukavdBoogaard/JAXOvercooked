@@ -61,9 +61,10 @@ def want(run: Run, args: argparse.Namespace) -> bool:
     if args.cl_methods and cfg.get("cl_method") not in args.cl_methods: return False
     if args.seq_length and cfg.get("seq_length") not in args.seq_length: return False
     if args.strategy and cfg.get("strategy") != args.strategy: return False
-    tags = set(cfg.get("wandb_tags", []))
-    if args.wandb_tags and not tags.intersection(args.wandb_tags): return False
-    if tags.intersection(FORBIDDEN_TAGS) and not tags.intersection(args.wandb_tags): return False
+    if 'wandb_tags' in cfg:
+        tags = cfg['wandb_tags']['value']
+        if args.wandb_tags and not tags.intersection(args.wandb_tags): return False
+        if tags.intersection(FORBIDDEN_TAGS) and not tags.intersection(args.wandb_tags): return False
     return True
 
 
