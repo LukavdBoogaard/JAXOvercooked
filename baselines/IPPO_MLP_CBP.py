@@ -16,6 +16,7 @@ import wandb
 from dotenv import load_dotenv
 from flax.core.frozen_dict import freeze, unfreeze
 from gymnax.wrappers.purerl import LogWrapper
+from jax import lax
 from omegaconf import OmegaConf
 from tensorboardX import SummaryWriter
 
@@ -711,14 +712,29 @@ def main():
                 )
 
                 # ---- Continual-Backprop neuron replacement ----
-                if update_step % config.cbp_replace_interval == 0:
+                def do_replace(args):
+                    train_state, rng = args
                     rng, cbp_rng = jax.random.split(rng)
-                    new_p, new_c, _ = cbp_step_jit(train_state.params,
-                                                   train_state.cbp_state,
-                                                   rng=cbp_rng,
-                                                   maturity=config.cbp_maturity,
-                                                   rho=config.cbp_replace_rate)
-                    train_state = train_state.replace(params=new_p, cbp_state=new_c)
+                    new_p, new_c, _ = cbp_step_jit(
+                        train_state.params,
+                        train_state.cbp_state,
+                        rng=cbp_rng,
+                        maturity=config.cbp_maturity,
+                        rho=config.cbp_replace_rate,
+                    )
+                    ts = train_state.replace(params=new_p, cbp_state=new_c)
+                    return (ts, rng)
+
+                def no_replace(args):
+                    return args
+
+                cond_flag = (update_step % config.cbp_replace_interval) == 0
+                train_state, rng = lax.cond(
+                    cond_flag,
+                    do_replace,
+                    no_replace,
+                    operand=(train_state, rng),
+                )
 
                 total_loss, grads = loss_information
                 avg_grads = jax.tree_util.tree_map(lambda x: jnp.mean(x, axis=0), grads)
