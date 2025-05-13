@@ -47,6 +47,7 @@ from tensorboardX import SummaryWriter
 @dataclass
 class Config:
     lr: float = 3e-4
+    anneal_lr: bool = True
     num_envs: int = 16
     num_steps: int = 128
     total_timesteps: float = 8e6
@@ -58,8 +59,14 @@ class Config:
     ent_coef: float = 0.01
     vf_coef: float = 0.5
     max_grad_norm: float = 0.5
+
+    # reward shaping
+    reward_shaping: bool = True
     reward_shaping_horizon: float = 2.5e6
+
     activation: str = "tanh"
+
+    # run name
     env_name: str = "overcooked"
     alg_name: str = "ippo"
     network_architecture: str = "mlp"
@@ -71,13 +78,14 @@ class Config:
         "square_arena", "no_cooperation"])
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
+
+    # Evaluation & Logging
     evaluation: bool = True
     log_interval: int = 75
     eval_num_steps: int = 1000
     eval_num_episodes: int = 5
     gif_len: int = 300
     
-    anneal_lr: bool = True
     seed: int = 30
     num_seeds: int = 1
     
@@ -431,11 +439,12 @@ def main():
         obsv, env_state = jax.vmap(env.reset, in_axes=(0,))(reset_rng) 
 
         # set the reward shaping for each environment
-        rew_shaping_anneal = optax.linear_schedule(
-            init_value=1.,
-            end_value=0.,
-            transition_steps=config.reward_shaping_horizon
-        )
+        if config.reward_shaping:
+            rew_shaping_anneal = optax.linear_schedule(
+                init_value=1.,
+                end_value=0.,
+                transition_steps=config.reward_shaping_horizon
+            )
         
         # TRAIN 
         def _update_step(runner_state, _):
@@ -488,11 +497,14 @@ def main():
                 current_timestep = update_step * config.num_steps * config.num_envs
 
                 # add the shaped reward to the normal reward 
-                reward = jax.tree_util.tree_map(lambda x,y: 
-                                                x+y * rew_shaping_anneal(current_timestep), 
-                                                reward,
-                                                info["shaped_reward"]
-                                                )
+                if config.reward_shaping: 
+                    reward = jax.tree_util.tree_map(lambda x,y: 
+                                                    x+y * rew_shaping_anneal(current_timestep), 
+                                                    reward,
+                                                    info["shaped_reward"]
+                                                    )
+                else:
+                    reward = reward
 
                 transition = Transition(
                     batchify(done, env.agents, config.num_actors).squeeze(), 
@@ -727,11 +739,17 @@ def main():
             metric["Losses/entropy"] = entropy.mean()
 
             # Rewards section
-            metric["General/shaped_reward_agent0"] = metric["shaped_reward"]["agent_0"]
-            metric["General/shaped_reward_agent1"] = metric["shaped_reward"]["agent_1"]
-            metric.pop("shaped_reward", None)
-            metric["General/shaped_reward_annealed_agent0"] = metric["General/shaped_reward_agent0"] * rew_shaping_anneal(current_timestep)
-            metric["General/shaped_reward_annealed_agent1"] = metric["General/shaped_reward_agent1"] * rew_shaping_anneal(current_timestep)
+            if config.reward_shaping:
+                metric["General/shaped_reward_agent0"] = metric["shaped_reward"]["agent_0"]
+                metric["General/shaped_reward_agent1"] = metric["shaped_reward"]["agent_1"]
+                metric.pop("shaped_reward", None)
+                metric["General/shaped_reward_annealed_agent0"] = metric["General/shaped_reward_agent0"] * \
+                                                                    rew_shaping_anneal(current_timestep)
+                metric["General/shaped_reward_annealed_agent1"] = metric["General/shaped_reward_agent1"] * \
+                                                                    rew_shaping_anneal(current_timestep)
+            else:
+                # remove the shaped reward from the metric
+                metric.pop("shaped_reward", None)
 
             # Advantages and Targets section
             metric["Advantage_Targets/advantages"] = advantages.mean()
@@ -765,8 +783,6 @@ def main():
                                                             env_counter)
                         
                         for key, value in metric.items():
-                            # if np.isnan(value) or np.isinf(value):
-                            #     value = 0.0
                             writer.add_scalar(key, value, real_step)
                             pass
 
