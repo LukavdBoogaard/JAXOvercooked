@@ -56,7 +56,7 @@ class Config:
     cbp_replace_rate: float = 1e-4
     cbp_maturity: int = 10_000
     cbp_decay: float = 0.0
-    cbp_replace_interval: int = 25   # run CBP every n PPO updates
+    cbp_replace_interval: int = 25  # run CBP every n PPO updates
 
     seq_length: int = 2
     strategy: str = "random"
@@ -878,97 +878,97 @@ def main():
 
             return runner_state, metric
 
-    rng, train_rng = jax.random.split(rng)
+        rng, train_rng = jax.random.split(rng)
 
-    # initialize a carrier that keeps track of the states and observations of the agents
-    runner_state = (train_state, env_state, obsv, 0, train_rng)
+        # initialize a carrier that keeps track of the states and observations of the agents
+        runner_state = (train_state, env_state, obsv, 0, train_rng)
 
-    # run the _update_step function a series of times, while keeping track of the state
-    runner_state, metric = jax.lax.scan(
-        f=_update_step,
-        init=runner_state,
-        xs=None,
-        length=config.num_updates
-    )
+        # run the _update_step function a series of times, while keeping track of the state
+        runner_state, metric = jax.lax.scan(
+            f=_update_step,
+            init=runner_state,
+            xs=None,
+            length=config.num_updates
+        )
 
-    # Return the runner state after the training loop, and the metric arrays
-    return runner_state, metric
+        # Return the runner state after the training loop, and the metric arrays
+        return runner_state, metric
 
 
-def loop_over_envs(rng, train_state, envs):
-    '''
-    Loops over the environments and trains the network
-    @param rng: random number generator
-    @param train_state: the current state of the training
-    @param envs: the environments
-    returns the runner state and the metrics
-    '''
-    # split the random number generator for training on the environments
-    rng, *env_rngs = jax.random.split(rng, len(envs) + 1)
+    def loop_over_envs(rng, train_state, envs):
+        '''
+        Loops over the environments and trains the network
+        @param rng: random number generator
+        @param train_state: the current state of the training
+        @param envs: the environments
+        returns the runner state and the metrics
+        '''
+        # split the random number generator for training on the environments
+        rng, *env_rngs = jax.random.split(rng, len(envs) + 1)
 
-    visualizer = OvercookedVisualizer()
+        visualizer = OvercookedVisualizer()
 
-    # counter for the environment
-    env_counter = 1
+        # counter for the environment
+        env_counter = 1
 
-    # Evaluate the model on all environments before training
-    if config.evaluation:
-        evaluation_matrix = jnp.zeros(((len(envs) + 1), len(envs)))
-        rng, eval_rng = jax.random.split(rng)
-        evaluations = evaluate_model(train_state, eval_rng)
-        evaluation_matrix = evaluation_matrix.at[0, :].set(evaluations)
+        # Evaluate the model on all environments before training
+        if config.evaluation:
+            evaluation_matrix = jnp.zeros(((len(envs) + 1), len(envs)))
+            rng, eval_rng = jax.random.split(rng)
+            evaluations = evaluate_model(train_state, eval_rng)
+            evaluation_matrix = evaluation_matrix.at[0, :].set(evaluations)
 
-    for i, (env_rng, env) in enumerate(zip(env_rngs, envs)):
-        runner_state, metrics = train_on_environment(env_rng, train_state, env, env_counter)
+        for i, (env_rng, env) in enumerate(zip(env_rngs, envs)):
+            runner_state, metrics = train_on_environment(env_rng, train_state, env, env_counter)
 
-        # unpack the runner state
-        train_state, env_state, last_obs, update_step, rng = runner_state
+            # unpack the runner state
+            train_state, env_state, last_obs, update_step, rng = runner_state
 
-        # Generate & log a GIF after finishing task i
-        env_name = config.layout_name[i]
-        states = record_gif_of_episode(config, train_state, env, network, env_idx=i, max_steps=config.gif_len)
-        visualizer.animate(states, agent_view_size=5, task_idx=i, task_name=env_name, exp_dir=exp_dir)
+            # Generate & log a GIF after finishing task i
+            env_name = config.layout_name[i]
+            states = record_gif_of_episode(config, train_state, env, network, env_idx=i, max_steps=config.gif_len)
+            visualizer.animate(states, agent_view_size=5, task_idx=i, task_name=env_name, exp_dir=exp_dir)
+
+            if config.evaluation:
+                # Evaluate at the end of training to get the average performance of the task right after training
+                evaluations = evaluate_model(train_state, rng)
+                evaluation_matrix = evaluation_matrix.at[env_counter, :].set(evaluations)
+
+            # save the model
+            path = f"checkpoints/overcooked/{run_name}/model_env_{env_counter}"
+            save_params(path, train_state)
+
+            # update the environment counter
+            env_counter += 1
 
         if config.evaluation:
-            # Evaluate at the end of training to get the average performance of the task right after training
-            evaluations = evaluate_model(train_state, rng)
-            evaluation_matrix = evaluation_matrix.at[env_counter, :].set(evaluations)
+            show_heatmap_bwt(evaluation_matrix, run_name)
+            show_heatmap_fwt(evaluation_matrix, run_name)
 
-        # save the model
-        path = f"checkpoints/overcooked/{run_name}/model_env_{env_counter}"
-        save_params(path, train_state)
-
-        # update the environment counter
-        env_counter += 1
-
-    if config.evaluation:
-        show_heatmap_bwt(evaluation_matrix, run_name)
-        show_heatmap_fwt(evaluation_matrix, run_name)
-
-    return runner_state
+        return runner_state
 
 
-def save_params(path, train_state):
-    '''
-    Saves the parameters of the network
-    @param path: the path to save the parameters
-    @param train_state: the current state of the training
-    returns None
-    '''
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "wb") as f:
-        f.write(
-            flax.serialization.to_bytes(
-                {"params": train_state.params}
+    def save_params(path, train_state):
+        '''
+        Saves the parameters of the network
+        @param path: the path to save the parameters
+        @param train_state: the current state of the training
+        returns None
+        '''
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(
+                flax.serialization.to_bytes(
+                    {"params": train_state.params}
+                )
             )
-        )
-    print('model saved to', path)
+        print('model saved to', path)
 
 
-# Run the model
-rng, train_rng = jax.random.split(rng)
-# run the loop_over_envs function to the environments
-runner_state = loop_over_envs(train_rng, train_state, envs)
+    # Run the model
+    rng, train_rng = jax.random.split(rng)
+    # run the loop_over_envs function to the environments
+    runner_state = loop_over_envs(train_rng, train_state, envs)
 
 
 def record_gif_of_episode(config, train_state, env, network, env_idx=0, max_steps=300):
