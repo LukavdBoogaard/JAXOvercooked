@@ -26,8 +26,7 @@ from baselines.utils import (Transition,
                              unbatchify,
                              show_heatmap_bwt,
                              show_heatmap_fwt)
-from cl_methods.CBP import (cbp_step,
-                            TrainStateCBP)
+from cl_methods.CBP_fast import (cbp_step, TrainStateCBP)
 from jax_marl.environments.env_selection import generate_sequence
 from jax_marl.environments.overcooked_environment import overcooked_layouts
 from jax_marl.registration import make
