@@ -19,13 +19,16 @@ solvable by construction.
 """
 from __future__ import annotations
 
-import argparse, random, sys
-from typing import Tuple, Optional
+import argparse
+import random
+from pathlib import Path
+from typing import Optional
 
 import jax
-import numpy as np
-import matplotlib.pyplot as plt
 import jax.numpy as jnp
+import matplotlib.pyplot as plt
+import numpy as np
+from PIL import Image
 from flax.core.frozen_dict import FrozenDict
 
 from jax_marl.environments import Overcooked
@@ -97,6 +100,7 @@ def evaluate_grid(grid: str) -> bool:
                     return True
     return False
 
+
 ###############################################################################
 # ---  conversion helper ---------------------------------------------------- #
 ###############################################################################
@@ -120,6 +124,7 @@ def layout_grid_to_dict(grid: str) -> FrozenDict:
         lay[k] = jnp.array(lay[k])
     return FrozenDict(lay)
 
+
 ###############################################################################
 # ---  random generator ----------------------------------------------------- #
 ###############################################################################
@@ -142,7 +147,13 @@ def generate_random_layout(height_rng=(5, 10), width_rng=(5, 10), wall_density=0
         internal = [(i, j) for i in range(1, h - 1) for j in range(1, w - 1)]
         for i, j in rng.sample(internal, int(len(internal) * wall_density)):
             G[i][j] = "W"
-        for ch, n in (("A", 2), ("X", 1), ("P", 1), ("O", 1), ("B", 1)):
+        # 2 agents are mandatory
+        for _ in range(2):
+            i, j = _empty(G, rng)
+            G[i][j] = "A"
+        # up to two of every other interactive tile
+        for ch in ("X", "P", "O", "B"):          # delivery, pot, onion-pile, plate-pile
+            n = rng.randint(1, 2)                # 1 or 2 of each
             for _ in range(n):
                 i, j = _empty(G, rng)
                 G[i][j] = ch
@@ -150,6 +161,7 @@ def generate_random_layout(height_rng=(5, 10), width_rng=(5, 10), wall_density=0
         if evaluate_grid(grid):
             return grid, layout_grid_to_dict(grid)
     raise RuntimeError("no solvable layout found in allotted attempts")
+
 
 ###############################################################################
 # ---  matplotlib quick preview -------------------------------------------- #
@@ -171,11 +183,13 @@ def mpl_show(grid: str, title: str | None = None):
     ax.set_xticks(np.arange(-0.5, w, 1), minor=True)
     ax.set_yticks(np.arange(-0.5, h, 1), minor=True)
     ax.grid(which="minor", color="black", lw=0.5)
-    ax.set_xticks([]); ax.set_yticks([])
+    ax.set_xticks([]);
+    ax.set_yticks([])
     if title:
         ax.set_title(title)
     plt.tight_layout()
     plt.show()
+
 
 ###############################################################################
 # ---  Overcooked viewer ---------------------------------------------------- #
@@ -184,6 +198,7 @@ def mpl_show(grid: str, title: str | None = None):
 def _crop_to_grid(state, view_size: int):
     pad = view_size - 1  # 5→4 because map has +1 outer wall
     return state.maze_map[pad:-pad, pad:-pad, :]
+
 
 def oc_show(layout: FrozenDict):
     env = Overcooked(layout=layout, layout_name="random_gen", random_reset=False)
@@ -194,6 +209,7 @@ def oc_show(layout: FrozenDict):
     vis.render_grid(grid, tile_size=TILE_PIXELS, agent_dir_idx=state.agent_dir_idx)
     vis.show(block=True)
 
+
 ###############################################################################
 # ---  CLI ------------------------------------------------------------------ #
 ###############################################################################
@@ -203,6 +219,7 @@ def main(argv=None):
     p.add_argument("--seed", type=int, default=None, help="RNG seed")
     p.add_argument("--show", action="store_true", help="preview with matplotlib")
     p.add_argument("--oc", action="store_true", help="open JAX-MARL Overcooked viewer")
+    p.add_argument("--save", action="store_true", help="save PNG to assets/screenshots/generated/")
     args = p.parse_args(argv)
 
     grid, layout = generate_random_layout(seed=args.seed)
@@ -213,6 +230,21 @@ def main(argv=None):
 
     if args.oc:
         oc_show(layout)
+
+    if args.save:
+        # use the same OvercookedVisualizer you have in oc_show
+        env = Overcooked(layout=layout, layout_name="generated", random_reset=False)
+        _, state = env.reset(jax.random.PRNGKey(args.seed or 0))
+        grid_arr = np.asarray(_crop_to_grid(state, env.agent_view_size))
+        vis = OvercookedVisualizer()
+        img = vis._render_grid(grid_arr, tile_size=TILE_PIXELS, agent_dir_idx = state.agent_dir_idx)
+
+        out_dir = Path(__file__).parent.parent.parent.parent / "assets" / "screenshots" / "generated"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        file_name = f"gen_{args.seed or 'rand'}.png"
+        Image.fromarray(img).save(out_dir / file_name)
+        print("Saved generated layout to", out_dir / file_name)
+
 
 if __name__ == "__main__":
     main()
