@@ -148,10 +148,6 @@ def main():
         seed=config.seed
     )
     print(config.layout_name)
-
-    for layout_config in config.env_kwargs:
-        layout_name = layout_config["layout"]
-        layout_config["layout"] = overcooked_layouts[layout_name]
     
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     run_name = f'{config.alg_name}_seq{config.seq_length}_{timestamp}'

@@ -125,10 +125,6 @@ def main():
         seed=config.seed
     )
 
-    for layout_config in config.env_kwargs:
-        layout_name = layout_config["layout"]
-        layout_config["layout"] = overcooked_layouts[layout_name]
-
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     run_name = f'{config.alg_name}_{config.cl_method}_{config.network_architecture}_seq{config.seq_length}_{config.strategy}_seed_{config.seed}_{timestamp}'
     exp_dir = os.path.join("runs", run_name)

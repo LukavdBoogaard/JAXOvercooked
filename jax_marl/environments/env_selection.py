@@ -1,108 +1,90 @@
 import random
+from typing import List, Dict, Any, Sequence, Tuple
 
 from jax_marl.environments.overcooked_environment import hard_layouts, medium_layouts, easy_layouts, overcooked_layouts
+from jax_marl.environments.overcooked_environment.env_generator import generate_random_layout
 
 
-def generate_sequence(sequence_length=None, strategy='random', layout_names=None, seed=None):
+def _resolve_pool(names: Sequence[str] | None) -> List[str]:
+    """Turn user‐supplied `layout_names` into a concrete list of keys."""
+    presets = {
+        "hard_levels": list(hard_layouts),
+        "medium_levels": list(medium_layouts),
+        "easy_levels": list(easy_layouts),
+    }
+
+    if not names:  # None, [] or other falsy → all layouts
+        return list(overcooked_layouts)
+
+    if len(names) == 1 and names[0] in presets:  # the special “_levels” tokens
+        return presets[names[0]]
+
+    return list(names)  # custom list from caller
+
+
+def _random_no_repeat(pool: List[str], k: int) -> List[str]:
+    """Sample `k` items, allowing duplicates but never back-to-back repeats."""
+    if k <= len(pool):
+        return random.sample(pool, k)
+
+    out, last = [], None
+    for _ in range(k):
+        choice = random.choice([x for x in pool if x != last] or pool)
+        out.append(choice)
+        last = choice
+    return out
+
+
+def generate_sequence(
+        sequence_length: int | None = None,
+        strategy: str = "random",
+        layout_names: Sequence[str] | None = None,
+        seed: int | None = None,
+) -> Tuple[List[Dict[str, Any]], List[str]]:
     """
-    Generate a sequence of layouts for the agents to play on. 
+    Return a list of `env_kwargs` (what you feed to Overcooked) and
+    a parallel list of pretty names.
+
+    strategies
+    ----------
+    random   – sample from fixed layouts (no immediate repeats if len>pool)
+    ordered  – deterministic slice through fixed layouts
+    generate – create brand-new solvable kitchens on the fly
     """
-
-    if not layout_names:
-        layout_names = overcooked_layouts.keys()
-    elif layout_names == ["hard_levels"]:
-        layout_names = hard_layouts.keys()
-    elif layout_names == ["medium_levels"]:
-        layout_names = medium_layouts.keys()
-    elif layout_names == ["easy_levels"]:
-        layout_names = easy_layouts.keys()
-
-    if sequence_length is None:
-        sequence_length = len(layout_names) if layout_names is not None else len(overcooked_layouts)
-
-    if layout_names is None:
-        layouts = []
-        for key, value in overcooked_layouts.items():
-            layouts.append(key)
-    else:
-        layouts = layout_names
-
-    # Set seed if provided
     if seed is not None:
         random.seed(seed)
 
-    selected_layouts = []
+    pool = _resolve_pool(layout_names)
+    if sequence_length is None:
+        sequence_length = len(pool)
 
-    if strategy == 'random':
-        if sequence_length <= len(layouts):
-            selected_layouts = random.sample(layouts, sequence_length)
-        else:
-            # Select layouts with replacement
-            available = layouts.copy()
-            last_selected = None
+    env_kwargs: List[Dict[str, Any]] = []
+    names: List[str] = []
 
-            for _ in range(sequence_length):
-                if len(available) == 1 and available[0] == last_selected:
-                    selected_layouts.append(available[0])
-                    last_selected = available[0]
-                else:
-                    current_available = [l for l in available if l != last_selected]
-                    choice = random.choice(current_available)
-                    selected_layouts.append(choice)
-                    last_selected = choice
-    elif strategy == 'ordered':
-        if sequence_length <= len(layouts):
-            selected_layouts = layouts[:sequence_length]
-        else:
-            raise ValueError("Ordered strategy requires sequence_length <= number of available layouts")
+    # ----------------------------------------------------------------– strategy
+    if strategy == "random":
+        selected = _random_no_repeat(pool, sequence_length)
+        env_kwargs = [{"layout": overcooked_layouts[name]} for name in selected]
+        names = selected
+
+    elif strategy == "ordered":
+        if sequence_length > len(pool):
+            raise ValueError("ordered requires seq_length ≤ available layouts")
+        selected = pool[:sequence_length]
+        env_kwargs = [{"layout": overcooked_layouts[name]} for name in selected]
+        names = selected
+
+    elif strategy == "generate":
+        base = seed if seed is not None else random.randrange(1 << 30)
+        for i in range(sequence_length):
+            _, layout = generate_random_layout(seed=base + i)
+            env_kwargs.append({"layout": layout})  # already a FrozenDict
+            names.append(f"gen_{i}")
+
     else:
-        raise NotImplementedError("Strategy not implemented")
+        raise NotImplementedError(f"Unknown strategy '{strategy}'")
 
-    # print(selected_layouts)
-    env_kwargs = [{'layout': layout} for layout in selected_layouts]
-    layout_names = selected_layouts
-
-    # add a number to the layout name indicating the order in the sequence
-    for i, layout_name in enumerate(layout_names):
-        layout_names[i] = str(i) + "__" + layout_name
-
-    print("Selected layouts: ", layout_names)
-    return env_kwargs, layout_names
-
-# def generate_sequence(sequence_length=2, strategy='random', layout_names=None, seed=None):
-#     """
-#     Generate a sequence of layouts for the agents to play on. 
-#     """ 
-
-#     if layout_names is None:
-#         layouts = []
-#         for key, value in AVAIL_LAYOUTS.items():
-#             layouts.append(key)
-#     else:
-#         layouts = layout_names
-
-#     # Assert that the sequence length is smaller or equal to the layouts
-#     assert sequence_length <= len(layouts), "The sequence length is longer than the available layouts"
-
-#     if strategy == 'random':
-#         # set seed
-#         # if seed is not None:
-#         #     random.seed(seed)
-#         selected_layouts = random.sample(layouts, sequence_length)
-#         # reset seed
-#         random.seed(None)
-#     elif strategy == 'ordered':
-#         selected_layouts = layouts[:sequence_length]
-#     else:
-#         raise NotImplementedError("Strategy not implemented")
-
-#     # print(selected_layouts)
-#     env_kwargs = [{'layout': layout} for layout in selected_layouts]
-#     layout_names = selected_layouts
-
-#     # add a number to the layout name indicating the order in the sequence
-#     for i, layout_name in enumerate(layout_names):
-#         layout_names[i] = str(i) + "__" + layout_name
-
-#     print("Selected layouts: ", layout_names)
-#     return env_kwargs, layout_names
+    # prefix with index so logs stay ordered
+    names = [f"{i}__{n}" for i, n in enumerate(names)]
+    print("Selected layouts:", names)
+    return env_kwargs, names

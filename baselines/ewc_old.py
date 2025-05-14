@@ -504,10 +504,6 @@ def main():
     run_name = f'{config.alg_name}_EWC_seq{config.seq_length}_{config.strategy}_{timestamp}'
     exp_dir = os.path.join("runs", run_name)
 
-    for layout_config in config.env_kwargs:
-        layout_name = layout_config["layout"]
-        layout_config["layout"] = overcooked_layouts[layout_name]
-
     # Initialize WandB
     load_dotenv()
     wandb_tags = config.tags if config.tags is not None else []
