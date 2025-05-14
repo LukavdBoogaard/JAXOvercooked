@@ -435,7 +435,7 @@ WB      AW
 WWWWWWWWWW
 """
 
-most_efficient = """
+vertical_corridors = """
 WWWWW
 WAOAW
 W P W
@@ -445,7 +445,7 @@ W X W
 WWWWW
 """
 
-most_efficient_horizontal = """
+horizontal_corridors = """
 WWWWWWW
 WA    W
 WOPPBXW
@@ -507,8 +507,8 @@ easy_layouts = {
     "big_kitchen"              : layout_grid_to_dict(big_kitchen),
     "no_cooperation"           : layout_grid_to_dict(no_cooperation),
     "resource_sharing"         : layout_grid_to_dict(resource_sharing),
-    "most_efficient"           : layout_grid_to_dict(most_efficient),
-    "most_efficient_horizontal": layout_grid_to_dict(most_efficient_horizontal),
+    "most_efficient"           : layout_grid_to_dict(vertical_corridors),
+    "most_efficient_horizontal": layout_grid_to_dict(horizontal_corridors),
 }
 
 # All layouts
