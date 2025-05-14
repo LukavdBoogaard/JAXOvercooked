@@ -1,6 +1,6 @@
 #!/bin/bash
 base_dir="${HOME}/overcook/JAXOvercooked"
-log_dir="/data/bgrooten/overcook_logs"
+log_dir="/data/${USER}/overcook_logs"
 
 
 commands=(
