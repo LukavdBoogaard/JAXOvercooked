@@ -24,13 +24,11 @@ BASE_REW_SHAPING_PARAMS = {
     "PLACEMENT_IN_POT_REW": 3, # reward for putting ingredients 
     "PLATE_PICKUP_REWARD": 3, # reward for picking up a plate
     "SOUP_PICKUP_REWARD": 5, # reward for picking up a ready soup
-    "PLACE_COUNTER_REW": 0.1, # reward for placing an item on a counter
-    "CLEAR_COUNTER_REW": 0, # reward for clearing a counter
+    "DROP_COUNTER_REWARD": 3,
     "DISH_DISP_DISTANCE_REW": 0,
     "POT_DISTANCE_REW": 0,
     "SOUP_DISTANCE_REW": 0,
 }
-
 
 class Actions(IntEnum):
     # Turn left, turn right, move forward
@@ -605,6 +603,12 @@ class Overcooked(MultiAgentEnv):
             + successful_pickup * (object_on_table == OBJECT_TO_INDEX["plate_pile"]) * OBJECT_TO_INDEX["plate"] \
             + successful_pickup * (object_on_table == OBJECT_TO_INDEX["onion_pile"]) * OBJECT_TO_INDEX["onion"] \
             + successful_drop * OBJECT_TO_INDEX["empty"]
+        
+        # Check if agent correctly dropped object on table
+        drop_occurred = (object_in_inv != OBJECT_TO_INDEX["empty"]) & (new_object_in_inv == OBJECT_TO_INDEX["empty"])
+        object_placed = new_object_on_table == object_in_inv
+        successfully_dropped_object = drop_occurred * object_placed
+        shaped_reward += successfully_dropped_object * BASE_REW_SHAPING_PARAMS["DROP_COUNTER_REWARD"]
 
         # Apply inventory update
         has_picked_up_plate = successful_pickup*(new_object_in_inv == OBJECT_TO_INDEX["plate"])
@@ -620,8 +624,6 @@ class Overcooked(MultiAgentEnv):
         no_plates_on_counters = jnp.sum(plate_loc_layer) == 0
 
         shaped_reward += no_plates_on_counters*has_picked_up_plate*is_dish_picku_useful*BASE_REW_SHAPING_PARAMS["PLATE_PICKUP_REWARD"]
-        shaped_reward += successful_drop*BASE_REW_SHAPING_PARAMS["PLACE_COUNTER_REW"]
-        shaped_reward += successful_pickup*BASE_REW_SHAPING_PARAMS["CLEAR_COUNTER_REW"]
 
         inventory = new_object_in_inv
 
