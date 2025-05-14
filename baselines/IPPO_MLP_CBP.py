@@ -35,7 +35,9 @@ from baselines.utils import (Transition,
                              sample_discrete_action,
                              show_heatmap_bwt,
                              show_heatmap_fwt,
-                             make_task_onehot)
+                             make_task_onehot,
+                             compute_normalized_evaluation_rewards,
+                             compute_normalized_returns)
 
 from omegaconf import OmegaConf
 import matplotlib.pyplot as plt
@@ -389,13 +391,6 @@ def main():
         frac = 1.0 - (count // (config.num_minibatches * config.update_epochs)) / config.num_updates
         return config.lr * frac
 
-    rew_shaping_anneal = optax.linear_schedule(
-        init_value=1.,
-        end_value=0.,
-        transition_steps=config.reward_shaping_horizon
-    )
-
-
     network = ActorCritic(temp_env.action_space().n, 
                           activation=config.activation, 
                           cbp_eta=config.cbp_decay)
@@ -437,7 +432,7 @@ def main():
     # Load the practical baseline yaml file as a dictionary
     # repo_root = "/home/luka/repo/JAXOvercooked"
     repo_root = Path(__file__).resolve().parent.parent
-    yaml_loc = os.path.join(repo_root, "practical_reward_baseline_results.yaml")
+    yaml_loc = os.path.join(repo_root, "practical_reward_baseline.yaml")
     with open(yaml_loc, "r") as f:
         practical_baselines = OmegaConf.load(f)
 
@@ -456,12 +451,19 @@ def main():
         optax.clip_by_global_norm(config.max_grad_norm),
             optax.adam(learning_rate=linear_schedule if config.anneal_lr else config.lr, eps=1e-5)
         )
-        train_state = train_state.replace(tx=tx)
+        new_optimizer = tx.init(train_state.params)
+        train_state = train_state.replace(tx=tx, opt_state=new_optimizer)
 
         # Initialize and reset the environment
         rng, env_rng = jax.random.split(rng)
         reset_rng = jax.random.split(env_rng, config.num_envs)
         obsv, env_state = jax.vmap(env.reset, in_axes=(0,))(reset_rng)
+
+        rew_shaping_anneal = optax.linear_schedule(
+            init_value=1.,
+            end_value=0.,
+            transition_steps=config.reward_shaping_horizon
+        )
 
         # TRAIN
         # @profile
@@ -798,22 +800,11 @@ def main():
                 def log_metrics(metric, update_step):
                     if config.evaluation:
                         evaluations = evaluate_model(train_state_eval, eval_rng)
-                        for i, layout_name in enumerate(config.layout_name):
-                            metric[f"Evaluation/{layout_name}"] = evaluations[i]
-
-                            # Add error handling for missing baseline entries
-                            bare_layout = layout_name.split("__")[1].strip()
-                            try:
-                                if bare_layout in practical_baselines:
-                                    baseline_reward = practical_baselines[bare_layout]["avg_rewards"]
-                                    metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i] / baseline_reward
-                                else:
-                                    print(f"Warning: No baseline data for environment '{bare_layout}'")
-                                    metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
-                            except Exception as e:
-                                print(f"Error scaling rewards for {layout_name}: {e}")
-                                metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
-
+                        metric = compute_normalized_evaluation_rewards(evaluations, 
+                                                            config.layout_name, 
+                                                            practical_baselines, 
+                                                            metric)
+                    
                     # params = jax.tree_util.tree_map(lambda x: x, train_state_eval.params)  # ["params"])
                     params = train_state_eval.params
 
@@ -822,15 +813,10 @@ def main():
                         metric, update_step, env_counter = args
                         real_step = (int(env_counter)-1) * config.num_updates + int(update_step)
 
-                        env_name = config.layout_name[env_counter-1]
-                        bare_layout = env_name.split("__")[1].strip()
-                        if bare_layout in practical_baselines:
-                            metric["Scaled returns/returned_episode_returns_scaled"] = (
-                                metric["returned_episode_returns"] / practical_baselines[bare_layout]["avg_rewards"])
-                        else:
-                            print("Warning: No baseline data for environment: ", bare_layout)
-                            metric["Scaled returns/returned_episode_returns_scaled"] = metric["returned_episode_returns"]  
-
+                        metric = compute_normalized_returns(config.layout_name, 
+                                                            practical_baselines, 
+                                                            metric, 
+                                                            env_counter)
                         for key, value in metric.items():
                             writer.add_scalar(key, value, real_step)
 

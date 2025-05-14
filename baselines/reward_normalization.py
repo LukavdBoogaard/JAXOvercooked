@@ -58,7 +58,7 @@ class Transition(NamedTuple):
 class Config:
     lr: float = 3e-4
     num_envs: int = 16
-    num_steps: int = 256
+    num_steps: int = 128
     total_timesteps: float = 8e6
     update_epochs: int = 8
     num_minibatches: int = 8
@@ -482,11 +482,7 @@ def main():
         frac = 1.0 - (count // (config.num_minibatches * config.update_epochs)) / config.num_updates
         return config.lr * frac
 
-    rew_shaping_anneal = optax.linear_schedule(
-        init_value=1.,
-        end_value=0.,
-        transition_steps=config.reward_shaping_horizon
-    )
+    
 
     network = ActorCritic(temp_env.action_space().n, activation=config.activation)
 
@@ -521,24 +517,23 @@ def main():
         '''
 
         print("Training on environment")
-
-        # reset the model to start back from scratch
-        rng, reset_rng = jax.random.split(rng)
-        init_x = jnp.zeros(env.observation_space().shape).flatten()
-        network_params = network.init(network_rng, init_x)
-        train_state = train_state.replace(params=network_params)
-
         # reset the learning rate and the optimizer
         tx = optax.chain(
         optax.clip_by_global_norm(config.max_grad_norm), 
             optax.adam(learning_rate=linear_schedule if config.anneal_lr else config.lr, eps=1e-5)
         )
         train_state = train_state.replace(tx=tx)
-        
+
         # Initialize and reset the environment 
         rng, env_rng = jax.random.split(rng) 
         reset_rng = jax.random.split(env_rng, config.num_envs) 
         obsv, env_state = jax.vmap(env.reset, in_axes=(0,))(reset_rng) 
+
+        rew_shaping_anneal = optax.linear_schedule(
+            init_value=1.,
+            end_value=0.,
+            transition_steps=config.reward_shaping_horizon
+        )
         
         # TRAIN 
         # @profile
@@ -820,7 +815,10 @@ def main():
             # add the general metrics to the metric dictionary
             metric["General/update_step"] = update_step
             metric["General/env_step"] = update_step * config.num_steps * config.num_envs
-            metric["General/learning_rate"] = linear_schedule(update_step * config.num_minibatches * config.update_epochs)
+            if config.anneal_lr:
+                metric["General/learning_rate"] = linear_schedule(update_step * config.num_minibatches * config.update_epochs)
+            else:
+                metric["General/learning_rate"] = config.lr
 
             # Losses section
             total_loss, (value_loss, loss_actor, entropy) = loss_info
@@ -922,7 +920,7 @@ def main():
             }
             
 
-            current_folder = "/home/lvdenboogaard/JAXOvercooked"
+            current_folder = Path(__file__).resolve().parent.parent
             save_path = f"{current_folder}/practical_reward_baseline.yaml"
 
             # load existing data from the yaml 
@@ -942,10 +940,19 @@ def main():
                 with open(save_path, "w") as f:
                     yaml.dump(existing_data, f)
             else:
-                print("Environment already exists in YAML, skipping update.")
+                # if the environment returns are 0, then we replace the existing data
+                if existing_data[env_name]["avg_rewards"] == 0:
+                    print(f"Replacing existing environment {env_name} in YAML")
+                    existing_data[env_name] = environment_returns[env_name]
+
+                    # Write back the complete updated data
+                    with open(save_path, "w") as f:
+                        yaml.dump(existing_data, f)
+                else:
+                    print("Environment already exists in YAML, skipping update.")
             
             # Generate & log a GIF after finishing task i
-            states = record_gif_of_episode(train_state, env, network)
+            states = record_gif_of_episode(config=config, train_state=train_state, env=env, env_idx=i, max_steps=config.gif_len)
             visualizer.animate(states, agent_view_size=5, task_idx=i, task_name=env_name, exp_dir=exp_dir)
 
             # save the model
@@ -979,7 +986,7 @@ def main():
     # apply the loop_over_envs function to the environments
     runner_state = loop_over_envs(train_rng, train_state, envs)
 
-def record_gif_of_episode(config, train_state, env, network, env_idx=0, max_steps=300):
+def record_gif_of_episode(config, train_state, env, env_idx=0, max_steps=300):
     rng = jax.random.PRNGKey(0)
     rng, env_rng = jax.random.split(rng)
     obs, state = env.reset(env_rng)
@@ -1004,7 +1011,7 @@ def record_gif_of_episode(config, train_state, env, network, env_idx=0, max_step
         actions = {}
         act_keys = jax.random.split(rng, env.num_agents)
         for i, agent_id in enumerate(env.agents):
-            pi, _ = network.apply(train_state.params, flat_obs[agent_id])
+            pi, _ = train_state.apply_fn(train_state.params, flat_obs[agent_id])
             actions[agent_id] = jnp.squeeze(pi.sample(seed=act_keys[i]), axis=0)
 
         rng, key_step = jax.random.split(rng)

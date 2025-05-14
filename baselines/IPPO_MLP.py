@@ -28,11 +28,13 @@ from baselines.utils import (Transition,
                              unbatchify, 
                              sample_discrete_action,
                              show_heatmap_bwt,
-                             show_heatmap_fwt,)
+                             show_heatmap_fwt,
+                             compute_normalized_evaluation_rewards,
+                             compute_normalized_returns)
 
 from dotenv import load_dotenv
 import os
-os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
+# os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
 
 from omegaconf import OmegaConf
 import wandb
@@ -45,6 +47,7 @@ from tensorboardX import SummaryWriter
 @dataclass
 class Config:
     lr: float = 3e-4
+    anneal_lr: bool = True
     num_envs: int = 16
     num_steps: int = 128
     total_timesteps: float = 8e6
@@ -56,8 +59,14 @@ class Config:
     ent_coef: float = 0.01
     vf_coef: float = 0.5
     max_grad_norm: float = 0.5
+
+    # reward shaping
+    reward_shaping: bool = True
     reward_shaping_horizon: float = 2.5e6
+
     activation: str = "tanh"
+
+    # run name
     env_name: str = "overcooked"
     alg_name: str = "ippo"
     cl_method: str = "FT"
@@ -70,13 +79,14 @@ class Config:
         "square_arena", "no_cooperation"])
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
-    evaluation: bool = False
+
+    # Evaluation & Logging
+    evaluation: bool = True
     log_interval: int = 75
     eval_num_steps: int = 1000
     eval_num_episodes: int = 5
     gif_len: int = 300
     
-    anneal_lr: bool = False
     seed: int = 30
     num_seeds: int = 1
     
@@ -378,18 +388,6 @@ def main():
         '''
         frac = 1.0 - (count // (config.num_minibatches * config.update_epochs)) / config.num_updates
         return config.lr * frac
-    
-    def gentle_linear_schedule(count):
-        min_frac = 0.2  
-        frac = 1.0 - (1.0 - min_frac) * (count // (config.num_minibatches * config.update_epochs)) / config.num_updates
-        return config.lr * frac
-
-    rew_shaping_anneal = optax.linear_schedule(
-        init_value=1.,
-        end_value=0.,
-        transition_steps=config.reward_shaping_horizon
-    )
-
 
     network = ActorCritic(temp_env.action_space().n, activation=config.activation)
 
@@ -402,7 +400,7 @@ def main():
     # Initialize the optimizer
     tx = optax.chain(
         optax.clip_by_global_norm(config.max_grad_norm),
-        optax.adam(learning_rate=gentle_linear_schedule if config.anneal_lr else config.lr, eps=1e-5)
+        optax.adam(learning_rate=linear_schedule if config.anneal_lr else config.lr, eps=1e-5)
     )
 
     # jit the apply function
@@ -417,10 +415,9 @@ def main():
 
     # Load the practical baseline yaml file as a dictionary
     repo_root = Path(__file__).resolve().parent.parent
-    yaml_loc = os.path.join(repo_root, "practical_reward_baseline_results.yaml")
+    yaml_loc = os.path.join(repo_root, "practical_reward_baseline.yaml")
     with open(yaml_loc, "r") as f:
         practical_baselines = OmegaConf.load(f)
-
 
     @partial(jax.jit, static_argnums=(2))
     def train_on_environment(rng, train_state, env, env_counter):
@@ -433,14 +430,23 @@ def main():
         # reset the learning rate and the optimizer
         tx = optax.chain(
         optax.clip_by_global_norm(config.max_grad_norm), 
-            optax.adam(learning_rate=gentle_linear_schedule if config.anneal_lr else config.lr, eps=1e-5)
+            optax.adam(learning_rate=linear_schedule if config.anneal_lr else config.lr, eps=1e-5)
         )
-        train_state = train_state.replace(tx=tx)
-        
+        new_optimizer = tx.init(train_state.params)
+        train_state = train_state.replace(tx=tx, opt_state=new_optimizer)
+
         # Initialize and reset the environment 
         rng, env_rng = jax.random.split(rng) 
         reset_rng = jax.random.split(env_rng, config.num_envs) 
         obsv, env_state = jax.vmap(env.reset, in_axes=(0,))(reset_rng) 
+
+        # set the reward shaping for each environment
+        if config.reward_shaping:
+            rew_shaping_anneal = optax.linear_schedule(
+                init_value=1.,
+                end_value=0.,
+                transition_steps=config.reward_shaping_horizon
+            )
         
         # TRAIN 
         def _update_step(runner_state, _):
@@ -493,11 +499,14 @@ def main():
                 current_timestep = update_step * config.num_steps * config.num_envs
 
                 # add the shaped reward to the normal reward 
-                reward = jax.tree_util.tree_map(lambda x,y: 
-                                                x+y * rew_shaping_anneal(current_timestep), 
-                                                reward,
-                                                info["shaped_reward"]
-                                                )
+                if config.reward_shaping: 
+                    reward = jax.tree_util.tree_map(lambda x,y: 
+                                                    x+y * rew_shaping_anneal(current_timestep), 
+                                                    reward,
+                                                    info["shaped_reward"]
+                                                    )
+                else:
+                    reward = reward
 
                 transition = Transition(
                     batchify(done, env.agents, config.num_actors).squeeze(), 
@@ -720,7 +729,7 @@ def main():
             metric["General/update_step"] = update_step
             metric["General/env_step"] = update_step * config.num_steps * config.num_envs
             if config.anneal_lr:
-                metric["General/learning_rate"] = gentle_linear_schedule(update_step * config.num_minibatches * config.update_epochs)
+                metric["General/learning_rate"] = linear_schedule(update_step * config.num_minibatches * config.update_epochs)
             else:
                 metric["General/learning_rate"] = config.lr
 
@@ -732,11 +741,17 @@ def main():
             metric["Losses/entropy"] = entropy.mean()
 
             # Rewards section
-            metric["General/shaped_reward_agent0"] = metric["shaped_reward"]["agent_0"]
-            metric["General/shaped_reward_agent1"] = metric["shaped_reward"]["agent_1"]
-            metric.pop("shaped_reward", None)
-            metric["General/shaped_reward_annealed_agent0"] = metric["General/shaped_reward_agent0"] * rew_shaping_anneal(current_timestep)
-            metric["General/shaped_reward_annealed_agent1"] = metric["General/shaped_reward_agent1"] * rew_shaping_anneal(current_timestep)
+            if config.reward_shaping:
+                metric["General/shaped_reward_agent0"] = metric["shaped_reward"]["agent_0"]
+                metric["General/shaped_reward_agent1"] = metric["shaped_reward"]["agent_1"]
+                metric.pop("shaped_reward", None)
+                metric["General/shaped_reward_annealed_agent0"] = metric["General/shaped_reward_agent0"] * \
+                                                                    rew_shaping_anneal(current_timestep)
+                metric["General/shaped_reward_annealed_agent1"] = metric["General/shaped_reward_agent1"] * \
+                                                                    rew_shaping_anneal(current_timestep)
+            else:
+                # remove the shaped reward from the metric
+                metric.pop("shaped_reward", None)
 
             # Advantages and Targets section
             metric["Advantage_Targets/advantages"] = advantages.mean()
@@ -755,37 +770,23 @@ def main():
                     if config.evaluation:
                         evaluations = evaluate_model(train_state_eval, eval_rng)
 
-                        for i, layout_name in enumerate(config.layout_name):
-                            metric[f"Evaluation/{layout_name}"] = evaluations[i]
-                            
-                            # Add error handling for missing baseline entries
-                            bare_layout = layout_name.split("__")[1].strip()
-                            try:
-                                if bare_layout in practical_baselines:
-                                    baseline_reward = practical_baselines[bare_layout]["avg_rewards"]
-                                    metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i] / baseline_reward
-                                else:
-                                    print(f"Warning: No baseline data for environment '{bare_layout}'")
-                                    metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
-                            except Exception as e:
-                                print(f"Error scaling rewards for {layout_name}: {e}")
-                                metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
+                        metric = compute_normalized_evaluation_rewards(evaluations, 
+                                                            config.layout_name, 
+                                                            practical_baselines, 
+                                                            metric)
                     
                     def callback(args):
                         metric, update_step, env_counter = args
                         real_step = (int(env_counter)-1) * config.num_updates + int(update_step)
 
-                        env_name = config.layout_name[env_counter-1]
-                        bare_layout = env_name.split("__")[1].strip()
-                        if bare_layout in practical_baselines:
-                            metric["Scaled returns/returned_episode_returns_scaled"] = (
-                                metric["returned_episode_returns"] / practical_baselines[bare_layout]["avg_rewards"])
-                        else:
-                            print("Warning: No baseline data for environment: ", bare_layout)
-                            metric["Scaled returns/returned_episode_returns_scaled"] = metric["returned_episode_returns"]  
-
+                        metric = compute_normalized_returns(config.layout_name, 
+                                                            practical_baselines, 
+                                                            metric, 
+                                                            env_counter)
+                        
                         for key, value in metric.items():
                             writer.add_scalar(key, value, real_step)
+                            pass
 
                     jax.experimental.io_callback(callback, None, (metric, update_step, env_counter))
                     return None
@@ -793,7 +794,10 @@ def main():
                 def do_not_log(metric, update_step):
                     return None
                 
-                jax.lax.cond((update_step % config.log_interval) == 0, log_metrics, do_not_log, metric, update_step)
+                jax.lax.cond((update_step % config.log_interval) == 0, 
+                             log_metrics, do_not_log, 
+                             metric, 
+                             update_step)
             
 
             # Evaluate the model and log the metrics
