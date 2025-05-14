@@ -57,7 +57,6 @@ class Config:
     cbp_replace_rate: float = 1e-4
     cbp_maturity: int = 10_000
     cbp_decay: float = 0.0
-    cbp_replace_interval: int = 25  # run CBP every n PPO updates
     cbp_fast: bool = True  # use the fast CBP implementation
 
     seq_length: int = 2
@@ -673,29 +672,15 @@ def main():
                     train_state = train_state.apply_gradients(grads=grads)
 
                     # ---- Continual-Backprop neuron replacement ----
-                    def do_replace(args):
-                        train_state, rng = args
-                        rng, cbp_rng = jax.random.split(rng)
-                        new_p, new_c, _ = cbp_step_jit(
-                            train_state.params,
-                            train_state.cbp_state,
-                            rng=cbp_rng,
-                            maturity=config.cbp_maturity,
-                            rho=config.cbp_replace_rate,
-                        )
-                        ts = train_state.replace(params=new_p, cbp_state=new_c)
-                        return (ts, rng)
-
-                    def no_replace(args):
-                        return args
-
-                    cond_flag = (update_step % config.cbp_replace_interval) == 0
-                    train_state, rng = lax.cond(
-                        cond_flag,
-                        do_replace,
-                        no_replace,
-                        operand=(train_state, rng),
+                    rng, cbp_rng = jax.random.split(rng)
+                    new_p, new_c, _ = cbp_step_jit(
+                        train_state.params,
+                        train_state.cbp_state,
+                        rng=cbp_rng,
+                        maturity=config.cbp_maturity,
+                        rho=config.cbp_replace_rate,
                     )
+                    train_state = train_state.replace(params=new_p, cbp_state=new_c)
 
                     # Of course we also need to add the network to the carry here
                     return (train_state, rng), loss_information

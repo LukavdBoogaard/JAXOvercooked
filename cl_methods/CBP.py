@@ -10,53 +10,6 @@ from flax.linen.initializers import constant, orthogonal
 from flax.training.train_state import TrainState
 
 
-class CBPDense(nn.Module):
-    """Dense layer *plus* CBP bookkeeping (utility, age, counter)."""
-    features: int
-    name: str
-    eta: float = 0.0  # utility decay, off by default
-    kernel_init: callable = orthogonal(np.sqrt(2))
-    bias_init: callable = constant(0.0)
-    activation: str = "tanh"
-
-    def setup(self):
-        self.dense = nn.Dense(self.features,
-                              kernel_init=self.kernel_init,
-                              bias_init=self.bias_init,
-                              name=f"{self.name}_d")
-        if self.activation == "relu":
-            self.act_fn = nn.relu
-        elif self.activation == "tanh":
-            self.act_fn = nn.tanh
-        else:
-            raise ValueError(f"Unknown activation function {self.activation}")
-
-        self.variable("cbp", f"{self.name}_util", lambda: jnp.zeros((self.features,)))
-        self.variable("cbp", f"{self.name}_age", lambda: jnp.zeros((self.features,), jnp.int32))
-        self.variable("cbp", f"{self.name}_ctr", lambda: jnp.zeros(()))  # scalar float
-
-    def __call__(self, x, next_kernel, train: bool):
-        # Forward pass
-        y = self.dense(x)
-        h = self.act_fn(y)
-        if train:
-            # fetch existing variables
-            util = self.get_variable("cbp", f"{self.name}_util")
-            age = self.get_variable("cbp", f"{self.name}_age")
-
-            # ------------ CBP utility + age update ------------
-            w_abs_sum = jnp.sum(jnp.abs(next_kernel),
-                                axis=1)  # (n_units,)  # Flax weights are saved as (in, out). PyTorch is (out, in).
-            abs_neuron_output = jnp.abs(h)
-            contrib = jnp.mean(abs_neuron_output,
-                               axis=0) * w_abs_sum  # contribution =  |h| * Σ|w_out|  Mean over the batch (dim 0 of h)
-            new_util = util * self.eta + (1 - self.eta) * contrib
-
-            self.put_variable("cbp", f"{self.name}_util", new_util)
-            self.put_variable("cbp", f"{self.name}_age", age + 1)
-        return h
-
-
 def weight_reinit(key, shape):
     """Should be the same weight initializer used at model start (orthogonal(√2))."""
     return orthogonal(np.sqrt(2))(key, shape)

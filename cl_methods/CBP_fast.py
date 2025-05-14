@@ -1,9 +1,3 @@
-# Continuous Backprop with fast, JAX‑friendly maintenance ---------------------------------
-# Drop‑in replacement for the previous CBP implementation.
-# ‑ avoids unfreeze/freeze (host round‑trips)
-# ‑ regenerates only the rows that are actually replaced
-# ‑ ready for JIT and TPU/GPU execution
-
 import flax
 import jax
 import jax.numpy as jnp
