@@ -18,7 +18,6 @@ from flax.core.frozen_dict import FrozenDict, freeze, unfreeze
 from typing import Sequence, NamedTuple, Any, Optional, List
 from flax.training.train_state import TrainState
 import distrax
-from gymnax.wrappers.purerl import LogWrapper, FlattenObservationWrapper
 
 from jax_marl.registration import make
 from jax_marl.wrappers.baselines import LogWrapper
@@ -33,7 +32,9 @@ from baselines.utils import (Transition,
                              sample_discrete_action,
                              make_task_onehot,
                              show_heatmap_bwt,
-                             show_heatmap_fwt,)
+                             show_heatmap_fwt,
+                             compute_normalized_evaluation_rewards,
+                             compute_normalized_returns)
 from dotenv import load_dotenv
 import os
 os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
@@ -128,7 +129,7 @@ def main():
         layout_config["layout"] = overcooked_layouts[layout_name]
     
     timestamp = datetime.now().strftime("%m-%d_%H-%M")
-    run_name = f'{config.alg_name}_{config.network_architecture}_seq{config.seq_length}_{config.strategy}_{timestamp}'
+    run_name = f'{config.alg_name}_Packnet_{config.network_architecture}_seq{config.seq_length}_{config.strategy}_{timestamp}'
     exp_dir = os.path.join("runs", run_name)
 
     # Initialize WandB
@@ -393,14 +394,7 @@ def main():
         returns the learning rate
         '''
         frac = 1.0 - (count // (config.num_minibatches * config.update_epochs)) / config.num_updates
-        return config.lr * frac
-
-    rew_shaping_anneal = optax.linear_schedule(
-        init_value=1.,
-        end_value=0.,
-        transition_steps=config.reward_shaping_horizon
-    )
-    
+        return config.lr * frac    
     actor = Actor(
         action_dim=temp_env.action_space().n, 
         activation=config.activation
@@ -496,13 +490,21 @@ def main():
             optax.clip_by_global_norm(config.max_grad_norm), 
             optax.adam(learning_rate=linear_schedule if config.anneal_lr else config.lr, eps=1e-5)
         )
-        actor_train_state = actor_train_state.replace(tx=actor_tx)
-        critic_train_state = critic_train_state.replace(tx=critic_tx)
+        new_actor_optimizer = actor_tx.init(actor_train_state.params)
+        new_critic_optimizer = critic_tx.init(critic_train_state.params)
+        actor_train_state = actor_train_state.replace(tx=actor_tx, opt_state=new_actor_optimizer)
+        critic_train_state = critic_train_state.replace(tx=critic_tx, opt_state=new_critic_optimizer)
         
         # Initialize and reset the environment 
         rng, env_rng = jax.random.split(rng) 
         reset_rng = jax.random.split(env_rng, config.num_envs) 
         obsv, env_state = jax.vmap(env.reset, in_axes=(0,))(reset_rng) 
+
+        rew_shaping_anneal = optax.linear_schedule(
+            init_value=1.,
+            end_value=0.,
+            transition_steps=config.reward_shaping_horizon
+        )
         
         # TRAIN 
         def _update_step(runner_state, unused):
@@ -865,23 +867,11 @@ def main():
                             metric[f"Scaled returns/evaluation_{config.layout_name[i]}_scaled"] = jnp.nan
 
                         evaluations = evaluate_model(actor_train_state_eval, eval_rng)
-                        for i, layout_name in enumerate(config.layout_name):
-                            metric[f"Evaluation/{layout_name}"] = evaluations[i]
-                            
-                            # Add error handling for missing baseline entries
-                            bare_layout = layout_name.split("__")[1]
-                            try:
-                                if bare_layout in practical_baselines:
-                                    baseline_reward = practical_baselines[bare_layout]["avg_rewards"]
-                                    metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i] / baseline_reward
-                                else:
-                                    print(f"Warning: No baseline data for environment '{bare_layout}'")
-                                    # Use 1.0 as default normalization factor (no scaling)
-                                    metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
-                            except Exception as e:
-                                print(f"Error scaling rewards for {layout_name}: {e}")
-                                metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
-
+                        
+                        metric = compute_normalized_evaluation_rewards(evaluations, 
+                                                        config.layout_name, 
+                                                        practical_baselines, 
+                                                        metric)
                     # Extract parameters 
                     actor_params = jax.tree_util.tree_map(lambda x: x, actor_train_state_eval.params["params"])
                     actor_grads = jax.tree_util.tree_map(lambda x: x, grads_eval["params"])
@@ -891,15 +881,11 @@ def main():
                         metric, update_step, env_counter, actor_params, actor_grads = args
                         real_step = (int(env_counter)-1) * config.num_updates + int(update_step)
 
-                        env_name = config.layout_name[env_counter-1]
-                        bare_layout = env_name.split("__")[1].strip()
-                        if bare_layout in practical_baselines:
-                            metric["Scaled returns/returned_episode_returns_scaled"] = (
-                                metric["returned_episode_returns"] / practical_baselines[bare_layout]["avg_rewards"])
-                        else:
-                            print("Warning: No baseline data for environment: ", bare_layout)
-                            metric["Scaled returns/returned_episode_returns_scaled"] = metric["returned_episode_returns"]  
-
+                        metric = compute_normalized_returns(config.layout_name, 
+                                                            practical_baselines, 
+                                                            metric, 
+                                                            env_counter)
+                        
                         for key, value in metric.items():
                             writer.add_scalar(key, value, real_step)
                         for layer, dict in actor_params.items():
