@@ -5,17 +5,13 @@ os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
 from datetime import datetime
 from typing import Sequence, NamedTuple, Any, Optional, List
 
-import distrax
 import flax
-import flax.linen as nn
 import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
 from dotenv import load_dotenv
-from flax import struct
-from flax.core.frozen_dict import freeze, unfreeze, FrozenDict
-from flax.linen.initializers import constant, orthogonal
+from flax.core.frozen_dict import freeze, unfreeze
 from flax.training.train_state import TrainState
 
 from jax_marl.environments.env_selection import generate_sequence
@@ -23,12 +19,11 @@ from jax_marl.environments.overcooked_environment import overcooked_layouts
 from jax_marl.registration import make
 from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
 from jax_marl.wrappers.baselines import LogWrapper
-from architectures.multihead_mlp import ActorCritic
+from architectures.shared_mlp import ActorCritic
 from cl_methods.L2_regularization import init_cl_state, update_cl_state, compute_l2_reg_loss
-from baselines.utils import (Transition, 
-                             batchify, 
-                             unbatchify, 
-                             sample_discrete_action,
+from baselines.utils import (Transition,
+                             batchify,
+                             unbatchify,
                              make_task_onehot,
                              show_heatmap_bwt,
                              show_heatmap_fwt,
@@ -70,7 +65,7 @@ class Config:
     regularize_critic: bool = False
 
     # Environment
-    seq_length: int = 2
+    seq_length: int = 10
     strategy: str = "random"
     layouts: Optional[Sequence[str]] = field(default_factory=lambda: [])
     env_kwargs: Optional[Sequence[dict]] = None
@@ -79,7 +74,7 @@ class Config:
     log_interval: int = 75
     eval_num_steps: int = 1000
     eval_num_episodes: int = 5
-    gif_len : int = 300
+    gif_len: int = 300
 
     anneal_lr: bool = False
     seed: int = 30
@@ -95,6 +90,7 @@ class Config:
     num_actors: int = 0
     num_updates: int = 0
     minibatch_size: int = 0
+
 
 ############################
 ##### MAIN FUNCTION    #####
@@ -112,9 +108,9 @@ def main():
 
     # generate a sequence of tasks
     config.env_kwargs, config.layout_name = generate_sequence(
-        sequence_length=config.seq_length, 
-        strategy=config.strategy, 
-        layout_names=config.layouts, 
+        sequence_length=config.seq_length,
+        strategy=config.strategy,
+        layout_names=config.layouts,
         seed=config.seed
     )
 
@@ -542,8 +538,8 @@ def main():
                 current_timestep = update_step * config.num_steps * config.num_envs
 
                 # add the shaped reward to the normal reward
-                reward = jax.tree_util.tree_map(lambda x,y: 
-                                                x+y * rew_shaping_anneal(current_timestep), 
+                reward = jax.tree_util.tree_map(lambda x, y:
+                                                x + y * rew_shaping_anneal(current_timestep),
                                                 reward,
                                                 info["shaped_reward"]
                                                 )
@@ -596,6 +592,7 @@ def main():
                 @param last_val: the value of the last state
                 returns the advantages and the targets
                 '''
+
                 def _get_advantages(gae_and_next_value, transition):
                     '''
                     calculates the advantage for a single transition
@@ -609,7 +606,7 @@ def main():
                         transition.value,
                         transition.reward,
                     )
-                    delta = reward + config.gamma * next_value * (1 - done) - value # calculate the temporal difference
+                    delta = reward + config.gamma * next_value * (1 - done) - value  # calculate the temporal difference
                     gae = (
                             delta
                             + config.gamma * config.gae_lambda * (1 - done) * gae
@@ -718,7 +715,7 @@ def main():
                 # set the batch size and check if it is correct
                 batch_size = config.minibatch_size * config.num_minibatches
                 assert (
-                    batch_size == config.num_steps * config.num_actors
+                        batch_size == config.num_steps * config.num_actors
                 ), "batch size must be equal to number of steps * number of actors"
 
                 # create a batch of the trajectory, advantages, and targets
@@ -772,7 +769,6 @@ def main():
             # update the metric with the current timestep
             metric = jax.tree_util.tree_map(lambda x: x.mean(), metric)
 
-            
             update_step += 1
             mean_explore = jnp.mean(info["explore"])
 
@@ -782,7 +778,8 @@ def main():
             metric["General/steps_for_env"] = steps_for_env
             metric["General/env_step"] = update_step * config.num_steps * config.num_envs
             if config.anneal_lr:
-                metric["General/learning_rate"] = linear_schedule(update_step * config.num_minibatches * config.update_epochs)
+                metric["General/learning_rate"] = linear_schedule(
+                    update_step * config.num_minibatches * config.update_epochs)
             else:
                 metric["General/learning_rate"] = config.lr
 
@@ -822,18 +819,18 @@ def main():
                 def log_metrics(metric, update_step):
                     if config.evaluation:
                         evaluations = evaluate_model(train_state_eval, eval_rng, env_idx)
-                        metric = compute_normalized_evaluation_rewards(evaluations, 
-                                                            config.layout_name, 
-                                                            practical_baselines, 
-                                                            metric)
+                        metric = compute_normalized_evaluation_rewards(evaluations,
+                                                                       config.layout_name,
+                                                                       practical_baselines,
+                                                                       metric)
 
                     def callback(args):
                         metric, update_step, env_counter = args
-                        real_step = (int(env_counter)-1) * config.num_updates + int(update_step)
-                        
-                        metric = compute_normalized_returns(config.layout_name, 
-                                                            practical_baselines, 
-                                                            metric, 
+                        real_step = (int(env_counter) - 1) * config.num_updates + int(update_step)
+
+                        metric = compute_normalized_returns(config.layout_name,
+                                                            practical_baselines,
+                                                            metric,
                                                             env_counter)
                         for key, value in metric.items():
                             writer.add_scalar(key, value, real_step)
@@ -879,24 +876,25 @@ def main():
         returns the runner state and the metrics
         '''
         # split the random number generator for training on the environments
-        rng, *env_rngs = jax.random.split(rng, len(envs)+1)
+        rng, *env_rngs = jax.random.split(rng, len(envs) + 1)
 
         env_counter = 1
 
         visualizer = OvercookedVisualizer()
         # Evaluate the model on all environments before training
         if config.evaluation:
-            evaluation_matrix = jnp.zeros(((len(envs)+1), len(envs)))
+            evaluation_matrix = jnp.zeros(((len(envs) + 1), len(envs)))
             rng, eval_rng = jax.random.split(rng)
             evaluations = evaluate_model(train_state, eval_rng, 0)
-            evaluation_matrix = evaluation_matrix.at[0,:].set(evaluations)
+            evaluation_matrix = evaluation_matrix.at[0, :].set(evaluations)
 
         runner_state = None
         for i, (rng, env) in enumerate(zip(env_rngs, envs)):
             if i > 0:
                 # Overwrite old_params with the final params from the last task
                 cl_state = update_cl_state(cl_state, train_state.params)
-            runner_state, metrics = train_on_environment(rng, train_state, cl_state, env, env_idx=i, env_counter=env_counter)
+            runner_state, metrics = train_on_environment(rng, train_state, cl_state, env, env_idx=i,
+                                                         env_counter=env_counter)
             train_state = runner_state[0]
 
             # ----- Generate & log a GIF after finishing task i -----
@@ -908,8 +906,8 @@ def main():
 
             if config.evaluation:
                 # Evaluate at the end of training to get the average performance of the task right after training
-                evaluations = evaluate_model(train_state, rng, env_counter-1)
-                evaluation_matrix = evaluation_matrix.at[env_counter,:].set(evaluations)
+                evaluations = evaluate_model(train_state, rng, env_counter - 1)
+                evaluation_matrix = evaluation_matrix.at[env_counter, :].set(evaluations)
 
             # save the model
             path = f"checkpoints/overcooked/L2/{run_name}/model_env_{env_counter}"
@@ -917,7 +915,7 @@ def main():
 
             # update the environment counter
             env_counter += 1
-        
+
         if config.evaluation:
             # calculate the forward transfer and backward transfer
             show_heatmap_bwt(evaluation_matrix, run_name)
