@@ -49,7 +49,7 @@ from tensorboardX import SummaryWriter
 
 @dataclass
 class Config:
-    reg_coef: float = 2e4
+    reg_coef: float = 1e4
     lr: float = 3e-4
     num_envs: int = 16
     num_steps: int = 128
@@ -67,7 +67,7 @@ class Config:
     activation: str = "tanh"
     env_name: str = "overcooked"
     alg_name: str = "ippo"
-    network_architecture: str = "mlp_shared"
+    cl_method: str = "MAS"
     use_task_id: bool = False
     use_multihead: bool = False
     shared_backbone: bool = False
@@ -134,8 +134,9 @@ def main():
     for layout_config in config.env_kwargs:
         layout_name = layout_config["layout"]
         layout_config["layout"] = overcooked_layouts[layout_name]
-    timestamp = datetime.now().strftime("%m-%d_%H-%M")
-    run_name = f'{config.alg_name}_MAS_{config.network_architecture}_seq{config.seq_length}_{config.strategy}_{timestamp}'
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    network = "shared_mlp" if config.shared_backbone else "mlp"
+    run_name = f'{config.alg_name}_{config.cl_method}_{network}_seq{config.seq_length}_{config.strategy}_seed_{config.seed}_{timestamp}'
     exp_dir = os.path.join("runs", run_name)
 
     # Initialize WandB
@@ -148,8 +149,9 @@ def main():
         sync_tensorboard=True,
         mode=config.wandb_mode,
         tags=wandb_tags,
-        group="MAS",
-        name=run_name
+        group=config.cl_method,
+        name=run_name,
+        id=run_name,
     )
 
     # Set up Tensorboard
@@ -404,7 +406,11 @@ def main():
         frac = 1.0 - (count // (config.num_minibatches * config.update_epochs)) / config.num_updates
         return config.lr * frac
 
-    
+    rew_shaping_anneal = optax.linear_schedule(
+        init_value=1.,
+        end_value=0.,
+        transition_steps=config.reward_shaping_horizon
+    )
 
     network = ActorCritic(temp_env.action_space().n, activation=config.activation, use_multihead=config.use_multihead,
                           num_tasks=config.seq_length, shared_backbone=config.shared_backbone)
