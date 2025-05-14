@@ -177,44 +177,41 @@ def show_heatmap_fwt(matrix, run_name, save_folder="heatmap_images"):
     plt.savefig(file_path)
     plt.close()
 
-def compute_normalized_evaluation_rewards(evaluations, layouts, practical_baselines, metric):
-    """
-    computes the normalized rewards based on the practical baselines
-    @param evaluations: list of evaluations
-    @param layouts: list of layouts
-    @param practical_baselines: dictionary of practical baselines
-    @param metric: dictionary to store the metrics
-    """
-
-
-    for i, layout_name in enumerate(layouts):
+def compute_normalized_evaluation_rewards(evaluations, layout_names, practical_baselines, metric):
+    """Normalize evaluation rewards using JAX-friendly operations"""
+    for i, layout_name in enumerate(layout_names):
+        # Record raw evaluation score
         metric[f"Evaluation/{layout_name}"] = evaluations[i]
         
-        # Add error handling for missing baseline entries
-        bare_layout = layout_name.split("__")[1].strip()
-        baseline_format = f"0__{bare_layout}"
-        scaled_reward = 0
-        try:
-            if baseline_format in practical_baselines:
-                baseline_reward = practical_baselines[baseline_format]["avg_rewards"]
-                if baseline_reward == 0:
-                    print(f"Warning: Baseline reward for environment '{bare_layout}' is zero.")
-                else:
-                    scaled_reward = evaluations[i] / baseline_reward
-            else:
-                print(f"Warning: No baseline data for environment '{bare_layout}'")
-        except Exception as e:
-            print(f"Error scaling rewards for {layout_name}: {e}")
+        # Extract the base layout name
+        if "__" in layout_name:
+            bare_layout = layout_name.split("__")[1]
+        else:
+            bare_layout = layout_name
             
-        if np.isnan(scaled_reward) or np.isinf(scaled_reward):
-            print(f"Warning: Scaled reward for {layout_name} is {scaled_reward}.")
-        metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = scaled_reward
-    
+        baseline_key = f"0__{bare_layout}"
+        
+        # Default to the unnormalized value
+        normalized = evaluations[i]
+        
+        # Check if the baseline exists
+        if baseline_key in practical_baselines:
+            baseline = practical_baselines[baseline_key]["avg_rewards"]
+        
+            # Only divide when baseline > 0
+            normalized = jnp.where(
+                baseline > 0,
+                evaluations[i] / baseline,
+                1
+            )
+            
+        metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = normalized
+        
     return metric
 
 def compute_normalized_returns(layouts, practical_baselines, metric, env_counter):
     """
-    computes the normalized returns based on the practical baselines
+    Computes the normalized returns based on the practical baselines using JAX-friendly operations
     @param layouts: list of layouts
     @param practical_baselines: dictionary of practical baselines
     @param metric: dictionary to store the metrics
@@ -224,17 +221,20 @@ def compute_normalized_returns(layouts, practical_baselines, metric, env_counter
     bare_layout = env_name.split("__")[1].strip()
     baseline_format = f"0__{bare_layout}"
 
-    baseline_result = practical_baselines[baseline_format]["avg_rewards"]
-
+    # Default to unnormalized value
+    normalized = metric["returned_episode_returns"]
+    
     if baseline_format in practical_baselines:
-        if baseline_result == 0:
-            print(f"Warning: Baseline reward for environment '{bare_layout}' is zero.")
-        else:
-            metric["Scaled returns/returned_episode_returns_scaled"] = (
-                metric["returned_episode_returns"] / baseline_result)
-    else:
-        print("Warning: No baseline data for environment: ", bare_layout)
-        metric["Scaled returns/returned_episode_returns_scaled"] = 1
+        baseline_result = practical_baselines[baseline_format]["avg_rewards"]
+
+        normalized = jnp.where(
+            baseline_result > 0,
+            metric["returned_episode_returns"] / baseline_result,
+            1
+        )
+    
+    metric["Scaled returns/returned_episode_returns_scaled"] = normalized
+    
     return metric
 
 

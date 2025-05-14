@@ -29,7 +29,9 @@ from baselines.utils import (Transition,
                              sample_discrete_action,
                              make_task_onehot,
                              show_heatmap_bwt,
-                             show_heatmap_fwt,)
+                             show_heatmap_fwt,
+                             compute_normalized_evaluation_rewards,
+                             compute_normalized_returns)
 from cl_methods.MAS import (MASState, 
                             init_cl_state, 
                             update_mas_state, 
@@ -460,12 +462,20 @@ def main():
             optax.clip_by_global_norm(config.max_grad_norm),
             optax.adam(learning_rate=linear_schedule if config.anneal_lr else config.lr, eps=1e-5)
         )
-        train_state = train_state.replace(tx=tx)
+        new_optimizer = tx.init(train_state.params)
+        train_state = train_state.replace(tx=tx, opt_state=new_optimizer)
 
         # Initialize and reset the environment
         rng, env_rng = jax.random.split(rng)
         reset_rng = jax.random.split(env_rng, config.num_envs)
         obsv, env_state = jax.vmap(env.reset, in_axes=(0,))(reset_rng)
+
+        reward_shaping_horizon = config.total_timesteps / 2
+        rew_shaping_anneal = optax.linear_schedule(
+            init_value=1.,
+            end_value=0.,
+            transition_steps=config.total_timesteps
+        )
 
         # TRAIN
         # @profile
@@ -823,36 +833,18 @@ def main():
                 def log_metrics(metric, update_step):
                     if config.evaluation:
                         evaluations = evaluate_model(train_state_eval, eval_rng, env_idx)
-                        for i, layout_name in enumerate(config.layout_name):
-                            metric[f"Evaluation/{layout_name}"] = evaluations[i]
-                            
-                            # Add error handling for missing baseline entries
-                            bare_layout = layout_name.split("__")[1]
-                            try:
-                                if bare_layout in practical_baselines:
-                                    baseline_reward = practical_baselines[bare_layout]["avg_rewards"]
-                                    metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i] / baseline_reward
-                                else:
-                                    print(f"Warning: No baseline data for environment '{bare_layout}'")
-                                    # Use 1.0 as default normalization factor (no scaling)
-                                    metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
-                            except Exception as e:
-                                print(f"Error scaling rewards for {layout_name}: {e}")
-                                metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
-
+                        metric = compute_normalized_evaluation_rewards(evaluations, 
+                                                            config.layout_name, 
+                                                            practical_baselines, 
+                                                            metric)
                     def callback(args):
                         metric, update_step, env_counter = args
                         real_step = (int(env_counter)-1) * config.num_updates + int(update_step)
                         
-                        env_name = config.layout_name[env_counter-1]
-                        bare_layout = env_name.split("__")[1].strip()
-                        if bare_layout in practical_baselines:
-                            metric["Scaled returns/returned_episode_returns_scaled"] = (
-                                metric["returned_episode_returns"] / practical_baselines[bare_layout]["avg_rewards"])
-                        else:
-                            print("Warning: No baseline data for environment: ", bare_layout)
-                            metric["Scaled returns/returned_episode_returns_scaled"] = metric["returned_episode_returns"]  
-
+                        metric = compute_normalized_returns(config.layout_name, 
+                                                            practical_baselines, 
+                                                            metric, 
+                                                            env_counter)
                         for key, value in metric.items():
                             writer.add_scalar(key, value, real_step)
 
