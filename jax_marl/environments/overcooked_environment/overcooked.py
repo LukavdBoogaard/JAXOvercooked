@@ -24,7 +24,7 @@ BASE_REW_SHAPING_PARAMS = {
     "PLACEMENT_IN_POT_REW": 3, # reward for putting ingredients 
     "PLATE_PICKUP_REWARD": 3, # reward for picking up a plate
     "SOUP_PICKUP_REWARD": 5, # reward for picking up a ready soup
-    "DROP_COUNTER_REWARD": 3,
+    "DROP_COUNTER_REWARD": 0,
     "DISH_DISP_DISTANCE_REW": 0,
     "POT_DISTANCE_REW": 0,
     "SOUP_DISTANCE_REW": 0,
@@ -604,10 +604,12 @@ class Overcooked(MultiAgentEnv):
             + successful_pickup * (object_on_table == OBJECT_TO_INDEX["onion_pile"]) * OBJECT_TO_INDEX["onion"] \
             + successful_drop * OBJECT_TO_INDEX["empty"]
         
-        # Check if agent correctly dropped object on table
+        # A drop is successful if the the agent was holding something and now it is not
         drop_occurred = (object_in_inv != OBJECT_TO_INDEX["empty"]) & (new_object_in_inv == OBJECT_TO_INDEX["empty"])
+        # and if the new object on table is the same as the one in the inventory
         object_placed = new_object_on_table == object_in_inv
-        successfully_dropped_object = drop_occurred * object_placed
+        # A drop is successful if both of the above are true and the conditions for a drop are met
+        successfully_dropped_object = drop_occurred * object_placed * successful_drop
         shaped_reward += successfully_dropped_object * BASE_REW_SHAPING_PARAMS["DROP_COUNTER_REWARD"]
 
         # Apply inventory update
