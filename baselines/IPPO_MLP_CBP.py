@@ -26,7 +26,8 @@ from baselines.utils import (Transition,
                              unbatchify,
                              show_heatmap_bwt,
                              show_heatmap_fwt)
-from cl_methods.CBP_fast import (cbp_step, TrainStateCBP)
+from cl_methods.CBP import (cbp_step, TrainStateCBP)
+from cl_methods.CBP_fast import (cbp_step_fast)
 from jax_marl.environments.env_selection import generate_sequence
 from jax_marl.environments.overcooked_environment import overcooked_layouts
 from jax_marl.registration import make
@@ -57,6 +58,7 @@ class Config:
     cbp_maturity: int = 10_000
     cbp_decay: float = 0.0
     cbp_replace_interval: int = 25  # run CBP every n PPO updates
+    cbp_fast: bool = True  # use the fast CBP implementation
 
     seq_length: int = 2
     strategy: str = "random"
@@ -434,7 +436,8 @@ def main():
 
         print("Training on environment")
 
-        cbp_step_jit = jax.jit(cbp_step, static_argnames=("maturity", "rho"))
+        cbp_step_jit = jax.jit(cbp_step_fast, static_argnames=("maturity", "rho")) if config.cbp_fast else jax.jit(
+            cbp_step, static_argnames=("maturity", "rho"))
 
         # reset the learning rate and the optimizer
         tx = optax.chain(
@@ -669,6 +672,31 @@ def main():
                     # add the gradients to the network parameters
                     train_state = train_state.apply_gradients(grads=grads)
 
+                    # ---- Continual-Backprop neuron replacement ----
+                    def do_replace(args):
+                        train_state, rng = args
+                        rng, cbp_rng = jax.random.split(rng)
+                        new_p, new_c, _ = cbp_step_jit(
+                            train_state.params,
+                            train_state.cbp_state,
+                            rng=cbp_rng,
+                            maturity=config.cbp_maturity,
+                            rho=config.cbp_replace_rate,
+                        )
+                        ts = train_state.replace(params=new_p, cbp_state=new_c)
+                        return (ts, rng)
+
+                    def no_replace(args):
+                        return args
+
+                    cond_flag = (update_step % config.cbp_replace_interval) == 0
+                    train_state, rng = lax.cond(
+                        cond_flag,
+                        do_replace,
+                        no_replace,
+                        operand=(train_state, rng),
+                    )
+
                     # Of course we also need to add the network to the carry here
                     return (train_state, rng), loss_information
 
@@ -708,31 +736,6 @@ def main():
                     f=_update_minbatch,
                     init=carry_init,
                     xs=minibatches
-                )
-
-                # ---- Continual-Backprop neuron replacement ----
-                def do_replace(args):
-                    train_state, rng = args
-                    rng, cbp_rng = jax.random.split(rng)
-                    new_p, new_c, _ = cbp_step_jit(
-                        train_state.params,
-                        train_state.cbp_state,
-                        rng=cbp_rng,
-                        maturity=config.cbp_maturity,
-                        rho=config.cbp_replace_rate,
-                    )
-                    ts = train_state.replace(params=new_p, cbp_state=new_c)
-                    return (ts, rng)
-
-                def no_replace(args):
-                    return args
-
-                cond_flag = (update_step % config.cbp_replace_interval) == 0
-                train_state, rng = lax.cond(
-                    cond_flag,
-                    do_replace,
-                    no_replace,
-                    operand=(train_state, rng),
                 )
 
                 total_loss, grads = loss_information
@@ -909,7 +912,6 @@ def main():
         # Return the runner state after the training loop, and the metric arrays
         return runner_state, metric
 
-
     def loop_over_envs(rng, train_state, envs):
         '''
         Loops over the environments and trains the network
@@ -962,7 +964,6 @@ def main():
 
         return runner_state
 
-
     def save_params(path, train_state):
         '''
         Saves the parameters of the network
@@ -978,7 +979,6 @@ def main():
                 )
             )
         print('model saved to', path)
-
 
     # Run the model
     rng, train_rng = jax.random.split(rng)

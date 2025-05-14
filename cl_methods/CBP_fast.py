@@ -4,8 +4,6 @@
 # ‑ regenerates only the rows that are actually replaced
 # ‑ ready for JIT and TPU/GPU execution
 
-from typing import Tuple
-
 import flax
 import jax
 import jax.numpy as jnp
@@ -27,8 +25,8 @@ def _reinit_rows(rng, kernel, row_mask):
 def _update_layer(p_layer, c_layer, next_kernel, rng, *, prefix, maturity, rho):
     """Update one hidden layer (actor_fc1_d etc.)."""
     util = c_layer[f"{prefix}_util"]
-    age  = c_layer[f"{prefix}_age"]
-    ctr  = c_layer[f"{prefix}_ctr"]
+    age = c_layer[f"{prefix}_age"]
+    ctr = c_layer[f"{prefix}_ctr"]
 
     mature = age > maturity
     ctr += mature.sum() * rho
@@ -40,25 +38,25 @@ def _update_layer(p_layer, c_layer, next_kernel, rng, *, prefix, maturity, rho):
     rep_mask = (rank < n_rep) & mature
 
     rng, sub = jax.random.split(rng)
-    k_in  = _reinit_rows(sub, p_layer["kernel"], rep_mask)
-    b_in  = jnp.where(rep_mask, 0.0, p_layer["bias"])
+    k_in = _reinit_rows(sub, p_layer["kernel"], rep_mask)
+    b_in = jnp.where(rep_mask, 0.0, p_layer["bias"])
     k_out = jnp.where(rep_mask[:, None], 0.0, next_kernel)
 
     new_p_layer = {"kernel": k_in, "bias": b_in}
     new_c_layer = {
         f"{prefix}_util": jnp.where(rep_mask, 0.0, util),
-        f"{prefix}_age":  jnp.where(rep_mask, 0,   age),
-        f"{prefix}_ctr":  ctr,
+        f"{prefix}_age": jnp.where(rep_mask, 0, age),
+        f"{prefix}_ctr": ctr,
     }
     return new_p_layer, new_c_layer, k_out, rng
 
 
-def cbp_step(params: FrozenDict,
-             cbp_state: FrozenDict,
-             rng: jax.random.PRNGKey,
-             *,
-             maturity: int,
-             rho: float):
+def cbp_step_fast(params: FrozenDict,
+                  cbp_state: FrozenDict,
+                  rng: jax.random.PRNGKey,
+                  *,
+                  maturity: int,
+                  rho: float):
     """Shape‑stable CBP update that returns *new* FrozenDicts."""
     # --- actor fc1 → fc2 ----------------------------------------------------
     p1, c1, k1, rng = _update_layer(
@@ -102,7 +100,7 @@ def cbp_step(params: FrozenDict,
     )
 
     # FrozenDicts are immutable – convert to mutable dicts, patch, then freeze.
-    mutable_p  = flax.core.unfreeze(params)
+    mutable_p = flax.core.unfreeze(params)
     mutable_cb = flax.core.unfreeze(cbp_state)
 
     mutable_p["actor_fc1"]["actor_fc1_d"] = p1
@@ -116,7 +114,7 @@ def cbp_step(params: FrozenDict,
     mutable_cb["critic_fc2"] = c4
 
     new_params = flax.core.freeze(mutable_p)
-    new_cbp    = flax.core.freeze(mutable_cb)
+    new_cbp = flax.core.freeze(mutable_cb)
     return new_params, new_cbp, rng
 
 
