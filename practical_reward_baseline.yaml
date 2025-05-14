@@ -17,6 +17,9 @@
   avg_rewards: 178.0
   max_rewards: 180.0
 0__bottleneck_small:
+  avg_rewards: 220.0
+  max_rewards: 220.0
+0__c_kitchen:
   avg_rewards: 0.0
   max_rewards: 0.0
 0__coord_ring:
@@ -38,8 +41,8 @@
   avg_rewards: 185.0
   max_rewards: 200.0
 0__forced_coord:
-  avg_rewards: 0.0
-  max_rewards: 0.0
+  avg_rewards: 180.0
+  max_rewards: 180.0
 0__forced_coord_2:
   avg_rewards: 0.0
   max_rewards: 0.0
