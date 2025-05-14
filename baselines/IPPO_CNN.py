@@ -17,7 +17,9 @@ from baselines.utils import (Transition_CNN,
                              sample_discrete_action,
                              make_task_onehot,
                              show_heatmap_bwt,
-                             show_heatmap_fwt,)
+                             show_heatmap_fwt,
+                             compute_normalized_evaluation_rewards,
+                             compute_normalized_returns)
 
 from jax_marl.registration import make
 from jax_marl.wrappers.baselines import LogWrapper
@@ -62,7 +64,7 @@ class Config:
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
     evaluation: bool = True
-    log_interval: int = 75
+    log_interval: int = 10
     eval_num_steps: int = 1000 
     eval_num_episodes: int = 5 
     gif_len: int = 300
@@ -355,13 +357,6 @@ def main():
         frac = 1.0 - (count // (config.num_minibatches * config.update_epochs)) / config.num_updates
         return config.lr * frac
 
-    rew_shaping_anneal = optax.linear_schedule(
-        init_value=1.,
-        end_value=0.,
-        transition_steps=config.reward_shaping_horizon
-    )
-
-
     network = ActorCritic(temp_env.action_space().n, activation=config.activation)
 
     # Initialize the network
@@ -407,12 +402,18 @@ def main():
         optax.clip_by_global_norm(config.max_grad_norm), 
             optax.adam(learning_rate=linear_schedule if config.anneal_lr else config.lr, eps=1e-5)
         )
-        train_state = train_state.replace(tx=tx)
+        new_optimizer = tx.init(train_state.params)
+        train_state = train_state.replace(tx=tx, opt_state=new_optimizer)
         
         # Initialize and reset the environment 
         rng, env_rng = jax.random.split(rng) 
         reset_rng = jax.random.split(env_rng, config.num_envs) 
         obsv, env_state = jax.vmap(env.reset, in_axes=(0,))(reset_rng) 
+        rew_shaping_anneal = optax.linear_schedule(
+        init_value=1.,
+        end_value=0.,
+        transition_steps=config.reward_shaping_horizon
+    )
         
         # TRAIN 
         def _update_step(runner_state, _):
@@ -734,35 +735,19 @@ def main():
                     if config.evaluation:
                         evaluations = evaluate_model(train_state_eval, network, eval_rng)
 
-                        for i, layout_name in enumerate(config.layout_name):
-                            metric[f"Evaluation/{layout_name}"] = evaluations[i]
-                            
-                            # Add error handling for missing baseline entries
-                            bare_layout = layout_name.split("__")[1].strip()
-                            try:
-                                if bare_layout in practical_baselines:
-                                    baseline_reward = practical_baselines[bare_layout]["avg_rewards"]
-                                    metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i] / baseline_reward
-                                else:
-                                    print(f"Warning: No baseline data for environment '{bare_layout}'")
-                                    metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
-                            except Exception as e:
-                                print(f"Error scaling rewards for {layout_name}: {e}")
-                                metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = evaluations[i]
-                    
+                        metric = compute_normalized_evaluation_rewards(evaluations, 
+                                                            config.layout_name, 
+                                                            practical_baselines, 
+                                                            metric)
                     def callback(args):
                         metric, update_step, env_counter = args
                         real_step = (int(env_counter)-1) * config.num_updates + int(update_step)
 
-                        env_name = config.layout_name[env_counter-1]
-                        bare_layout = env_name.split("__")[1].strip()
-                        if bare_layout in practical_baselines:
-                            metric["Scaled returns/returned_episode_returns_scaled"] = (
-                                metric["returned_episode_returns"] / practical_baselines[bare_layout]["avg_rewards"])
-                        else:
-                            print("Warning: No baseline data for environment: ", bare_layout)
-                            metric["Scaled returns/returned_episode_returns_scaled"] = metric["returned_episode_returns"]  
-
+                        metric = compute_normalized_returns(config.layout_name, 
+                                                            practical_baselines, 
+                                                            metric, 
+                                                            env_counter)
+                        
                         for key, value in metric.items():
                             writer.add_scalar(key, value, real_step)
 
@@ -884,25 +869,19 @@ def record_gif_of_episode(config, train_state, env, network, env_idx=0, max_step
     states = [state]
 
     while not done and step_count < max_steps:
-        flat_obs = {}
-        for agent_id, obs_v in obs.items():
-            # Determine the expected raw shape for this agent.
-            expected_shape = env.observation_space().shape
-            # If the observation is unbatched, add a batch dimension.
-            if obs_v.ndim == len(expected_shape):
-                obs_b = jnp.expand_dims(obs_v, axis=0)  # now (1, ...)
-            else:
-                obs_b = obs_v
-            # Flatten the nonbatch dimensions.
-            flattened = jnp.reshape(obs_b, (obs_b.shape[0], -1))
-            flat_obs[agent_id] = flattened
-
-        actions = {}
-        act_keys = jax.random.split(rng, env.num_agents)
-        for i, agent_id in enumerate(env.agents):
-            pi, _ = network.apply(train_state.params, flat_obs[agent_id])
-            actions[agent_id] = jnp.squeeze(pi.sample(seed=act_keys[i]), axis=0)
-
+        # Process observations the same way as during training
+        obs_batch = jnp.stack([obs[a] for a in env.agents]).reshape(-1, *env.observation_space().shape)
+        
+        # Get actions from the policy network
+        rng, action_rng = jax.random.split(rng)
+        pi, _ = network.apply(train_state.params, obs_batch)
+        actions_batch = pi.sample(seed=action_rng)
+        
+        # Unbatchify actions to match environment format
+        actions = unbatchify(actions_batch, env.agents, 1, env.num_agents)
+        actions = {k: v.squeeze() for k, v in actions.items()}
+        
+        # Step the environment
         rng, key_step = jax.random.split(rng)
         next_obs, next_state, reward, done_info, info = env.step(key_step, state, actions)
         done = done_info["__all__"]
