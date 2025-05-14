@@ -75,7 +75,7 @@ class Config:
 
     seq_length: int = 1
     strategy: str = "random"
-    layouts: Optional[Sequence[str]] = None
+    layouts: Optional[Sequence[str]] = field(default_factory=lambda: [])
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
     log_interval: int = 50

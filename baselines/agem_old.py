@@ -215,12 +215,7 @@ class Config:
     # Environment
     seq_length: int = 6
     strategy: str = "random"
-    layouts: Optional[Sequence[str]] = field(
-        default_factory=lambda: [
-            "asymm_advantages", "smallest_kitchen", "cramped_room",
-            "easy_layout", "square_arena", "no_cooperation"
-        ]
-    )
+    layouts: Optional[Sequence[str]] = field(default_factory=lambda: [])
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
     log_interval: int = 75  # log every n calls to update step

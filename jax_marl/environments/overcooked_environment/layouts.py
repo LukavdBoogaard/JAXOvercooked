@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 import jax.numpy as jnp
 from flax.core.frozen_dict import FrozenDict
 
@@ -472,30 +474,46 @@ W     A   W
 WWWWWWWWWWW
 """
 
+# Hard layouts
+hard_layouts = {
+    "forced_coord"       : FrozenDict(forced_coord),
+    "forced_coord_2"     : layout_grid_to_dict(foorced_coord_2),
+    "split_kitchen"      : layout_grid_to_dict(split_kitchen),
+    "basic_cooperative"  : layout_grid_to_dict(basic_cooperative),
+}
+
+# Medium layouts
+medium_layouts = {
+    "coord_ring"          : FrozenDict(coord_ring),
+    "efficiency_test"     : layout_grid_to_dict(efficiency_test),
+    "split_work"          : layout_grid_to_dict(split_work),
+    "bottleneck_small"    : layout_grid_to_dict(bottleneck_small),
+    "bottleneck_large"    : layout_grid_to_dict(bottleneck_large),
+    "counter_circuit"     : layout_grid_to_dict(counter_circuit_grid),
+    "corridor_challenge"  : layout_grid_to_dict(corridor_challenge),
+    "c_kitchen"           : layout_grid_to_dict(c_kitchen),
+}
+
+# Easy layouts
+easy_layouts = {
+    "cramped_room"             : FrozenDict(cramped_room),
+    "asymm_advantages"         : FrozenDict(asymm_advantages),
+    "square_arena"             : layout_grid_to_dict(square_arena),
+    "basic_kitchen_large"      : layout_grid_to_dict(basic_kitchen_large),
+    "basic_kitchen_small"      : layout_grid_to_dict(basic_kitchen_small),
+    "shared_wall"              : layout_grid_to_dict(shared_wall),
+    "smallest_kitchen"         : layout_grid_to_dict(smallest_kitchen),
+    "easy_layout"              : layout_grid_to_dict(easy_layout),
+    "big_kitchen"              : layout_grid_to_dict(big_kitchen),
+    "no_cooperation"           : layout_grid_to_dict(no_cooperation),
+    "resource_sharing"         : layout_grid_to_dict(resource_sharing),
+    "most_efficient"           : layout_grid_to_dict(most_efficient),
+    "most_efficient_horizontal": layout_grid_to_dict(most_efficient_horizontal),
+}
+
+# All layouts
 overcooked_layouts = {
-    "cramped_room" : FrozenDict(cramped_room),
-    "asymm_advantages" : FrozenDict(asymm_advantages),
-    "coord_ring" : FrozenDict(coord_ring),
-    "forced_coord" : FrozenDict(forced_coord),
-    "counter_circuit" : layout_grid_to_dict(counter_circuit_grid),
-    "square_arena" : layout_grid_to_dict(square_arena),
-    "split_kitchen" : layout_grid_to_dict(split_kitchen),
-    "basic_kitchen_large" : layout_grid_to_dict(basic_kitchen_large),
-    "basic_kitchen_small" : layout_grid_to_dict(basic_kitchen_small),
-    "shared_wall" : layout_grid_to_dict(shared_wall),
-    "smallest_kitchen" : layout_grid_to_dict(smallest_kitchen),
-    "easy_layout" : layout_grid_to_dict(easy_layout),
-    "big_kitchen" : layout_grid_to_dict(big_kitchen),
-    "no_cooperation" : layout_grid_to_dict(no_cooperation),
-    "forced_coord_2" : layout_grid_to_dict(foorced_coord_2),
-    "basic_cooperative" : layout_grid_to_dict(basic_cooperative),
-    "corridor_challenge" : layout_grid_to_dict(corridor_challenge),
-    "split_work" : layout_grid_to_dict(split_work),
-    "resource_sharing" : layout_grid_to_dict(resource_sharing),
-    "efficiency_test" : layout_grid_to_dict(efficiency_test),
-    "c_kitchen" : layout_grid_to_dict(c_kitchen),
-    "most_efficient" : layout_grid_to_dict(most_efficient),
-    "most_efficient_horizontal" : layout_grid_to_dict(most_efficient_horizontal),
-    "bottleneck_small" : layout_grid_to_dict(bottleneck_small),
-    "bottleneck_large" : layout_grid_to_dict(bottleneck_large)
+    **hard_layouts,
+    **medium_layouts,
+    **easy_layouts,
 }
