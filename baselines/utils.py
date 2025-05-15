@@ -243,3 +243,12 @@ def compute_normalized_returns(layouts, practical_baselines, metric, env_counter
     return metric
 
 
+def build_reg_weights(params, *, regularize_critic: bool, regularize_heads: bool):
+    def _mark(path, x):
+        path_str = "/".join(map(str, path)).lower()
+        if not regularize_heads and ("actor_head" in path_str or "critic_head" in path_str):
+            return jnp.zeros_like(x)
+        if not regularize_critic and "critic" in path_str:
+            return jnp.zeros_like(x)
+        return jnp.ones_like(x)
+    return jax.tree_util.tree_map_with_path(_mark, params)

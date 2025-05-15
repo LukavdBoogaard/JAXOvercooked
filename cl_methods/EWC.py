@@ -1,217 +1,310 @@
+# ewc.py  ──────────────────────────────────────────────────────────────
+
+import functools
+
 import jax
 import jax.numpy as jnp
-from flax.core.frozen_dict import FrozenDict
 from flax import struct
-from baselines.utils import make_task_onehot, copy_params
+from flax.core.frozen_dict import FrozenDict
+
+from baselines.utils import copy_params
+
+
+# ──────────────────────────────────────────────────────────────────────
+# CONFIG CONVENTION
+#   config.ewc_mode   : "last", "multi", or "online"      (default "last")
+#   config.online_lam : decay λ for online mode (float)   (default 0.9)
+#   config.regularize_critic, config.regularize_heads     (bools)
+# ──────────────────────────────────────────────────────────────────────
+
 
 @struct.dataclass
 class EWCState:
-    old_params: FrozenDict
-    fisher: FrozenDict
-    reg_weights: FrozenDict  # a mask: ones for parameters to regularize, zeros otherwise
+    """
+    A unified state that works for all three modes.
+      • 'last'   → tuples of length 1, replaced each task
+      • 'multi'  → tuples grow by one per task
+      • 'online' → tuples length 1, fisher merged with λ
+    """
+    old_params: tuple[FrozenDict, ...]
+    fishers: tuple[FrozenDict, ...]
+    reg_weights: FrozenDict
 
 
-def init_cl_state(params: FrozenDict, regularize_critic: bool, regularize_heads: bool) -> EWCState:
-    """Initialize old_params with the current parameters, fisher with zeros."""
-    old_params = copy_params(params)
-    reg_weights = build_reg_weights(params, regularize_critic, regularize_heads)
-    fisher = jax.tree_map(lambda x: jnp.zeros_like(x), old_params)
-    return EWCState(old_params=old_params, fisher=fisher, reg_weights=reg_weights)
+# ----------------------------------------------------------------------
+# helpers
+# ----------------------------------------------------------------------
+def _zeros_like_tree(t):
+    return jax.tree_map(jnp.zeros_like, t)
 
 
-def update_ewc_state(ewc_state: EWCState,
-                     new_params: FrozenDict,
-                     new_fisher: FrozenDict
-                     ) -> EWCState:
-    """Append the new snapshot of parameters and its Fisher to the lists."""
-    return EWCState(
-        old_params=copy_params(new_params),
-        fisher=new_fisher,
-        reg_weights=ewc_state.reg_weights
-    )
+def _ones_like_tree(t):
+    return jax.tree_map(jnp.ones_like, t)
 
 
-def build_reg_weights(params: FrozenDict, regularize_critic: bool = False, regularize_heads: bool = True) -> FrozenDict:
-    def _assign_reg_weight(path, x):
-        # Join the keys in the path to a string.
-        path_str = "/".join(str(key) for key in path)
-        # Exclude head parameters: do not regularize if parameter is in actor_head or critic_head.
-        if not regularize_heads:
-            if "actor_head" in path_str or "critic_head" in path_str:
-                return jnp.zeros_like(x)
-        # If we're not regularizing the critic, then exclude any parameter from critic branches.
-        if not regularize_critic and "critic" in path_str.lower():
+def build_reg_weights(params: FrozenDict,
+                      regularize_critic: bool,
+                      regularize_heads: bool) -> FrozenDict:
+    """
+    1s where we want EWC, 0s where we do not (e.g. heads, critic trunk, …).
+    """
+
+    def _assign(path, x):
+        p = "/".join(str(k) for k in path).lower()
+        if not regularize_heads and ("actor_head" in p or "critic_head" in p):
             return jnp.zeros_like(x)
-        # Otherwise, regularize (the trunk).
+        if not regularize_critic and "critic" in p:
+            return jnp.zeros_like(x)
         return jnp.ones_like(x)
 
-    return jax.tree_util.tree_map_with_path(_assign_reg_weight, params)
+    return jax.tree_util.tree_map_with_path(_assign, params)
 
 
-# @partial(jax.jit, static_argnums=(1,3))
-def compute_fisher_with_rollouts(
-        config,
-        train_state,
-        env,
-        network,
-        env_idx=0,
-        key: jax.random.PRNGKey = jax.random.PRNGKey(0),
-        max_episodes=5,
-        max_steps=500,
-        normalize_fisher=False
-):
-    """
-    Perform up to `max_episodes` rollouts (each up to `max_steps` steps),
-    computing the diagonal Fisher approximation by accumulating:
-       E[ grad(log π(a|s))^2 ]
-    for all environment steps across all agents.
+# ----------------------------------------------------------------------
+# public API
+# ----------------------------------------------------------------------
+def init_cl_state(params: FrozenDict, regularize_critic, regularize_heads) -> EWCState:
+    """Call once, right after first task finishes."""
+    reg_w = build_reg_weights(params, regularize_critic, regularize_heads)
+    zero_fisher = _zeros_like_tree(params)
 
-    Args:
-      config: your config containing use_task_id, seq_length, etc.
-      train_state: the current model (params + optimizer).
-      env: the environment (multi-agent or single-agent).
-      network: your ActorCritic module with apply_fn = network.apply.
-      env_idx: which task index (for appending task ID if use_task_id == True).
-      key: random key.
-      max_episodes: how many episodes to roll out for the Fisher estimate.
-      max_steps: max steps per episode.
-      normalize_fisher: optionally rescale the Fisher to have average magnitude ~ 1.
-
-    Returns:
-      fisher_accum: a FrozenDict with the same structure as params,
-                    containing the average of grad(log π)^2 across episodes/steps.
-    """
-    # Initialize fisher_accum to zeros matching shape of your parameters:
-    fisher_accum_init = jax.tree_util.tree_map(
-        lambda x: jnp.zeros_like(x),
-        train_state.params
+    return EWCState(
+        old_params=(copy_params(params),),  # tuple length 1
+        fishers=(zero_fisher,),  # idem
+        reg_weights=reg_w
     )
 
-    def actor_log_prob_sum(params, obs_dict, actions_dict):
-        """
-        Sums the log-probs of each agent’s chosen action.
-        This is what we'll differentiate to get a diagonal Fisher approximation.
-        """
-        total_lp = 0.0
-        # For each agent in obs_dict, compute log-prob of the action
-        for agent_id in obs_dict.keys():
-            pi, _ = network.apply(params, obs_dict[agent_id], env_idx=env_idx)
-            # shape might be (1,) so we sum or squeeze
-            log_p = pi.log_prob(actions_dict[agent_id])
-            total_lp += jnp.sum(log_p)  # or just log_p if it's scalar
-        return total_lp
 
-    def single_episode_fisher(rng_ep, fisher_accum):
-        """
-        Runs one rollout (up to max_steps).
-        Each step we accumulate grad(log π(a|s))^2 for all agents.
-        """
-        rng, rng_reset = jax.random.split(rng_ep)
-        obs, state = env.reset(rng_reset)
-        done = False
-        step_count = 0
+def update_ewc_state(state: EWCState, new_params: FrozenDict, new_fisher: FrozenDict, mode: str,
+                     ewc_lambda: float) -> EWCState:
+    """
+    Call after finishing a task *before* starting training on the next.
+    """
 
-        while (not done) and (step_count < max_steps):
-            # Prepare each agent’s observation as a (1, obs_dim) batch
-            # This part is copied from your record_gif_of_episode, minus the 'states' tracking:
-            flat_obs = {}
-            for agent_id, obs_v in obs.items():
-                expected_shape = env.observation_space().shape
-                if obs_v.ndim == len(expected_shape):
-                    obs_b = jnp.expand_dims(obs_v, axis=0)  # (1, ...)
-
-                if not config.use_cnn:
-                    obs_b = jnp.reshape(obs_b, (obs_b.shape[0], -1))
-                    if config.use_task_id:
-                        onehot = make_task_onehot(env_idx, config.seq_length)
-                        onehot = jnp.expand_dims(onehot, axis=0)  # shape (1, seq_length)
-                        obs_b = jnp.concatenate([obs_b, onehot], axis=1)
-                flat_obs[agent_id] = obs_b
-
-            # Sample an action for each agent
-            act_keys = jax.random.split(rng, env.num_agents)
-            rng, rng_step = jax.random.split(rng)
-
-            actions = {}
-            for i, agent_id in enumerate(env.agents):
-                pi, _ = network.apply(train_state.params, flat_obs[agent_id], env_idx=env_idx)
-                sampled_action = jnp.squeeze(pi.sample(seed=act_keys[i]), axis=0)
-                actions[agent_id] = sampled_action
-
-            # Compute grad of sum of log-probs wrt params
-            def _grad_log_prob(p_):
-                return actor_log_prob_sum(p_, flat_obs, actions)
-
-            grads = jax.grad(_grad_log_prob)(train_state.params)
-            # Square them for the diagonal Fisher approximation
-            grad_sqr = jax.tree_util.tree_map(lambda g: g ** 2, grads)
-
-            # Accumulate
-            fisher_accum = jax.tree_util.tree_map(
-                lambda fa, gs: fa + gs,
-                fisher_accum, grad_sqr
-            )
-
-            # Step environment
-            next_obs, next_state, reward, done_info, _info = env.step(rng_step, state, actions)
-            done = done_info["__all__"]
-
-            obs, state = next_obs, next_state
-            step_count += 1
-
-        return fisher_accum, step_count
-
-    # Main loop over multiple episodes
-    fisher_accum = fisher_accum_init
-    total_steps = 0
-    rngs = jax.random.split(key, max_episodes)
-
-    for ep_i in range(max_episodes):
-        fisher_accum, ep_steps = single_episode_fisher(rngs[ep_i], fisher_accum)
-        total_steps += ep_steps
-
-    # Average over the total number of environment steps
-    # so we get E[ grad^2 ] rather than a sum.
-    if total_steps > 0:
-        fisher_accum = jax.tree_util.tree_map(
-            lambda x: x / float(total_steps),
-            fisher_accum
+    if mode == "multi":
+        # append a fresh snapshot
+        return EWCState(
+            old_params=state.old_params + (copy_params(new_params),),
+            fishers=state.fishers + (new_fisher,),
+            reg_weights=state.reg_weights,
         )
 
-    # Optional normalization so the average magnitude is ~1
-    if normalize_fisher and total_steps > 0:
-        total_abs = jax.tree_util.tree_reduce(
-            lambda acc, x: acc + jnp.sum(jnp.abs(x)),
-            fisher_accum,
-            0.0
+    if mode == "online":
+        merged_fisher = jax.tree_util.tree_map(
+            lambda old_f, new_f: ewc_lambda * old_f + new_f,
+            state.fishers[0], new_fisher,
         )
-        param_count = jax.tree_util.tree_reduce(
-            lambda acc, x: acc + x.size,
-            fisher_accum,
-            0
-        )
-        fisher_mean = total_abs / (param_count + 1e-8)
-        fisher_accum = jax.tree_util.tree_map(
-            lambda x: x / (fisher_mean + 1e-8),
-            fisher_accum
+        return EWCState(
+            old_params=(copy_params(new_params),),  # length 1
+            fishers=(merged_fisher,),  # length 1
+            reg_weights=state.reg_weights,
         )
 
-    return fisher_accum
+    # default: "last"
+    return EWCState(
+        old_params=(copy_params(new_params),),
+        fishers=(new_fisher,),
+        reg_weights=state.reg_weights,
+    )
+
+
+@functools.partial(jax.jit, static_argnums=2)
+def _ewc_single(params, snapshot, coef):
+    """Penalty for one (paramŝ, Fisher̂) snapshot."""
+    old_p, fisher = snapshot
+    diff2 = jax.tree_util.tree_map(lambda p, op: (p - op) ** 2, params, old_p)
+    term = jax.tree_util.tree_map(lambda d2, f: d2 * f, diff2, fisher)
+    return 0.5 * coef * jax.tree_util.tree_reduce(lambda a, x: a + x.sum(),
+                                                  term, 0.0)
 
 
 def compute_ewc_loss(params: FrozenDict,
-                     ewc_state: EWCState,
-                     ewc_coef: float
-                     ) -> float:
+                     state: EWCState,
+                     ewc_coef: float) -> float:
     """
-    Compute EWC penalty: 0.5 * ewc_coef * sum( fisher * (params - old_params)^2 )
+    0.5 * λ * Σ_i F_i (θ − θ̂_i)²   summed over *masked* tasks i.
+    Extremely cheap now: one JIT call per snapshot (1 for last/online).
     """
+    snapshots = tuple(zip(state.old_params, state.fishers))
+    penalties = tuple(_ewc_single(params, snap, ewc_coef) for snap in snapshots)
+    return jnp.sum(jnp.stack(penalties))
 
-    def penalty(p, old_p, f, w):
-        return w * f * (p - old_p) ** 2
 
-    ewc_term_tree = jax.tree_util.tree_map(lambda p_, op_, ff_, w: penalty(p_, op_, ff_, w),
-                                           params, ewc_state.old_params, ewc_state.fisher, ewc_state.reg_weights)
-    ewc_term = jax.tree_util.tree_reduce(lambda acc, x: acc + x.sum(), ewc_term_tree, 0.0)
-    return 0.5 * ewc_coef * ewc_term
+# ewc_fast_fisher.py ───────────────────────────────────────────────────
 
+# -------------------------------------------------------------------
+# helper: pad (or crop) an (H,W,C) image to `target_shape`
+#         – no tracers in pad_width, 100 % JIT-safe
+# -------------------------------------------------------------------
+def _pad_to(img: jnp.ndarray, target_shape):
+    th, tw, tc = target_shape  # target (height, width, channels)
+    h, w, c = img.shape  # current shape – *Python* ints
+    assert c == tc, "channel mismatch"
+
+    dh = th - h  # + ⇒ need pad, − ⇒ need crop
+    dw = tw - w
+
+    # amounts have to be Python ints so jnp.pad sees concrete values
+    pad_top = max(dh // 2, 0)
+    pad_bottom = max(dh - pad_top, 0)
+    pad_left = max(dw // 2, 0)
+    pad_right = max(dw - pad_left, 0)
+
+    img = jnp.pad(
+        img,
+        ((pad_top, pad_bottom),
+         (pad_left, pad_right),
+         (0, 0)),  # no channel padding
+        mode="constant",
+    )
+
+    # If the image was *larger* than the target we crop back
+    return img[:th, :tw, :]
+
+
+# ---------------------------------------------------------------
+# util: build a (2, …) batch without Python branches
+# ---------------------------------------------------------------
+def _prep_obs(raw_obs, *, expected_shape, use_cnn,
+              use_task_id, env_idx, seq_len):
+    def _single(img):  # (H,W,C)
+        if use_cnn:
+            img = _pad_to(img, expected_shape)  # (H_pad,W_pad,C)
+            return img[None]  # add batch dim
+        else:
+            vec = img.reshape(-1)  # flatten
+            vec = jax.lax.cond(
+                use_task_id,
+                lambda z: jnp.concatenate(
+                    [z, jax.nn.one_hot(env_idx, seq_len)], axis=-1),
+                lambda z: z,
+                operand=vec,
+            )
+            # pad to expected length (if needed)
+            full_len = jnp.prod(expected_shape)
+            pad_len = full_len - vec.shape[0]
+            vec = jnp.pad(vec, (0, jnp.maximum(pad_len, 0)))
+            return vec[None]  # (1, D)
+
+    return jnp.concatenate(
+        [_single(raw_obs["agent_0"]),
+         _single(raw_obs["agent_1"])],
+        axis=0)  # (2, …)
+
+
+# ---------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------
+# JAX Fisher estimator
+# ---------------------------------------------------------------------
+@functools.partial(
+    jax.jit,
+    static_argnums=(1, 2, 3, 4),
+    static_argnames=(
+            "expected_shape",
+            "use_cnn",
+            "use_task_id",
+            "max_episodes",
+            "max_steps",
+            "normalize_fisher",
+    ),
+)
+def compute_fisher(params: FrozenDict,
+                   env,
+                   network,
+                   env_idx: int,
+                   seq_length: int,
+                   key: jax.random.PRNGKey,
+                   *,
+                   expected_shape: tuple,
+                   use_cnn: bool = True,
+                   use_task_id: bool = False,
+                   max_episodes: int = 5,
+                   max_steps: int = 500,
+                   normalize_fisher: bool = False):
+    # -----------------------------------------------------------------
+    # grad(log π) for a batch of agents, vectorised
+    # -----------------------------------------------------------------
+    def _logp(p, obs, act):
+        obs = jnp.expand_dims(obs, 0)
+        dists, _ = network.apply(p, obs, env_idx=env_idx)  # (A, …)
+        return jnp.sum(dists.log_prob(act))  # scalar
+
+    batched_grad = jax.vmap(jax.grad(_logp), in_axes=(None, 0, 0))  # map over steps
+
+    # -----------------------------------------------------------------
+    # one environment step inside lax.scan
+    # -----------------------------------------------------------------
+    def step_fn(carry, _):
+        rng, env_state, obs, fisher_acc = carry
+        rng, key_sample, key_step = jax.random.split(rng, 3)
+
+        obs_batch = _prep_obs(obs,
+                              expected_shape=expected_shape,
+                              use_cnn=use_cnn,
+                              use_task_id=use_task_id,
+                              env_idx=env_idx,
+                              seq_len=seq_length)  # (A, obs_dim)
+
+        # sample & log-prob in one forward pass (batched)
+        dists, _ = network.apply(params, obs_batch, env_idx=env_idx)
+        actions = dists.sample(seed=key_sample)  # (A,)
+        actions = jax.lax.stop_gradient(actions)  # no grad through sample
+
+        # grad(log π)²
+        g = batched_grad(params, obs_batch, actions)  # pytree with leading dim = A
+        g2 = jax.tree_util.tree_map(lambda x: jnp.mean(x ** 2, axis=0), g)
+
+        fisher_acc = jax.tree_util.tree_map(jnp.add, fisher_acc, g2)
+
+        # env step (batched over agents internally by env)
+        act_dict = {"agent_0": actions[0], "agent_1": actions[1]}
+        obs_next, env_state, _, done_info, _ = env.step(key_step, env_state, act_dict)
+        done = done_info["__all__"]
+
+        return (rng, env_state, obs_next, fisher_acc), done
+
+    # -----------------------------------------------------------------
+    # run one episode under lax.while_loop
+    # -----------------------------------------------------------------
+    def run_episode(carry, key_ep):
+        params, fisher_global = carry
+        key_ep, key_reset = jax.random.split(key_ep)
+        obs0, env_state0 = env.reset(key_reset)
+
+        fisher_zero = jax.tree_util.tree_map(jnp.zeros_like, fisher_global)
+
+        ep_carry = (key_ep, env_state0, obs0, fisher_zero)
+        ep_carry, _ = jax.lax.scan(step_fn,
+                                   ep_carry,
+                                   xs=None,
+                                   length=max_steps)
+
+        fisher_ep = ep_carry[-1]
+        fisher_global = jax.tree_util.tree_map(jnp.add, fisher_global, fisher_ep)
+        return (params, fisher_global), None
+
+    # -----------------------------------------------------------------
+    # run many episodes under lax.scan
+    # -----------------------------------------------------------------
+    fisher_global_init = jax.tree_util.tree_map(jnp.zeros_like, params)
+    (_, fisher_tot), _ = jax.lax.scan(run_episode,
+                                      (params, fisher_global_init),
+                                      jax.random.split(key, max_episodes))
+
+    # -----------------------------------------------------------------
+    # average & optional normalisation
+    # -----------------------------------------------------------------
+    fisher_tot = jax.tree_util.tree_map(
+        lambda x: x / (max_episodes * max_steps), fisher_tot)
+
+    if normalize_fisher:
+        total_abs = jax.tree_util.tree_reduce(lambda a, x: a + jnp.sum(jnp.abs(x)),
+                                              fisher_tot, 0.)
+        denom = total_abs / (jax.tree_util.tree_reduce(
+            lambda a, x: a + x.size, fisher_tot, 0) + 1e-8)
+        fisher_tot = jax.tree_util.tree_map(lambda x: x / (denom + 1e-8),
+                                            fisher_tot)
+
+    return fisher_tot  # FrozenDict
