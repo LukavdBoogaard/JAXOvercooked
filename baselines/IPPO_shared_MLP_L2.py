@@ -63,6 +63,7 @@ class Config:
     use_multihead: bool = False
     shared_backbone: bool = False
     regularize_critic: bool = False
+    big_network: bool = False
 
     # Environment
     seq_length: int = 10
@@ -395,7 +396,7 @@ def main():
     )
 
     network = ActorCritic(temp_env.action_space().n, activation=config.activation, use_multihead=config.use_multihead,
-                          num_tasks=config.seq_length)
+                          num_tasks=config.seq_length, shared_backbone=config.shared_backbone, big_network=config.big_network)
 
     obs_dim = np.prod(temp_env.observation_space().shape)
 

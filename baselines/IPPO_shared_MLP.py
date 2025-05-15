@@ -66,6 +66,7 @@ class Config:
     use_task_id: bool = False
     use_multihead: bool = False
     shared_backbone: bool = False
+    big_network: bool = False
 
     seq_length: int = 2
     strategy: str = "random"
