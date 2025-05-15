@@ -1,75 +1,69 @@
 import jax
 import jax.numpy as jnp
+from flax import struct
 from flax.core.frozen_dict import FrozenDict
 
-from baselines.utils import build_reg_weights
-from cl_methods.base import RegCLMethod, CLState
+from baselines.utils import make_task_onehot, copy_params
 
 
-class MAS(RegCLMethod):
+@struct.dataclass
+class MASState:
+    old_params: FrozenDict
+    importance: FrozenDict
+    reg_weights: FrozenDict  # a mask: ones for parameters to regularize, zeros otherwise
+
+
+def init_cl_state(params: FrozenDict, regularize_critic: bool, regularize_heads: bool) -> MASState:
     """
-    Memory-Aware Synapses (Aljundi 2018).
+    Initialize old_params with the current parameters, importance with zeros.
     """
-    name = "mas"
+    old_params = copy_params(params)
+    reg_weights = build_reg_weights(params, regularize_critic, regularize_heads)
+    importance = jax.tree_map(lambda x: jnp.zeros_like(x), old_params)
+    return MASState(old_params=old_params, importance=importance, reg_weights=reg_weights)
 
-    def init_state(self,
-                   params: FrozenDict,
-                   regularize_critic: bool,
-                   regularize_heads: bool) -> CLState:
-        return CLState(
-            old_params=jax.tree_map(lambda x: x.copy(), params),
-            importance=jax.tree_map(jnp.zeros_like, params),
-            mask=build_reg_weights(params, regularize_critic, regularize_heads)
-        )
 
-    def update_state(self,
-                     cl_state: CLState,
+def update_mas_state(mas_state: MASState,
                      new_params: FrozenDict,
-                     new_importance: FrozenDict,
-                     **_) -> CLState:
-        return CLState(old_params=new_params, importance=new_importance, mask=cl_state.mask)
-
-    def penalty(self,
-                params: FrozenDict,
-                cl_state: CLState,
-                coef: float) -> jnp.ndarray:
-        def _term(p, o, ω, m):
-            return m * ω * (p - o) ** 2
-
-        tot = jax.tree_util.tree_map(_term, params, cl_state.old_params, cl_state.importance, cl_state.mask)
-        tot = jax.tree_util.tree_reduce(lambda a, b: a + b.sum(), tot, 0.)
-        denom = jax.tree_util.tree_reduce(lambda a, b: a + b.sum(), cl_state.mask, 0.) + 1e-8
-        return 0.5 * coef * tot / denom
-
-    def compute_importance(self,
-                           params: FrozenDict,
-                           env,
-                           net,
-                           env_idx: int,
-                           seq_length: int,
-                           key: jax.random.PRNGKey,
-                           expected_shape: tuple,
-                           use_cnn: bool = True,
-                           use_task_id: bool = False,
-                           max_episodes: int = 5,
-                           max_steps: int = 500,
-                           normalize_importance: bool = False):
-        return compute_importance(params, env, net, env_idx, seq_length, key, expected_shape, use_cnn, use_task_id,
-                                  max_episodes, max_steps, normalize_importance)
+                     new_importance: FrozenDict) -> MASState:
+    """
+    After finishing task i, store a snapshot of the new parameters and the new importance values.
+    """
+    return MASState(
+        old_params=copy_params(new_params),
+        importance=new_importance,
+        reg_weights=mas_state.reg_weights
+    )
 
 
-def compute_importance(params,
-                       env,
-                       net,
-                       env_idx: int,
-                       seq_length: int,
-                       rng,
-                       expected_shape: tuple,
-                       use_cnn: bool = True,
-                       use_task_id: bool = False,
-                       max_episodes=5,
-                       max_steps=500,
-                       normalize_importance=False) -> FrozenDict:
+def build_reg_weights(params: FrozenDict, regularize_critic: bool = False, regularize_heads: bool = True) -> FrozenDict:
+    def _assign_reg_weight(path, x):
+        # Join the keys in the path to a string.
+        path_str = "/".join(str(key) for key in path)
+        # Exclude head parameters: do not regularize if parameter is in actor_head or critic_head.
+        if not regularize_heads:
+            if "actor_head" in path_str or "critic_head" in path_str:
+                return jnp.zeros_like(x)
+        # If we're not regularizing the critic, then exclude any parameter from critic branches.
+        if not regularize_critic and "critic" in path_str.lower():
+            return jnp.zeros_like(x)
+        # Otherwise, regularize (the trunk).
+        return jnp.ones_like(x)
+
+    return jax.tree_util.tree_map_with_path(_assign_reg_weight, params)
+
+
+def compute_mas_importance(
+        config,
+        train_state,
+        env,
+        network,
+        env_idx=0,
+        key: jax.random.PRNGKey = jax.random.PRNGKey(0),
+        max_episodes=5,
+        max_steps=500,
+        normalize_importance=False
+):
     """
     Perform rollouts and compute MAS importance by averaging the squared gradients of
     the output’s L2 norm. That is, for each state x, we compute
@@ -80,7 +74,7 @@ def compute_importance(params,
     # Initialize importance accumulation to zeros
     importance_init = jax.tree_util.tree_map(
         lambda x: jnp.zeros_like(x),
-        params
+        train_state.params
     )
 
     def l2_norm_output(params, obs_dict):
@@ -89,7 +83,7 @@ def compute_importance(params,
         # or the value function, or both. Here, let's do policy logits + value.
         total_loss = 0.0
         for agent_id, obs_val in obs_dict.items():
-            pi, v = net.apply(params, obs_val, env_idx=env_idx)
+            pi, v = network.apply(params, obs_val, env_idx=env_idx)
             # Example: L2 norm of the concatenation of logits and the value.
             # shape: (1, action_dim + 1)
             # sum of squares / 2
@@ -113,10 +107,10 @@ def compute_importance(params,
                     obs_v = jnp.expand_dims(obs_v, axis=0)  # (1, ...)
                 v_b = jnp.reshape(obs_v, (obs_v.shape[0], -1))  # make it (1, obs_dim)
                 # If we use task_id
-                # if config.use_task_id:
-                #     onehot = make_task_onehot(env_idx, config.seq_length)
-                #     onehot = jnp.expand_dims(onehot, axis=0)
-                #     v_b = jnp.concatenate([v_b, onehot], axis=1)
+                if config.use_task_id:
+                    onehot = make_task_onehot(env_idx, config.seq_length)
+                    onehot = jnp.expand_dims(onehot, axis=0)
+                    v_b = jnp.concatenate([v_b, onehot], axis=1)
                 flat_obs[agent_id] = v_b
 
             # Optional: step environment with some policy actions
@@ -126,7 +120,7 @@ def compute_importance(params,
             def mas_loss_fn(p):
                 return l2_norm_output(p, flat_obs)
 
-            grads = jax.grad(mas_loss_fn)(params)
+            grads = jax.grad(mas_loss_fn)(train_state.params)
             grads_sqr = jax.tree_util.tree_map(lambda g: g ** 2, grads)
             # Accumulate
             importance_accum = jax.tree_util.tree_map(
@@ -137,7 +131,7 @@ def compute_importance(params,
             rng, rng_step = jax.random.split(rng)
             actions = {}
             for i, agent_id in enumerate(env.agents):
-                pi, _v = net.apply(params, flat_obs[agent_id], env_idx=env_idx)
+                pi, _v = network.apply(train_state.params, flat_obs[agent_id], env_idx=env_idx)
                 actions[agent_id] = jnp.squeeze(pi.sample(seed=rng_step), axis=0)
 
             next_obs, next_state, reward, done_info, _info = env.step(rng_step, state, actions)
@@ -150,7 +144,7 @@ def compute_importance(params,
     # Main loop
     importance_accum = importance_init
     total_steps = 0
-    rngs = jax.random.split(rng, max_episodes)
+    rngs = jax.random.split(key, max_episodes)
 
     for ep_i in range(max_episodes):
         importance_accum, ep_steps = single_episode_importance(rngs[ep_i], importance_accum)
@@ -182,3 +176,23 @@ def compute_importance(params,
         )
 
     return importance_accum
+
+
+def compute_mas_loss(params: FrozenDict,
+                     mas_state: MASState,
+                     mas_coef: float
+                     ) -> float:
+    """
+    0.5 * mas_coef * sum( importance * (params - old_params)^2 ).
+    """
+
+    def penalty(p, old_p, imp, w):
+        return w * imp * (p - old_p) ** 2
+
+    penalty_tree = jax.tree_util.tree_map(
+        lambda p_, op_, im_, w: penalty(p_, op_, im_, w),
+        params, mas_state.old_params, mas_state.importance, mas_state.reg_weights
+    )
+
+    penalty_sum = jax.tree_util.tree_reduce(lambda acc, x: acc + x.sum(), penalty_tree, 0.0)
+    return 0.5 * mas_coef * penalty_sum

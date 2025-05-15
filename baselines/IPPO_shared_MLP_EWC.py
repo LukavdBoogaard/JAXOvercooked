@@ -27,9 +27,7 @@ from baselines.utils import (Transition,
                              show_heatmap_fwt,
                              compute_normalized_evaluation_rewards,
                              compute_normalized_returns, make_task_onehot)
-from cl_methods.EWC import (
-    init_cl_state, update_ewc_state, compute_fisher, compute_ewc_loss)
-# from cl_methods.EWC_new import (compute_fisher_with_rollouts, make_task_onehot, compute_ewc_loss, EWC)
+from baselines.unused.EWC import (init_cl_state, update_ewc_state, compute_fisher, compute_ewc_loss)
 
 from omegaconf import OmegaConf
 import wandb
@@ -45,7 +43,7 @@ class Config:
     lr: float = 3e-4
     num_envs: int = 16
     num_steps: int = 128
-    total_timesteps: float = 8e6
+    total_timesteps: float = 1e7
     update_epochs: int = 8
     num_minibatches: int = 8
     gamma: float = 0.99
@@ -119,11 +117,6 @@ def main():
     print("Device: ", jax.devices())
 
     config = tyro.cli(Config)
-
-    # method_map = dict(EWC=EWC(), mas=MAS(), l2=L2())
-    # method_map = dict(ewc=EWC())
-
-    # cl = method_map[config.cl_method.lower()]
 
     # generate a sequence of tasks
     config.env_kwargs, config.layout_name = generate_sequence(
