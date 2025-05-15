@@ -111,13 +111,14 @@ def compute_importance(params,
                 expected_shape = env.observation_space().shape
                 if obs_v.ndim == len(expected_shape):
                     obs_v = jnp.expand_dims(obs_v, axis=0)  # (1, ...)
-                v_b = jnp.reshape(obs_v, (obs_v.shape[0], -1))  # make it (1, obs_dim)
-                # If we use task_id
-                # if config.use_task_id:
-                #     onehot = make_task_onehot(env_idx, config.seq_length)
-                #     onehot = jnp.expand_dims(onehot, axis=0)
-                #     v_b = jnp.concatenate([v_b, onehot], axis=1)
-                flat_obs[agent_id] = v_b
+                if not use_cnn:
+                    obs_v = jnp.reshape(obs_v, (obs_v.shape[0], -1))  # make it (1, obs_dim)
+                    # If we use task_id
+                    # if config.use_task_id:
+                    #     onehot = make_task_onehot(env_idx, config.seq_length)
+                    #     onehot = jnp.expand_dims(onehot, axis=0)
+                    #     v_b = jnp.concatenate([v_b, onehot], axis=1)
+                flat_obs[agent_id] = obs_v
 
             # Optional: step environment with some policy actions
             # (not necessary for importance computation, but you'd do it for exploring states)
