@@ -119,13 +119,14 @@ def compute_fisher_with_rollouts(
                 expected_shape = env.observation_space().shape
                 if obs_v.ndim == len(expected_shape):
                     obs_b = jnp.expand_dims(obs_v, axis=0)  # (1, ...)
-                flattened = jnp.reshape(obs_b, (obs_b.shape[0], -1))
 
-                if config.use_task_id:
-                    onehot = make_task_onehot(env_idx, config.seq_length)
-                    onehot = jnp.expand_dims(onehot, axis=0)  # shape (1, seq_length)
-                    flattened = jnp.concatenate([flattened, onehot], axis=1)
-                flat_obs[agent_id] = flattened
+                if not config.use_cnn:
+                    obs_b = jnp.reshape(obs_b, (obs_b.shape[0], -1))
+                    if config.use_task_id:
+                        onehot = make_task_onehot(env_idx, config.seq_length)
+                        onehot = jnp.expand_dims(onehot, axis=0)  # shape (1, seq_length)
+                        obs_b = jnp.concatenate([obs_b, onehot], axis=1)
+                flat_obs[agent_id] = obs_b
 
             # Sample an action for each agent
             act_keys = jax.random.split(rng, env.num_agents)

@@ -15,10 +15,13 @@ def choose_head(out: jnp.ndarray, num_heads: int, env_idx: int) -> jnp.ndarray:
 class ActorCritic(nn.Module):
     action_dim: int
     activation: str = "tanh"
+    # Continual-learning specific
     num_tasks: int = 1
     use_multihead: bool = False
     shared_backbone: bool = False
     big_network: bool = False
+    use_task_id: bool = False
+    regularize_heads: bool = True
 
     def setup(self):
         if self.activation == "relu":
@@ -37,7 +40,7 @@ class ActorCritic(nn.Module):
                                        name="critic_dense1")
             self.critic_fc2 = nn.Dense(neurons, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
                                        name="critic_dense2")
-            self.critic_fc2 = nn.Dense(neurons, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
+            self.critic_fc3 = nn.Dense(neurons, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0),
                                        name="critic_dense3")
             actor_head_size = self.action_dim * (self.num_tasks if self.use_multihead else 1)
             critic_head_size = 1 * (self.num_tasks if self.use_multihead else 1)

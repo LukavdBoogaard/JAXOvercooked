@@ -37,20 +37,25 @@ class Transition_CNN(NamedTuple):
     obs: jnp.ndarray # the observation
     info: jnp.ndarray # additional information
 
-def batchify(x: dict, agent_list, num_actors):
+def batchify(x: dict, agent_list, num_actors, flatten=True):
     '''
     converts the observations of a batch of agents into an array of size (num_actors, -1) that can be used by the network
+    @param flatten: for MLP architectures
     @param x: dictionary of observations
     @param agent_list: list of agents
     @param num_actors: number of actors
     returns the batchified observations
     '''
     x = jnp.stack([x[a] for a in agent_list])
-    return x.reshape((num_actors, -1))
+    batched = jnp.concatenate(x, axis=0)
+    if flatten:
+        batched = batched.reshape((num_actors, -1))
+    return batched
 
 def unbatchify(x: jnp.ndarray, agent_list, num_envs, num_actors):
     '''
     converts the array of size (num_actors, -1) into a dictionary of observations for all agents
+    @param unflatten: for MLP architectures
     @param x: array of observations
     @param agent_list: list of agents
     @param num_envs: number of environments
