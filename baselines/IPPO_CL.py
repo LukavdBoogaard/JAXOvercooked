@@ -82,8 +82,6 @@ class Config:
     ewc_mode: str = "online"  # "online", "last" or "multi"
     ewc_decay: float = 0.9  # Only for online EWC
 
-
-
     # Environment
     seq_length: int = 2
     strategy: str = "random"
