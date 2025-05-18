@@ -28,18 +28,18 @@ class CNN(nn.Module):
 
     name_prefix: str              # "shared" | "actor" | "critic"
     activation: str = "relu"
-    use_layer_norm: bool = False  # better for small‑batch RL / CL
+    use_layer_norm: bool = False
 
     @nn.compact
     def __call__(self, x):
         act = nn.relu if self.activation == "relu" else nn.tanh
 
-        def conv(name, x, k):
-            x = nn.Conv(32, k, name=f"{self.name_prefix}_{name}",
+        def conv(name: str, x, kernel):
+            x = nn.Conv(32, kernel, name=f"{self.name_prefix}_{name}",
                         kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x)
             x = act(x)
             if self.use_layer_norm:
-                x = nn.LayerNorm(name=f"{self.name_prefix}_{name}_ln", axis=-1, epsilon=1e-5)(x)
+                x = nn.LayerNorm(name=f"{self.name_prefix}_{name}_ln", epsilon=1e-5)(x)
             return x
 
         x = conv("conv1", x, (5, 5))
