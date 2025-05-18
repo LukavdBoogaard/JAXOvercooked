@@ -63,6 +63,7 @@ class Config:
     shared_backbone: bool = False
     regularize_critic: bool = False
     big_network: bool = False
+    use_layer_norm: bool = False
 
     # Environment
     seq_length: int = 10

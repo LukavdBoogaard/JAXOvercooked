@@ -70,6 +70,7 @@ class Config:
     regularize_critic: bool = False
     regularize_heads: bool = True
     big_network: bool = False
+    use_layer_norm: bool = False
 
     # EWC specific
     ewc_mode: str = "online"  # "online", "last" or "multi"
@@ -403,7 +404,8 @@ def main():
     ac_cls = CNNActorCritic if config.use_cnn else MLPActorCritic
 
     network = ac_cls(temp_env.action_space().n, config.activation, config.seq_length, config.use_multihead,
-                     config.shared_backbone, config.big_network, config.use_task_id, config.regularize_heads)
+                     config.shared_backbone, config.big_network, config.use_task_id, config.regularize_heads,
+                     config.use_layer_norm)
 
     obs_dim = temp_env.observation_space().shape
     if not config.use_cnn:
@@ -940,7 +942,8 @@ def main():
 
     # Run the model
     rng, train_rng = jax.random.split(rng)
-    cl_state = init_cl_state(train_state.params, config.regularize_critic, config.regularize_heads)
+    cl_state = init_cl_state(train_state.params, config.regularize_critic, config.regularize_heads,
+                     config.use_layer_norm)
 
     # apply the loop_over_envs function to the environments
     loop_over_envs(train_rng, train_state, cl_state, envs)

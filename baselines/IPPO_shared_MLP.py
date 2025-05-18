@@ -67,6 +67,7 @@ class Config:
     use_multihead: bool = False
     shared_backbone: bool = False
     big_network: bool = False
+    use_layer_norm: bool = False
 
     seq_length: int = 2
     strategy: str = "random"

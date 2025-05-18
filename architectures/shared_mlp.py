@@ -22,6 +22,7 @@ class ActorCritic(nn.Module):
     big_network: bool = False
     use_task_id: bool = False
     regularize_heads: bool = True
+    use_layer_norm: bool = False
 
     def setup(self):
         if self.activation == "relu":

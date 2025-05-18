@@ -73,6 +73,7 @@ class Config:
     regularize_critic: bool = False
     regularize_heads: bool = True
     big_network: bool = False
+    use_layer_norm: bool = False
 
     # Reg method specific
     importance_episodes: int = 5
@@ -152,7 +153,7 @@ def main():
         sync_tensorboard=True,
         mode=config.wandb_mode,
         tags=wandb_tags,
-        group=config.cl_method,
+        group=config.cl_method.upper(),
         name=run_name,
         id=run_name,
     )
@@ -419,7 +420,8 @@ def main():
     ac_cls = CNNActorCritic if config.use_cnn else MLPActorCritic
 
     network = ac_cls(temp_env.action_space().n, config.activation, config.seq_length, config.use_multihead,
-                     config.shared_backbone, config.big_network, config.use_task_id, config.regularize_heads)
+                     config.shared_backbone, config.big_network, config.use_task_id, config.regularize_heads,
+                     config.use_layer_norm)
 
     obs_dim = temp_env.observation_space().shape
     if not config.use_cnn:

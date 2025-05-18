@@ -75,6 +75,7 @@ class Config:
     regularize_critic: bool = False
     regularize_heads: bool = True
     big_network: bool = False
+    use_layer_norm: bool = False
 
     # Environment
     seq_length: int = 2

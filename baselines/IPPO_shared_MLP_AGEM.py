@@ -71,6 +71,7 @@ class Config:
     use_multihead: bool = False
     shared_backbone: bool = False
     big_network: bool = False
+    use_layer_norm: bool = False
     max_memory_size: int = 10000
 
     # Environment
