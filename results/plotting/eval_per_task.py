@@ -24,7 +24,7 @@ import seaborn as sns
 from scipy.ndimage import gaussian_filter1d
 
 # plotting defaults ---------------------------------------------------
-sns.set_theme(style="darkgrid", context="notebook")
+sns.set_theme(style="whitegrid", context="notebook")
 plt.rcParams["axes.grid"] = False
 
 CRIT = {0.9: 1.833, 0.95: 1.96, 0.99: 2.576}
@@ -37,7 +37,7 @@ def parse_args():
     p.add_argument('--methods', nargs='+', required=True)
     p.add_argument('--strategy', required=True)
     p.add_argument('--seq_len', type=int, required=True)
-    p.add_argument('--steps_per_task', type=float, default=8e6)
+    p.add_argument('--steps_per_task', type=float, default=1e7)
     p.add_argument('--seeds', type=int, nargs='+', default=[1, 2, 3, 4, 5])
     p.add_argument('--sigma', type=float, default=1.5)
     p.add_argument('--confidence', type=float, default=0.95, choices=[0.9, 0.95, 0.99])
