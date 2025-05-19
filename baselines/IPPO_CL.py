@@ -271,7 +271,7 @@ def main():
         return padded_envs
 
     @partial(jax.jit, static_argnums=(2))
-    def evaluate_model(train_state, key, env_idx):
+    def evaluate_model(train_state, key):
         '''
         Evaluates the model by running 10 episodes on all environments and returns the average reward
         @param train_state: the current state of the training
@@ -318,7 +318,7 @@ def main():
                     if not config.use_cnn:
                         v_b = jnp.reshape(v_b, (v_b.shape[0], -1))  # flatten
                         if config.use_task_id:
-                            onehot = make_task_onehot(env_idx, config.seq_length)  # shape (seq_length,)
+                            onehot = make_task_onehot(eval_idx, config.seq_length)  # shape (seq_length,)
                             onehot = jnp.expand_dims(onehot, axis=0)  # (1, seq_length)
                             v_b = jnp.concatenate([v_b, onehot], axis=1)
                     batched_obs[agent] = v_b
@@ -333,7 +333,7 @@ def main():
                     '''
                     network_apply = train_state.apply_fn
                     params = train_state.params
-                    pi, value = network_apply(params, obs, env_idx=env_idx)
+                    pi, value = network_apply(params, obs, env_idx=eval_idx)
                     action = jnp.squeeze(pi.sample(seed=rng), axis=0)
                     return action, value
 
@@ -375,7 +375,7 @@ def main():
 
         envs = pad_observation_space()
 
-        for env in envs:
+        for eval_idx, env in enumerate(envs):
             env = make(config.env_name, layout=env)  # Create the environment
 
             # Run k episodes
@@ -410,12 +410,6 @@ def main():
         '''
         frac = 1.0 - (count // (config.num_minibatches * config.update_epochs)) / config.num_updates
         return config.lr * frac
-
-    rew_shaping_anneal = optax.linear_schedule(
-        init_value=1.,
-        end_value=0.,
-        transition_steps=config.reward_shaping_horizon
-    )
 
     ac_cls = CNNActorCritic if config.use_cnn else MLPActorCritic
 
@@ -840,7 +834,7 @@ def main():
 
                 def log_metrics(metric, update_step):
                     if config.evaluation:
-                        evaluations = evaluate_model(train_state_eval, eval_rng, env_idx)
+                        evaluations = evaluate_model(train_state_eval, eval_rng)
                         metric = compute_normalized_evaluation_rewards(evaluations,
                                                                        config.layout_name,
                                                                        practical_baselines,
@@ -901,11 +895,11 @@ def main():
         rng, *env_rngs = jax.random.split(rng, len(envs) + 1)
 
         visualizer = OvercookedVisualizer()
-        # Evaluate the model on all environments before training
+        # Evaluate the model on the first environments before training
         if config.evaluation:
             evaluation_matrix = jnp.zeros(((len(envs) + 1), len(envs)))
             rng, eval_rng = jax.random.split(rng)
-            evaluations = evaluate_model(train_state, eval_rng, 0)
+            evaluations = evaluate_model(train_state, eval_rng)
             evaluation_matrix = evaluation_matrix.at[0, :].set(evaluations)
 
         for i, (rng, env) in enumerate(zip(env_rngs, envs)):
@@ -928,7 +922,7 @@ def main():
 
             if config.evaluation:
                 # Evaluate at the end of training to get the average performance of the task right after training
-                evaluations = evaluate_model(train_state, rng, i)
+                evaluations = evaluate_model(train_state, rng)
             evaluation_matrix = evaluation_matrix.at[i, :].set(evaluations)
 
             # save the model
