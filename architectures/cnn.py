@@ -38,8 +38,6 @@ class CNN(nn.Module):
             x = nn.Conv(32, kernel, name=f"{self.name_prefix}_{name}",
                         kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x)
             x = act(x)
-            if self.use_layer_norm:
-                x = nn.LayerNorm(name=f"{self.name_prefix}_{name}_ln", epsilon=1e-5)(x)
             return x
 
         x = conv("conv1", x, (5, 5))
