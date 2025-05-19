@@ -12,7 +12,7 @@ def choose_head(t: jnp.ndarray, n_heads: int, env_idx: int):
     return t.reshape(b, n_heads, base)[:, env_idx, :]
 
 
-class MLPActorCritic(nn.Module):
+class ActorCritic(nn.Module):
     action_dim: int
     activation: str = "relu"
     # continual-learning bells & whistles
