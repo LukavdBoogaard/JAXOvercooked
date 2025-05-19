@@ -73,7 +73,7 @@ class Config:
     regularize_critic: bool = False
     regularize_heads: bool = True
     big_network: bool = False
-    use_layer_norm: bool = False
+    use_layer_norm: bool = True
 
     # Reg method specific
     importance_episodes: int = 5
@@ -138,7 +138,7 @@ def main():
         layout_names=config.layouts,
         seed=config.seed
     )
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")[:-3]
     network = "shared_mlp" if config.shared_backbone else "mlp"
     run_name = f'{config.alg_name}_{config.cl_method}_{network}_seq{config.seq_length}_{config.strategy}_seed_{config.seed}_{timestamp}'
     exp_dir = os.path.join("runs", run_name)
@@ -317,10 +317,6 @@ def main():
                     v_b = jnp.expand_dims(v, axis=0)  # now (1, H, W, C)
                     if not config.use_cnn:
                         v_b = jnp.reshape(v_b, (v_b.shape[0], -1))  # flatten
-                        if config.use_task_id:
-                            onehot = make_task_onehot(eval_idx, config.seq_length)  # shape (seq_length,)
-                            onehot = jnp.expand_dims(onehot, axis=0)  # (1, seq_length)
-                            v_b = jnp.concatenate([v_b, onehot], axis=1)
                     batched_obs[agent] = v_b
 
                 def select_action(train_state, rng, obs):
@@ -420,9 +416,6 @@ def main():
     obs_dim = temp_env.observation_space().shape
     if not config.use_cnn:
         obs_dim = np.prod(obs_dim)
-        # Add the task ID one-hot of length seq_length
-        if config.use_task_id:
-            obs_dim += config.seq_length
 
     # Initialize the network
     rng = jax.random.PRNGKey(config.seed)
@@ -512,14 +505,6 @@ def main():
                                      not config.use_cnn)  # (num_actors, obs_dim)
                 # print("obs_shape", obs_batch.shape)
 
-                if config.use_task_id and not config.use_cnn:
-                    # Build a one-hot for env_idx of the sequence length and append it to each row.
-                    onehot = make_task_onehot(env_idx, config.seq_length)
-                    # Broadcast this so we can concat across the batch dimension e.g. shape (num_actors, seq_length)
-                    onehot_batch = jnp.tile(onehot, (obs_batch.shape[0], 1))
-                    # Now concat
-                    obs_batch = jnp.concatenate([obs_batch, onehot_batch], axis=1)
-
                 # apply the policy network to the observations to get the suggested actions and their values
                 pi, value = network.apply(train_state.params, obs_batch, env_idx=env_idx)
 
@@ -591,11 +576,6 @@ def main():
 
             # create a batch of the observations that is compatible with the network
             last_obs_batch = batchify(last_obs, env.agents, config.num_actors, not config.use_cnn)
-
-            if config.use_task_id and not config.use_cnn:
-                onehot = make_task_onehot(env_idx, config.seq_length)
-                onehot_batch = jnp.tile(onehot, (last_obs_batch.shape[0], 1))
-                last_obs_batch = jnp.concatenate([last_obs_batch, onehot_batch], axis=1)
 
             # apply the network to the batch of observations to get the value of the last state
             _, last_val = network.apply(train_state.params, last_obs_batch, env_idx=env_idx)
@@ -979,10 +959,6 @@ def record_gif_of_episode(config, train_state, env, network, env_idx=0, max_step
             if not config.use_cnn:
                 # Flatten the nonbatch dimensions.
                 obs_b = jnp.reshape(obs_b, (obs_b.shape[0], -1))
-                if config.use_task_id:
-                    onehot = make_task_onehot(env_idx, config.seq_length)  # (seq_length,)
-                    onehot = jnp.expand_dims(onehot, axis=0)  # (1, seq_length)
-                    obs_b = jnp.concatenate([obs_b, onehot], axis=1)
             obs_dict[agent_id] = obs_b
 
         actions = {}

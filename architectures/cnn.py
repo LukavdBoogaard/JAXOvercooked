@@ -1,4 +1,6 @@
-import os, numpy as np
+import numpy as np
+import os
+
 os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
 
 import jax
@@ -6,7 +8,7 @@ import jax.numpy as jnp
 import flax.linen as nn
 import distrax
 from flax.linen.initializers import constant, orthogonal
-from typing import Optional
+
 
 # ───────────────────────────────── helper ────────────────────────────────────
 
@@ -21,12 +23,13 @@ def choose_head(tensor: jnp.ndarray, num_heads: int, env_idx: int) -> jnp.ndarra
     base = tot // num_heads
     return tensor.reshape(B, num_heads, base)[:, env_idx, :]
 
+
 # ─────────────────────────────── base conv block ─────────────────────────────
 
 class CNN(nn.Module):
     """Tiny 3‑layer CNN ➜ 64‑unit projection with optional LayerNorm."""
 
-    name_prefix: str              # "shared" | "actor" | "critic"
+    name_prefix: str  # "shared" | "actor" | "critic"
     activation: str = "relu"
     use_layer_norm: bool = False
 
@@ -52,6 +55,7 @@ class CNN(nn.Module):
             x = nn.LayerNorm(name=f"{self.name_prefix}_proj_ln", epsilon=1e-5)(x)
         return x
 
+
 # ─────────────────────────────── Actor‑Critic ────────────────────────────────
 
 class ActorCritic(nn.Module):
@@ -70,7 +74,7 @@ class ActorCritic(nn.Module):
     use_layer_norm: bool = False
 
     @nn.compact
-    def __call__(self, obs, *, env_idx: int = 0, task_onehot: Optional[jnp.ndarray] = None):
+    def __call__(self, obs, *, env_idx: int = 0):
         act_fn = nn.relu if self.activation == "relu" else nn.tanh
 
         # ─── encoders ────────────────────────────────────────────────────
@@ -79,15 +83,14 @@ class ActorCritic(nn.Module):
             trunk = CNN("shared", **cnn_kwargs)(obs)
             actor_emb = critic_emb = trunk
         else:
-            actor_emb  = CNN("actor",  **cnn_kwargs)(obs)
+            actor_emb = CNN("actor", **cnn_kwargs)(obs)
             critic_emb = CNN("critic", **cnn_kwargs)(obs)
 
         # ─── task one‑hot concat ─────────────────────────────────────────
         if self.use_task_id:
-            if task_onehot is None:
-                idxs = jnp.full((actor_emb.shape[0],), env_idx)
-                task_onehot = jax.nn.one_hot(idxs, num_classes=self.num_tasks)
-            actor_emb  = jnp.concatenate([actor_emb,  task_onehot], axis=-1)
+            idxs = jnp.full((actor_emb.shape[0],), env_idx)
+            task_onehot = jax.nn.one_hot(idxs, num_classes=self.num_tasks)
+            actor_emb = jnp.concatenate([actor_emb, task_onehot], axis=-1)
             critic_emb = jnp.concatenate([critic_emb, task_onehot], axis=-1)
 
         # ─── actor branch ────────────────────────────────────────────────
