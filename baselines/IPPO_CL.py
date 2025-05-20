@@ -780,12 +780,12 @@ def main():
                 metric["General/learning_rate"] = config.lr
 
             # Losses section
-            total_loss, (value_loss, loss_actor, entropy, ewc_loss) = loss_info
+            total_loss, (value_loss, loss_actor, entropy, reg_loss) = loss_info
             metric["Losses/total_loss"] = total_loss.mean()
             metric["Losses/value_loss"] = value_loss.mean()
             metric["Losses/actor_loss"] = loss_actor.mean()
             metric["Losses/entropy"] = entropy.mean()
-            metric["Losses/reg_loss"] = ewc_loss.mean()
+            metric["Losses/reg_loss"] = reg_loss.mean()
 
             # Rewards section
             metric["General/shaped_reward_agent0"] = metric["shaped_reward"]["agent_0"]
