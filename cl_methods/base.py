@@ -32,11 +32,9 @@ class RegCLMethod(Protocol):
                            env,
                            net,
                            env_idx: int,
-                           seq_length: int,
                            rng: jax.random.PRNGKey,
                            expected_shape: tuple,
                            use_cnn: bool,
-                           use_task_id: bool,
                            max_episodes: int,
                            max_steps: int,
                            normalize_importance: bool) -> FrozenDict | None: ...

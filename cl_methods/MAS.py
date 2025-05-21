@@ -46,16 +46,14 @@ class MAS(RegCLMethod):
                            env,
                            net,
                            env_idx: int,
-                           seq_length: int,
                            key: jax.random.PRNGKey,
                            expected_shape: tuple,
                            use_cnn: bool = True,
-                           use_task_id: bool = False,
                            max_episodes: int = 5,
                            max_steps: int = 500,
                            normalize_importance: bool = False):
-        return compute_importance(params, env, net, env_idx, seq_length, key, expected_shape, use_cnn, use_task_id,
-                                  max_episodes, max_steps, normalize_importance)
+        return compute_importance(params, env, net, env_idx, key, expected_shape, use_cnn, max_episodes, max_steps,
+                                  normalize_importance)
 
 
 def compute_importance(params,
