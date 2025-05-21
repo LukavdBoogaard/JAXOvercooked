@@ -18,7 +18,7 @@ class ActorCritic(nn.Module):
     # continual-learning bells & whistles
     num_tasks: int = 1
     use_multihead: bool = False
-    shared_backbone: bool = True
+    shared_backbone: bool = False
     big_network: bool = False
     use_task_id: bool = False
     regularize_heads: bool = True

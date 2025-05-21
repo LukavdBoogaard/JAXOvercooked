@@ -98,12 +98,10 @@ def compute_fisher(params: FrozenDict,
                    env,
                    net,
                    env_idx: int,
-                   seq_length: int,
                    key: jax.random.PRNGKey,
                    *,
                    expected_shape: tuple,
                    use_cnn: bool = True,
-                   use_task_id: bool = False,
                    max_episodes: int = 5,
                    max_steps: int = 500,
                    normalize_importance: bool = False):
@@ -124,12 +122,7 @@ def compute_fisher(params: FrozenDict,
         rng, env_state, obs, fisher_acc = carry
         rng, key_sample, key_step = jax.random.split(rng, 3)
 
-        obs_batch = _prep_obs(obs,
-                              expected_shape=expected_shape,
-                              use_cnn=use_cnn,
-                              use_task_id=use_task_id,
-                              env_idx=env_idx,
-                              seq_len=seq_length)  # (A, obs_dim)
+        obs_batch = _prep_obs(obs, expected_shape=expected_shape, use_cnn=use_cnn)
 
         # sample & log-prob in one forward pass (batched)
         dists, _ = net.apply(params, obs_batch, env_idx=env_idx)

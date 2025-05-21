@@ -152,8 +152,8 @@ def generate_random_layout(height_rng=(5, 10), width_rng=(5, 10), wall_density=0
             i, j = _empty(G, rng)
             G[i][j] = "A"
         # up to two of every other interactive tile
-        for ch in ("X", "P", "O", "B"):          # delivery, pot, onion-pile, plate-pile
-            n = rng.randint(1, 2)                # 1 or 2 of each
+        for ch in ("X", "P", "O", "B"):  # delivery, pot, onion-pile, plate-pile
+            n = rng.randint(1, 2)  # 1 or 2 of each
             for _ in range(n):
                 i, j = _empty(G, rng)
                 G[i][j] = ch
@@ -217,12 +217,22 @@ def oc_show(layout: FrozenDict):
 def main(argv=None):
     p = argparse.ArgumentParser("Random Overcooked layout generator")
     p.add_argument("--seed", type=int, default=None, help="RNG seed")
+    p.add_argument("--height-min", type=int, default=5, help="minimum layout height")
+    p.add_argument("--height-max", type=int, default=15, help="maximum layout height")
+    p.add_argument("--width-min", type=int, default=5, help="minimum layout width")
+    p.add_argument("--width-max", type=int, default=15, help="maximum layout width")
+    p.add_argument("--wall-density", type=float, default=0.15, help="percentage of walls in layout")
     p.add_argument("--show", action="store_true", help="preview with matplotlib")
     p.add_argument("--oc", action="store_true", help="open JAX-MARL Overcooked viewer")
     p.add_argument("--save", action="store_true", help="save PNG to assets/screenshots/generated/")
     args = p.parse_args(argv)
 
-    grid, layout = generate_random_layout(seed=args.seed)
+    grid, layout = generate_random_layout(
+        height_rng=(args.height_min, args.height_max),
+        width_rng=(args.width_min, args.width_max),
+        wall_density=args.wall_density,
+        seed=args.seed
+    )
     print(grid)
 
     if args.show:
@@ -237,7 +247,7 @@ def main(argv=None):
         _, state = env.reset(jax.random.PRNGKey(args.seed or 0))
         grid_arr = np.asarray(_crop_to_grid(state, env.agent_view_size))
         vis = OvercookedVisualizer()
-        img = vis._render_grid(grid_arr, tile_size=TILE_PIXELS, agent_dir_idx = state.agent_dir_idx)
+        img = vis._render_grid(grid_arr, tile_size=TILE_PIXELS, agent_dir_idx=state.agent_dir_idx)
 
         out_dir = Path(__file__).parent.parent.parent.parent / "assets" / "screenshots" / "generated"
         out_dir.mkdir(parents=True, exist_ok=True)

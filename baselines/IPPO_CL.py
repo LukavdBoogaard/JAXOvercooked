@@ -29,7 +29,7 @@ from baselines.utils import (Transition,
                              show_heatmap_bwt,
                              show_heatmap_fwt,
                              compute_normalized_evaluation_rewards,
-                             compute_normalized_returns, make_task_onehot)
+                             compute_normalized_returns)
 from cl_methods.EWC import EWC
 
 from omegaconf import OmegaConf
@@ -126,8 +126,9 @@ def main():
 
     config = tyro.cli(Config)
 
-    # method_map = dict(EWC=EWC(), mas=MAS(), l2=L2())
-    method_map = dict(ewc=EWC(mode=config.ewc_mode, decay=config.ewc_decay), mas=MAS(), l2=L2())
+    method_map = dict(ewc=EWC(mode=config.ewc_mode, decay=config.ewc_decay),
+                      mas=MAS(),
+                      l2=L2())
 
     cl = method_map[config.cl_method.lower()]
 
@@ -887,9 +888,8 @@ def main():
             runner_state, metric = train_on_environment(rng, train_state, env, cl_state, i)
             train_state = runner_state[0]
 
-            importance = cl.compute_importance(train_state.params, env, network, i, config.seq_length, rng,
-                                               expected_obs_shape, config.use_cnn, config.use_task_id,
-                                               config.importance_episodes, config.importance_steps,
+            importance = cl.compute_importance(train_state.params, env, network, i, rng, expected_obs_shape,
+                                               config.use_cnn, config.importance_episodes, config.importance_steps,
                                                config.normalize_importance)
 
             cl_state = cl.update_state(cl_state, train_state.params, importance)

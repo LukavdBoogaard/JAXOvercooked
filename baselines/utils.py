@@ -294,8 +294,7 @@ def _pad_to(img: jnp.ndarray, target_shape):
 # ---------------------------------------------------------------
 # util: build a (2, …) batch without Python branches
 # ---------------------------------------------------------------
-def _prep_obs(raw_obs, expected_shape, use_cnn,
-              use_task_id, env_idx, seq_len):
+def _prep_obs(raw_obs, expected_shape, use_cnn):
     """
     Build a (2, …) batch: one row per agent.
     If `use_task_id` is False we *still* append a
@@ -303,33 +302,14 @@ def _prep_obs(raw_obs, expected_shape, use_cnn,
     branches have the same dtype & length.
     """
 
-    flat_len = int(np.prod(expected_shape))  # e.g. 1872
-    total_len = flat_len + seq_len  # reserve room for task-id
-
     def _single(img):  # img: (H,W,C)
         if use_cnn:
             img = _pad_to(img, expected_shape)
             return img[None]  # (1, H, W, C)
-
-        # ---------- MLP branch ------------------------------------------
-        vec = img.reshape(-1).astype(jnp.float32)  # always float32
-
-        # TODO reimplement task id logic
-        # either the real one-hot or a zero stub of the same length
-        # task_vec = jax.lax.cond(
-        #     use_task_id,
-        #     lambda _: jax.nn.one_hot(env_idx, seq_len, dtype=jnp.float32),
-        #     lambda _: jnp.zeros(seq_len, dtype=jnp.float32),
-        #     operand=None,
-        # )
-        #
-        # vec = jnp.concatenate([vec, task_vec], axis=-1)   # len = total_len
-
-        # vec might still be shorter than `total_len`
-        # pad_len = total_len - vec.shape[0]
-        # vec = jnp.pad(vec, (0, pad_len))                  # now exactly total_len
-
-        return vec[None]  # (1, total_len)
+        else:
+            # ---------- MLP branch ------------------------------------------
+            vec = img.reshape(-1).astype(jnp.float32)
+            return vec[None]  # (1, total_len)
 
     return jnp.concatenate(
         [_single(raw_obs["agent_0"]),

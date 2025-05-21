@@ -62,11 +62,9 @@ def compute_importance(params,
                        env,
                        net,
                        env_idx: int,
-                       seq_length: int,
                        rng,
                        expected_shape: tuple,
                        use_cnn: bool = True,
-                       use_task_id: bool = False,
                        max_episodes=5,
                        max_steps=500,
                        normalize_importance=False) -> FrozenDict:
@@ -113,11 +111,6 @@ def compute_importance(params,
                     obs_v = jnp.expand_dims(obs_v, axis=0)  # (1, ...)
                 if not use_cnn:
                     obs_v = jnp.reshape(obs_v, (obs_v.shape[0], -1))  # make it (1, obs_dim)
-                    # If we use task_id
-                    # if config.use_task_id:
-                    #     onehot = make_task_onehot(env_idx, config.seq_length)
-                    #     onehot = jnp.expand_dims(onehot, axis=0)
-                    #     v_b = jnp.concatenate([v_b, onehot], axis=1)
                 flat_obs[agent_id] = obs_v
 
             # Optional: step environment with some policy actions

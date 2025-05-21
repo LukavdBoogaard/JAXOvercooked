@@ -1,62 +1,60 @@
-from dataclasses import dataclass
-
 import jax.numpy as jnp
 from flax.core.frozen_dict import FrozenDict
 
 cramped_room = {
-    "height" : 4,
-    "width" : 5,
-    "wall_idx" : jnp.array([0,1,2,3,4,
-                            5,9,
-                            10,14,
-                            15,16,17,18,19]),
-    "agent_idx" : jnp.array([6, 8]),
-    "goal_idx" : jnp.array([18]),
-    "plate_pile_idx" : jnp.array([16]),
-    "onion_pile_idx" : jnp.array([5,9]),
-    "pot_idx" : jnp.array([2])
+    "height": 4,
+    "width": 5,
+    "wall_idx": jnp.array([0, 1, 2, 3, 4,
+                           5, 9,
+                           10, 14,
+                           15, 16, 17, 18, 19]),
+    "agent_idx": jnp.array([6, 8]),
+    "goal_idx": jnp.array([18]),
+    "plate_pile_idx": jnp.array([16]),
+    "onion_pile_idx": jnp.array([5, 9]),
+    "pot_idx": jnp.array([2])
 }
 asymm_advantages = {
-    "height" : 5,
-    "width" : 9,
-    "wall_idx" : jnp.array([0,1,2,3,4,5,6,7,8,
-                            9,11,12,13,14,15,17,
-                            18,22,26,
-                            27,31,35,
-                            36,37,38,39,40,41,42,43,44]),
-    "agent_idx" : jnp.array([29, 32]),
-    "goal_idx" : jnp.array([12,17]),
-    "plate_pile_idx" : jnp.array([39,41]),
-    "onion_pile_idx" : jnp.array([9,14]),
-    "pot_idx" : jnp.array([22,31])
+    "height": 5,
+    "width": 9,
+    "wall_idx": jnp.array([0, 1, 2, 3, 4, 5, 6, 7, 8,
+                           9, 11, 12, 13, 14, 15, 17,
+                           18, 22, 26,
+                           27, 31, 35,
+                           36, 37, 38, 39, 40, 41, 42, 43, 44]),
+    "agent_idx": jnp.array([29, 32]),
+    "goal_idx": jnp.array([12, 17]),
+    "plate_pile_idx": jnp.array([39, 41]),
+    "onion_pile_idx": jnp.array([9, 14]),
+    "pot_idx": jnp.array([22, 31])
 }
 coord_ring = {
-    "height" : 5,
-    "width" : 5,
-    "wall_idx" : jnp.array([0,1,2,3,4,
-                            5,9,
-                            10,12,14,
-                            15,19,
-                            20,21,22,23,24]),
-    "agent_idx" : jnp.array([7, 11]),
-    "goal_idx" : jnp.array([22]),
-    "plate_pile_idx" : jnp.array([10]),
-    "onion_pile_idx" : jnp.array([15,21]),
-    "pot_idx" : jnp.array([3,9])
+    "height": 5,
+    "width": 5,
+    "wall_idx": jnp.array([0, 1, 2, 3, 4,
+                           5, 9,
+                           10, 12, 14,
+                           15, 19,
+                           20, 21, 22, 23, 24]),
+    "agent_idx": jnp.array([7, 11]),
+    "goal_idx": jnp.array([22]),
+    "plate_pile_idx": jnp.array([10]),
+    "onion_pile_idx": jnp.array([15, 21]),
+    "pot_idx": jnp.array([3, 9])
 }
 forced_coord = {
-    "height" : 5,
-    "width" : 5,
-    "wall_idx" : jnp.array([0,1,2,3,4,
-                            5,7,9,
-                            10,12,14,
-                            15,17,19,
-                            20,21,22,23,24]),
-    "agent_idx" : jnp.array([11,8]),
-    "goal_idx" : jnp.array([23]),
-    "onion_pile_idx" : jnp.array([5,10]),
-    "plate_pile_idx" : jnp.array([15]),
-    "pot_idx" : jnp.array([3,9])
+    "height": 5,
+    "width": 5,
+    "wall_idx": jnp.array([0, 1, 2, 3, 4,
+                           5, 7, 9,
+                           10, 12, 14,
+                           15, 17, 19,
+                           20, 21, 22, 23, 24]),
+    "agent_idx": jnp.array([11, 8]),
+    "goal_idx": jnp.array([23]),
+    "onion_pile_idx": jnp.array([5, 10]),
+    "plate_pile_idx": jnp.array([15]),
+    "pot_idx": jnp.array([3, 9])
 }
 
 # Example of layout provided as a grid
@@ -77,6 +75,7 @@ W  X  W
 WWWWWWW
 """
 
+
 def layout_grid_to_dict(grid):
     """Assumes `grid` is string representation of the layout, with 1 line per row, and the following symbols:
     W: wall
@@ -96,14 +95,14 @@ def layout_grid_to_dict(grid):
         rows = rows[:-1]
 
     keys = ["wall_idx", "agent_idx", "goal_idx", "plate_pile_idx", "onion_pile_idx", "pot_idx"]
-    symbol_to_key = {"W" : "wall_idx",
-                     "A" : "agent_idx",
-                     "X" : "goal_idx",
-                     "B" : "plate_pile_idx",
-                     "O" : "onion_pile_idx",
-                     "P" : "pot_idx"}
+    symbol_to_key = {"W": "wall_idx",
+                     "A": "agent_idx",
+                     "X": "goal_idx",
+                     "B": "plate_pile_idx",
+                     "O": "onion_pile_idx",
+                     "P": "pot_idx"}
 
-    layout_dict = {key : [] for key in keys}
+    layout_dict = {key: [] for key in keys}
     layout_dict["height"] = len(rows)
     layout_dict["width"] = len(rows[0])
     width = len(rows[0])
@@ -155,13 +154,12 @@ def evaluate_grid(grid):
     valid_walls = ['W', 'X', 'B', 'O', 'P']
 
     for idx, row in enumerate(rows):
-        if idx == 0 or idx == len(rows) -1:
+        if idx == 0 or idx == len(rows) - 1:
             for char in row:
                 if char not in valid_walls:
                     valid = False
         if row[0] not in valid_walls or row[-1] not in valid_walls:
             valid = False
-
 
     # transform the grid into a matrix
     grid_matrix = [list(row) for row in rows]
@@ -227,7 +225,8 @@ def evaluate_grid(grid):
         pass  # Both agents can reach all elements
     else:
         # Check if collectively they can reach all elements
-        elements_reachable = {element: agent1_reachable[element] or agent2_reachable[element] for element in elements_to_check}
+        elements_reachable = {element: agent1_reachable[element] or agent2_reachable[element] for element in
+                              elements_to_check}
         if all(elements_reachable.values()):
             # Now check for a shared wall
             positions_agent1 = set((x, y) for x, y, char in reachable_agent_1)
@@ -261,6 +260,7 @@ def evaluate_grid(grid):
 
     return valid
 
+
 def dfs(i, j, grid_matrix, visited, reachable):
     '''
     Depth-first search algorithm to check the reachability of the agents
@@ -291,7 +291,6 @@ W   A W
 WWBOOWW
 """
 
-
 basic_kitchen_large = """
 WWWWWWW
 P     O 
@@ -315,11 +314,9 @@ shared_wall = """
 WWWWWWWW
 W  A   W
 W      W
-W      W
 WPOBXWWW
 W      W
 W A    W
-W      W
 WWWWWWWW
 """
 
@@ -367,7 +364,6 @@ B   W   P
 W   W   W
 WWWWWWWWW
 """
-
 
 basic_cooperative = """
 WWWWWWWWW
@@ -476,39 +472,39 @@ WWWWWWWWWWW
 
 # Hard layouts
 hard_layouts = {
-    "forced_coord"       : FrozenDict(forced_coord),
-    "forced_coord_2"     : layout_grid_to_dict(foorced_coord_2),
-    "split_kitchen"      : layout_grid_to_dict(split_kitchen),
-    "basic_cooperative"  : layout_grid_to_dict(basic_cooperative),
+    "forced_coord": FrozenDict(forced_coord),
+    "forced_coord_2": layout_grid_to_dict(foorced_coord_2),
+    "split_kitchen": layout_grid_to_dict(split_kitchen),
+    "basic_cooperative": layout_grid_to_dict(basic_cooperative),
 }
 
 # Medium layouts
 medium_layouts = {
-    "coord_ring"          : FrozenDict(coord_ring),
-    "efficiency_test"     : layout_grid_to_dict(efficiency_test),
-    "split_work"          : layout_grid_to_dict(split_work),
-    "bottleneck_small"    : layout_grid_to_dict(bottleneck_small),
-    "bottleneck_large"    : layout_grid_to_dict(bottleneck_large),
-    "counter_circuit"     : layout_grid_to_dict(counter_circuit_grid),
-    "corridor_challenge"  : layout_grid_to_dict(corridor_challenge),
-    "c_kitchen"           : layout_grid_to_dict(c_kitchen),
+    "coord_ring": FrozenDict(coord_ring),
+    "efficiency_test": layout_grid_to_dict(efficiency_test),
+    "split_work": layout_grid_to_dict(split_work),
+    "bottleneck_small": layout_grid_to_dict(bottleneck_small),
+    "bottleneck_large": layout_grid_to_dict(bottleneck_large),
+    "counter_circuit": layout_grid_to_dict(counter_circuit_grid),
+    "corridor_challenge": layout_grid_to_dict(corridor_challenge),
+    "c_kitchen": layout_grid_to_dict(c_kitchen),
 }
 
 # Easy layouts
 easy_layouts = {
-    "cramped_room"             : FrozenDict(cramped_room),
-    "asymm_advantages"         : FrozenDict(asymm_advantages),
-    "square_arena"             : layout_grid_to_dict(square_arena),
-    "basic_kitchen_large"      : layout_grid_to_dict(basic_kitchen_large),
-    "basic_kitchen_small"      : layout_grid_to_dict(basic_kitchen_small),
-    "shared_wall"              : layout_grid_to_dict(shared_wall),
-    "smallest_kitchen"         : layout_grid_to_dict(smallest_kitchen),
-    "easy_layout"              : layout_grid_to_dict(easy_layout),
-    "big_kitchen"              : layout_grid_to_dict(big_kitchen),
-    "no_cooperation"           : layout_grid_to_dict(no_cooperation),
-    "resource_sharing"         : layout_grid_to_dict(resource_sharing),
-    "most_efficient"           : layout_grid_to_dict(vertical_corridors),
-    "most_efficient_horizontal": layout_grid_to_dict(horizontal_corridors),
+    "cramped_room": FrozenDict(cramped_room),
+    "asymm_advantages": FrozenDict(asymm_advantages),
+    "square_arena": layout_grid_to_dict(square_arena),
+    "basic_kitchen_small": layout_grid_to_dict(basic_kitchen_small),
+    "shared_wall": layout_grid_to_dict(shared_wall),
+    "smallest_kitchen": layout_grid_to_dict(smallest_kitchen),
+    "easy_layout": layout_grid_to_dict(easy_layout),
+    "no_cooperation": layout_grid_to_dict(no_cooperation),
+    "vertical_corridors": layout_grid_to_dict(vertical_corridors),
+    "horizontal_corridors": layout_grid_to_dict(horizontal_corridors),
+    # "big_kitchen"              : layout_grid_to_dict(big_kitchen),  The env is too big to be considered easy
+    "resource_sharing": layout_grid_to_dict(resource_sharing),
+    "basic_kitchen_large": layout_grid_to_dict(basic_kitchen_large),
 }
 
 # All layouts
