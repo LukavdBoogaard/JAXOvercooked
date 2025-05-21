@@ -29,15 +29,7 @@ from cl_methods.CBP import (CBPDense,
                             weight_reinit,
                             cbp_step,
                             TrainStateCBP)
-from baselines.utils import (Transition, 
-                             batchify, 
-                             unbatchify, 
-                             sample_discrete_action,
-                             show_heatmap_bwt,
-                             show_heatmap_fwt,
-                             make_task_onehot,
-                             compute_normalized_evaluation_rewards,
-                             compute_normalized_returns)
+from baselines.utils import *
 
 from omegaconf import OmegaConf
 import matplotlib.pyplot as plt
@@ -47,7 +39,7 @@ from dataclasses import dataclass, field
 import tyro
 from tensorboardX import SummaryWriter
 from pathlib import Path
-
+import uuid
 
 @dataclass
 class Config:
@@ -96,6 +88,7 @@ class Config:
     entity: Optional[str] = ""
     project: str = "COOX"
     tags: List[str] = field(default_factory=list)
+    group: Optional[str] = None
 
     # to be computed during runtime
     num_actors: int = 0
@@ -116,50 +109,16 @@ def main():
 
     config = tyro.cli(Config)
 
-    # generate a sequence of tasks
-    config.env_kwargs, config.layout_name = generate_sequence(
-        sequence_length=config.seq_length,
-        strategy=config.strategy,
-        layout_names=config.layouts,
-        seed=config.seed
-    )
+     # generate a sequence of tasks 
+    config = generate_sequence_of_tasks(config)
 
-    for layout_config in config.env_kwargs:
-        layout_name = layout_config["layout"]
-        layout_config["layout"] = overcooked_layouts[layout_name]
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    network = "shared_mlp" if config.shared_backbone else "mlp"
-    run_name = f'{config.alg_name}_{config.cl_method}_{network}_seq{config.seq_length}_{config.strategy}_seed_{config.seed}_{timestamp}'
+    # generate the run name
+    network = "shared_cnn" if config.shared_backbone else "cnn"
+    run_name = create_run_name(config, network)
     exp_dir = os.path.join("runs", run_name)
 
-    # Initialize WandB
-    load_dotenv()
-    wandb_tags = config.tags if config.tags is not None else []
-    wandb.login(key=os.environ.get("WANDB_API_KEY"))
-    wandb.init(
-        project=config.project,
-        config=config,
-        sync_tensorboard=True,
-        mode=config.wandb_mode,
-        name=run_name,
-        id=run_name,
-        tags=wandb_tags,
-        group=config.cl_method,
-    )
-
-    # Set up Tensorboard
-    writer = SummaryWriter(exp_dir)
-
-    # add the hyperparameters to the tensorboard
-    rows = []
-    for key, value in vars(config).items():
-        value_str = str(value).replace("\n", "<br>")
-        value_str = value_str.replace("|", "\\|")  # escape pipe chars if needed
-        rows.append(f"|{key}|{value_str}|")
-
-    table_body = "\n".join(rows)
-    markdown = f"|param|value|\n|-|-|\n{table_body}"
-    writer.add_text("hyperparameters", markdown)
+    # Initialize WandB and Tensorboard 
+    writer = initialize_logging_setup(config, run_name, exp_dir)
 
     def pad_observation_space():
         '''
