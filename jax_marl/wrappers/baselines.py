@@ -163,18 +163,14 @@ class CTRolloutManager(JaxMARLWrapper):
     - global_reward is the sum of all agents' rewards.
     """
 
-    def __init__(self, env: MultiAgentEnv, batch_size:int, training_agents:List=None, preprocess_obs:bool=True):
+    def __init__(self, env: MultiAgentEnv, batch_size:int, preprocess_obs:bool=True):
         
         super().__init__(env)
         
         self.batch_size = batch_size
-
-        # the agents to train could differ from the total trainable agents in the env (f.i. if using pretrained agents)
-        # it's important to know it in order to compute properly the default global rewards and state
-        self.training_agents = self.agents if training_agents is None else training_agents  
+        self.training_agents = self.agents
         self.preprocess_obs = preprocess_obs  
 
-        # TOREMOVE: this is because overcooked doesn't follow other envs conventions
         if len(env.observation_spaces) == 0:
             self.observation_spaces = {agent:self.observation_space() for agent in self.agents}
         if len(env.action_spaces) == 0:
@@ -196,10 +192,9 @@ class CTRolloutManager(JaxMARLWrapper):
         self.valid_actions = {a:jnp.arange(u.n) for a, u in self.action_spaces.items()}
         self.valid_actions_oh ={a:jnp.concatenate((jnp.ones(u.n), jnp.zeros(self.max_action_space - u.n))) for a, u in self.action_spaces.items()}
 
-        # custom global state and rewards for specific envs
-        if 'overcooked' in env.name.lower():
-            self.global_state = lambda obs, state:  jnp.concatenate([obs[agent].flatten() for agent in self.agents], axis=-1)
-            self.global_reward = lambda rewards: rewards[self.training_agents[0]]
+        
+        self.global_state = lambda obs, state:  jnp.concatenate([obs[agent].flatten() for agent in self.agents], axis=-1)
+        self.global_reward = lambda rewards: rewards[self.training_agents[0]]
 
     
     @partial(jax.jit, static_argnums=0)
@@ -233,14 +228,6 @@ class CTRolloutManager(JaxMARLWrapper):
         obs["__all__"] = self.global_state(obs_, state)
         reward["__all__"] = self.global_reward(reward)
         return obs, state, reward, done, infos
-
-    @partial(jax.jit, static_argnums=0)
-    def global_state(self, obs, state):
-        return jnp.concatenate([obs[agent] for agent in self.agents], axis=-1)
-    
-    @partial(jax.jit, static_argnums=0)
-    def global_reward(self, reward):
-        return jnp.stack([reward[agent] for agent in self.training_agents]).sum(axis=0) 
     
     def batch_sample(self, key, agent):
         return self.batch_samplers[agent](jax.random.split(key, self.batch_size)).astype(int)
