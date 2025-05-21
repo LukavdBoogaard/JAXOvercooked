@@ -294,22 +294,17 @@ def _pad_to(img: jnp.ndarray, target_shape):
 # ---------------------------------------------------------------
 # util: build a (2, …) batch without Python branches
 # ---------------------------------------------------------------
-def _prep_obs(raw_obs, expected_shape, use_cnn):
+def _prep_obs(raw_obs, use_cnn):
     """
     Build a (2, …) batch: one row per agent.
-    If `use_task_id` is False we *still* append a
     zero-vector of length `seq_len` so that both
     branches have the same dtype & length.
     """
 
-    def _single(img):  # img: (H,W,C)
-        if use_cnn:
-            img = _pad_to(img, expected_shape)
-            return img[None]  # (1, H, W, C)
-        else:
-            # ---------- MLP branch ------------------------------------------
-            vec = img.reshape(-1).astype(jnp.float32)
-            return vec[None]  # (1, total_len)
+    def _single(obs):  # img: (H,W,C)
+        if not use_cnn:
+            obs = obs.reshape(-1).astype(jnp.float32)
+        return obs[None]  # (1, total_len)
 
     return jnp.concatenate(
         [_single(raw_obs["agent_0"]),

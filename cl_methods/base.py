@@ -33,7 +33,6 @@ class RegCLMethod(Protocol):
                            net,
                            env_idx: int,
                            rng: jax.random.PRNGKey,
-                           expected_shape: tuple,
                            use_cnn: bool,
                            max_episodes: int,
                            max_steps: int,

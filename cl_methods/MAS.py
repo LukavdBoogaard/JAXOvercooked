@@ -47,13 +47,11 @@ class MAS(RegCLMethod):
                            net,
                            env_idx: int,
                            key: jax.random.PRNGKey,
-                           expected_shape: tuple,
                            use_cnn: bool = True,
                            max_episodes: int = 5,
                            max_steps: int = 500,
-                           normalize_importance: bool = False):
-        return compute_importance(params, env, net, env_idx, key, expected_shape, use_cnn, max_episodes, max_steps,
-                                  normalize_importance)
+                           norm_importance: bool = False):
+        return compute_importance(params, env, net, env_idx, key, use_cnn, max_episodes, max_steps, norm_importance)
 
 
 def compute_importance(params,
@@ -61,11 +59,10 @@ def compute_importance(params,
                        net,
                        env_idx: int,
                        rng,
-                       expected_shape: tuple,
                        use_cnn: bool = True,
                        max_episodes=5,
                        max_steps=500,
-                       normalize_importance=False) -> FrozenDict:
+                       norm_importance=False) -> FrozenDict:
     """
     Perform rollouts and compute MAS importance by averaging the squared gradients of
     the output’s L2 norm. That is, for each state x, we compute
@@ -156,7 +153,7 @@ def compute_importance(params,
         )
 
     # Optional normalization
-    if normalize_importance and total_steps > 0:
+    if norm_importance and total_steps > 0:
         total_abs = jax.tree_util.tree_reduce(
             lambda acc, x: acc + jnp.sum(jnp.abs(x)),
             importance_accum,

@@ -70,20 +70,18 @@ class EWC(RegCLMethod):
                            net,
                            env_idx: int,
                            key: jax.random.PRNGKey,
-                           expected_shape: tuple,
                            use_cnn: bool = True,
                            max_episodes: int = 5,
                            max_steps: int = 500,
                            normalize_importance: bool = False):
-        return compute_fisher(params, env, net, env_idx, key, expected_shape=expected_shape, use_cnn=use_cnn,
-                              max_episodes=max_episodes, max_steps=max_steps, normalize_importance=normalize_importance)
+        return compute_fisher(params, env, net, env_idx, key, use_cnn=use_cnn, max_episodes=max_episodes,
+                              max_steps=max_steps, normalize_importance=normalize_importance)
 
 
 @functools.partial(
     jax.jit,
     static_argnums=(1, 2, 3),
     static_argnames=(
-            "expected_shape",
             "use_cnn",
             "max_episodes",
             "max_steps",
@@ -96,7 +94,6 @@ def compute_fisher(params: FrozenDict,
                    env_idx: int,
                    key: jax.random.PRNGKey,
                    *,
-                   expected_shape: tuple,
                    use_cnn: bool = True,
                    max_episodes: int = 5,
                    max_steps: int = 500,
@@ -118,7 +115,7 @@ def compute_fisher(params: FrozenDict,
         rng, env_state, obs, fisher_acc = carry
         rng, key_sample, key_step = jax.random.split(rng, 3)
 
-        obs_batch = _prep_obs(obs, expected_shape=expected_shape, use_cnn=use_cnn)
+        obs_batch = _prep_obs(obs, use_cnn=use_cnn)
 
         # sample & log-prob in one forward pass (batched)
         dists, _ = net.apply(params, obs_batch, env_idx=env_idx)

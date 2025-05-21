@@ -96,6 +96,13 @@ class Config:
     eval_num_episodes: int = 5
     gif_len: int = 300
 
+    # ─── random‐layout generator knobs ───────────────────────────────────────
+    height_min: int = 5  # minimum layout height
+    height_max: int = 10  # maximum layout height
+    width_min: int = 5  # minimum layout width
+    width_max: int = 10  # maximum layout width
+    wall_density: float = 0.15  # fraction of internal tiles that are walls
+
     anneal_lr: bool = False
     seed: int = 30
     num_seeds: int = 1
@@ -137,7 +144,10 @@ def main():
         sequence_length=config.seq_length,
         strategy=config.strategy,
         layout_names=config.layouts,
-        seed=config.seed
+        seed=config.seed,
+        height_rng=(config.height_min, config.height_max),
+        width_rng=(config.width_min, config.width_max),
+        wall_density=config.wall_density,
     )
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")[:-3]
     network = "shared_mlp" if config.shared_backbone else "mlp"

@@ -40,6 +40,9 @@ def generate_sequence(
         strategy: str = "random",
         layout_names: Sequence[str] | None = None,
         seed: int | None = None,
+        height_rng: Tuple[int, int] = (5, 10),
+        width_rng: Tuple[int, int] = (5, 10),
+        wall_density: float = 0.15,
 ) -> Tuple[List[Dict[str, Any]], List[str]]:
     """
     Return a list of `env_kwargs` (what you feed to Overcooked) and
@@ -77,7 +80,12 @@ def generate_sequence(
     elif strategy == "generate":
         base = seed if seed is not None else random.randrange(1 << 30)
         for i in range(sequence_length):
-            _, layout = generate_random_layout(seed=base + i)
+            _, layout = generate_random_layout(
+                height_rng=height_rng,
+                width_rng=width_rng,
+                wall_density=wall_density,
+                seed=base + i
+            )
             env_kwargs.append({"layout": layout})  # already a FrozenDict
             names.append(f"gen_{i}")
 
