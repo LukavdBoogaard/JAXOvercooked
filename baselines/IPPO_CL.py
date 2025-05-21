@@ -408,7 +408,6 @@ def main():
     config.num_actors = temp_env.num_agents * config.num_envs
     config.num_updates = config.total_timesteps // config.num_steps // config.num_envs
     config.minibatch_size = (config.num_actors * config.num_steps) // config.num_minibatches
-    expected_obs_shape = temp_env.observation_space().shape
 
     def linear_schedule(count):
         '''
@@ -898,8 +897,8 @@ def main():
             runner_state, metric = train_on_environment(rng, train_state, env, cl_state, i)
             train_state = runner_state[0]
 
-            importance = cl.compute_importance(train_state.params, env, network, i, rng, expected_obs_shape,
-                                               config.use_cnn, config.importance_episodes, config.importance_steps,
+            importance = cl.compute_importance(train_state.params, env, network, i, rng, config.use_cnn,
+                                               config.importance_episodes, config.importance_steps,
                                                config.normalize_importance)
 
             cl_state = cl.update_state(cl_state, train_state.params, importance)
