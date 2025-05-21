@@ -84,11 +84,10 @@ class EWC(RegCLMethod):
 
 @functools.partial(
     jax.jit,
-    static_argnums=(1, 2, 3, 4),
+    static_argnums=(1, 2, 3),
     static_argnames=(
             "expected_shape",
             "use_cnn",
-            "use_task_id",
             "max_episodes",
             "max_steps",
             "normalize_importance",
