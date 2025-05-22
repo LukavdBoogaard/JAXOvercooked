@@ -18,16 +18,9 @@ from jax_marl.environments.env_selection import generate_sequence
 from jax_marl.registration import make
 from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
 from jax_marl.wrappers.baselines import LogWrapper
+from baselines.utils import *
 from architectures.shared_mlp import ActorCritic
 from cl_methods.L2 import L2
-from baselines.utils import (Transition,
-                             batchify,
-                             unbatchify,
-                             make_task_onehot,
-                             show_heatmap_bwt,
-                             show_heatmap_fwt,
-                             compute_normalized_evaluation_rewards,
-                             compute_normalized_returns)
 
 from omegaconf import OmegaConf
 import wandb
@@ -35,6 +28,7 @@ from functools import partial
 from dataclasses import dataclass, field
 import tyro
 from tensorboardX import SummaryWriter
+import uuid
 
 
 @dataclass
@@ -86,6 +80,7 @@ class Config:
     entity: Optional[str] = ""
     project: str = "COOX"
     tags: List[str] = field(default_factory=list)
+    group: Optional[str] = None
 
     # to be computed during runtime
     num_actors: int = 0
@@ -107,47 +102,16 @@ def main():
 
     config = tyro.cli(Config)
 
-    l2 = L2()
+     # generate a sequence of tasks 
+    config = generate_sequence_of_tasks(config)
 
-    # generate a sequence of tasks
-    config.env_kwargs, config.layout_name = generate_sequence(
-        sequence_length=config.seq_length,
-        strategy=config.strategy,
-        layout_names=config.layouts,
-        seed=config.seed
-    )
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    network = "shared_mlp" if config.shared_backbone else "mlp"
-    run_name = f'{config.alg_name}_{config.cl_method}_{network}_seq{config.seq_length}_{config.strategy}_seed_{config.seed}_{timestamp}'
+    # generate the run name
+    network = "shared_cnn" if config.shared_backbone else "cnn"
+    run_name = create_run_name(config, network)
     exp_dir = os.path.join("runs", run_name)
 
-    # Initialize WandB
-    load_dotenv()
-    wandb_tags = config.tags if config.tags is not None else []
-    wandb.login(key=os.environ.get("WANDB_API_KEY"))
-    wandb.init(
-        project=config.project,
-        config=config,
-        sync_tensorboard=True,
-        mode=config.wandb_mode,
-        tags=wandb_tags,
-        group=config.cl_method,
-        name=run_name,
-        id=run_name
-    )
-
-    # Set up Tensorboard
-    writer = SummaryWriter(exp_dir)
-    # add the hyperparameters to the tensorboard
-    rows = []
-    for key, value in vars(config).items():
-        value_str = str(value).replace("\n", "<br>")
-        value_str = value_str.replace("|", "\\|")  # escape pipe chars if needed
-        rows.append(f"|{key}|{value_str}|")
-
-    table_body = "\n".join(rows)
-    markdown = f"|param|value|\n|-|-|\n{table_body}"
-    writer.add_text("hyperparameters", markdown)
+    # Initialize WandB and Tensorboard 
+    writer = initialize_logging_setup(config, run_name, exp_dir)
 
     # pad the observation space
     def pad_observation_space():
