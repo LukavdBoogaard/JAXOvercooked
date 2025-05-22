@@ -32,11 +32,7 @@ from baselines.utils import (Transition,
                              show_heatmap_fwt,
                              compute_normalized_evaluation_rewards,
                              compute_normalized_returns)
-from cl_methods.MAS import (MASState, 
-                            init_cl_state, 
-                            update_mas_state, 
-                            compute_mas_loss, 
-                            compute_mas_importance)
+from cl_methods.MAS import MAS, compute_importance
 
 import wandb
 from functools import partial
@@ -70,6 +66,7 @@ class Config:
     cl_method: str = "MAS"
     use_task_id: bool = False
     use_multihead: bool = False
+    use_cnn: bool = False
     shared_backbone: bool = False
     normalize_importance: bool = False
     regularize_critic: bool = False
@@ -118,6 +115,8 @@ def main():
     print("Device: ", jax.devices())
 
     config = tyro.cli(Config)
+
+    mas = MAS()
 
     # generate a sequence of tasks
     config.env_kwargs, config.layout_name = generate_sequence(
@@ -696,7 +695,7 @@ def main():
                         entropy = pi.entropy().mean()  # calculate the entropy of the policy
 
                         # MAS penalty
-                        mas_penalty = compute_mas_loss(params, cl_state, config.reg_coef)
+                        mas_penalty = mas.penalty(params, cl_state, config.reg_coef)
 
                         total_loss = (loss_actor
                                       + config.vf_coef * value_loss
@@ -904,8 +903,15 @@ def main():
 
             # --- Compute new Fisher, then update mas_state for next tasks ---
             # fisher = compute_fisher_with_rollouts(config, train_state, envs[i], network, i, r, config.use_task_id, seq_length, i, config.normalize_fisher)
-            fisher = compute_mas_importance(config, train_state, env, network, i, rng, normalize_importance=config.normalize_importance)
-            cl_state = update_mas_state(cl_state, train_state.params, fisher)
+            fisher = mas.compute_importance(
+                params=train_state.params, 
+                env = env, 
+                net = network, 
+                env_idx = i, 
+                key = rng, 
+                use_cnn = config.use_cnn, 
+                norm_importance=config.normalize_importance)
+            cl_state = mas.update_state(cl_state, train_state.params, fisher)
 
             # Generate & log a GIF after finishing task i
             env_name = config.layout_name[i]
@@ -947,7 +953,7 @@ def main():
 
     # Run the model
     rng, train_rng = jax.random.split(rng)
-    cl_state = init_cl_state(train_state.params,
+    cl_state = mas.init_state(params=train_state.params,
                              regularize_critic=config.regularize_critic,
                              regularize_heads=config.regularize_heads)
 

@@ -19,7 +19,7 @@ from jax_marl.registration import make
 from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
 from jax_marl.wrappers.baselines import LogWrapper
 from architectures.shared_mlp import ActorCritic
-from baselines.unused.L2 import init_cl_state, update_cl_state, compute_l2_reg_loss
+from cl_methods.L2 import L2
 from baselines.utils import (Transition,
                              batchify,
                              unbatchify,
@@ -62,6 +62,7 @@ class Config:
     use_multihead: bool = False
     shared_backbone: bool = False
     regularize_critic: bool = False
+    regularize_heads: bool = False
     big_network: bool = False
 
     # Environment
@@ -105,6 +106,8 @@ def main():
     print("Device: ", jax.devices())
 
     config = tyro.cli(Config)
+
+    l2 = L2()
 
     # generate a sequence of tasks
     config.env_kwargs, config.layout_name = generate_sequence(
@@ -682,7 +685,7 @@ def main():
                                                   loss_actor_clipped)  # calculate the actor loss as the minimum of the clipped and unclipped actor loss
                         loss_actor = loss_actor.mean()  # calculate the mean of the actor loss
                         entropy = pi.entropy().mean()  # calculate the entropy of the policy
-                        l2_loss = compute_l2_reg_loss(params, cl_state, env_idx, config.reg_coef)
+                        l2_loss = l2.penalty(params, cl_state, config.reg_coef)
 
                         total_loss = (
                                 loss_actor
@@ -889,7 +892,7 @@ def main():
         for i, (rng, env) in enumerate(zip(env_rngs, envs)):
             if i > 0:
                 # Overwrite old_params with the final params from the last task
-                cl_state = update_cl_state(cl_state, train_state.params)
+                cl_state = l2.update_state(cl_state, train_state.params, None)
             runner_state, metrics = train_on_environment(rng, train_state, cl_state, env, env_idx=i,
                                                          env_counter=env_counter)
             train_state = runner_state[0]
@@ -940,7 +943,9 @@ def main():
     rng, train_rng = jax.random.split(rng)
 
     # -------------- Initialize CLState once ---------------
-    cl_state = init_cl_state(train_state.params, regularize_critic=config.regularize_critic)
+    cl_state = l2.init_state(train_state.params, 
+                             regularize_critic=config.regularize_critic, 
+                             regularize_heads=config.regularize_heads)
 
     # apply the loop_over_envs function to the environments
     loop_over_envs(train_rng, train_state, cl_state, envs)

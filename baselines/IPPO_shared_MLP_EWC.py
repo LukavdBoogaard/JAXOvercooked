@@ -27,7 +27,7 @@ from baselines.utils import (Transition,
                              show_heatmap_fwt,
                              compute_normalized_evaluation_rewards,
                              compute_normalized_returns, make_task_onehot)
-from baselines.unused.EWC import (init_cl_state, update_ewc_state, compute_fisher, compute_ewc_loss)
+from cl_methods.EWC import EWC
 
 from omegaconf import OmegaConf
 import wandb
@@ -69,11 +69,13 @@ class Config:
     normalize_fisher: bool = False
     regularize_critic: bool = False
     regularize_heads: bool = True
+    use_layer_norm: bool = False
     big_network: bool = False
 
     # EWC specific
     ewc_mode: str = "online"  # "online", "last" or "multi"
     ewc_lambda: float = 0.9  # Only for online EWC
+    ewc_decay: float = 0.9  # Only for online EWC
 
     # Environment
     seq_length: int = 2
@@ -117,6 +119,8 @@ def main():
     print("Device: ", jax.devices())
 
     config = tyro.cli(Config)
+
+    ewc = EWC(mode=config.ewc_mode, decay=config.ewc_decay)
 
     # generate a sequence of tasks
     config.env_kwargs, config.layout_name = generate_sequence(
@@ -693,7 +697,7 @@ def main():
                         entropy = pi.entropy().mean()
 
                         # EWC penalty
-                        ewc_penalty = compute_ewc_loss(params, cl_state, config.reg_coef)
+                        ewc_penalty = ewc.penalty(params, cl_state, config.reg_coef)
 
                         total_loss = (loss_actor
                                       + config.vf_coef * value_loss
@@ -898,10 +902,14 @@ def main():
             train_state = runner_state[0]
 
             # --- Compute new Fisher, then update ewc_state for next tasks ---
-            fisher = compute_fisher(train_state.params, env, network, i, config.seq_length, rng,
-                                    expected_shape=expected_obs_shape, use_cnn=config.use_cnn,
-                                    use_task_id=config.use_task_id, normalize_fisher=config.normalize_fisher)
-            cl_state = update_ewc_state(cl_state, train_state.params, fisher, config.ewc_mode, config.ewc_lambda)
+            fisher = ewc.compute_importance(
+                params=train_state.params, 
+                env=env, 
+                net=network, 
+                env_idx=i, 
+                key=rng,
+                use_cnn=config.use_cnn)
+            cl_state = ewc.update_state(cl_state, train_state.params, fisher)
 
             if config.record_gif:
                 # Generate & log a GIF after finishing task i
@@ -941,7 +949,7 @@ def main():
 
     # Run the model
     rng, train_rng = jax.random.split(rng)
-    cl_state = init_cl_state(train_state.params, config.regularize_critic, config.regularize_heads)
+    cl_state = ewc.init_state(train_state.params, config.regularize_critic, config.regularize_heads)
 
     # apply the loop_over_envs function to the environments
     loop_over_envs(train_rng, train_state, cl_state, envs)
