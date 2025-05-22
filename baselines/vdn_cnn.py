@@ -86,6 +86,7 @@ class Config:
     alg_name: str = "vdn"
     network_name: str = "cnn"
     cl_method_name: str = "none"
+    group: str = "none"
 
     # To be computed during runtime
     num_updates: int = 0
