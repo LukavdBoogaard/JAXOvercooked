@@ -11,10 +11,12 @@ from flax.core.frozen_dict import FrozenDict
 from matplotlib import pyplot as plt
 import seaborn as sns
 import numpy as np
-from functools import partial
 import wandb
 from dotenv import load_dotenv
 from tensorboardX import SummaryWriter
+
+from jax_marl.environments.overcooked_environment import overcooked_layouts
+from jax_marl.environments.env_selection import generate_sequence
 
 
 class Transition(NamedTuple):
@@ -318,3 +320,67 @@ def _prep_obs(raw_obs, use_cnn):
         [_single(raw_obs["agent_0"]),
          _single(raw_obs["agent_1"])],
         axis=0)  # (2, …)
+
+
+def generate_sequence_of_tasks(config):
+    """
+    Generates a sequence of tasks based on the provided configuration.
+    """
+    config.env_kwargs, config.layout_name = generate_sequence(
+        sequence_length=config.seq_length, 
+        strategy=config.strategy, 
+        layout_names=config.layouts, 
+        seed=config.seed
+    )
+
+    # for layout_config in config.env_kwargs:
+    #     layout_name = layout_config["layout"]
+    #     layout_config["layout"] = overcooked_layouts[layout_name]
+
+    return config
+
+def create_run_name(config, network_architecture):
+    """
+    Generates a unique run name based on the config, current timestamp and a UUID.
+    """
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    unique_id = uuid.uuid4()
+    run_name = f'{config.alg_name}_{config.cl_method}_{network_architecture}_\
+        seq{config.seq_length}_{config.strategy}_seed_{config.seed}_{timestamp}_{unique_id}'
+    return run_name
+
+
+def initialize_logging_setup(config, run_name, exp_dir):
+    """
+    Initializes WandB and TensorBoard logging setup.
+    """
+    # Initialize WandB
+    load_dotenv()
+    wandb_tags = config.tags if config.tags is not None else []
+    wandb.login(key=os.environ.get("WANDB_API_KEY"))
+    wandb.init(
+        project=config.project,
+        config=config,
+        sync_tensorboard=True,
+        mode=config.wandb_mode,
+        name=run_name,
+        id=run_name,
+        tags=wandb_tags,
+        group=config.group
+    )
+
+    # Set up Tensorboard
+    writer = SummaryWriter(exp_dir)
+
+    # add the hyperparameters to the tensorboard
+    rows = []
+    for key, value in vars(config).items():
+        value_str = str(value).replace("\n", "<br>")
+        value_str = value_str.replace("|", "\\|")  # escape pipe chars if needed
+        rows.append(f"|{key}|{value_str}|")
+
+    table_body = "\n".join(rows)
+    markdown = f"|param|value|\n|-|-|\n{table_body}"
+    writer.add_text("hyperparameters", markdown)
+
+    return writer

@@ -102,6 +102,8 @@ def main():
 
     config = tyro.cli(Config)
 
+    l2 = L2()
+
      # generate a sequence of tasks 
     config = generate_sequence_of_tasks(config)
 

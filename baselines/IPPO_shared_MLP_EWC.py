@@ -18,11 +18,10 @@ from jax_marl.environments.env_selection import generate_sequence
 from jax_marl.registration import make
 from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
 from jax_marl.wrappers.baselines import LogWrapper
-from architectures.shared_mlp import ActorCritic
+from architectures.shared_mlp import ActorCritic as MLPActorCritic
+from architectures.cnn import ActorCritic as CNNActorCritic
 from baselines.utils import *
-from cl_methods.EWC import (
-    init_cl_state, update_ewc_state, compute_fisher_with_rollouts,
-    make_task_onehot, build_reg_weights, copy_params, EWCState, compute_ewc_loss)
+from cl_methods.EWC import EWC
 
 from omegaconf import OmegaConf
 import wandb

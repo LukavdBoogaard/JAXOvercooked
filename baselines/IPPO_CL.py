@@ -23,13 +23,7 @@ from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
 from jax_marl.wrappers.baselines import LogWrapper
 from architectures.shared_mlp import ActorCritic as MLPActorCritic
 from architectures.cnn import ActorCritic as CNNActorCritic
-from baselines.utils import (Transition,
-                             batchify,
-                             unbatchify,
-                             show_heatmap_bwt,
-                             show_heatmap_fwt,
-                             compute_normalized_evaluation_rewards,
-                             compute_normalized_returns)
+from baselines.utils import *
 from cl_methods.EWC import EWC
 
 from omegaconf import OmegaConf
