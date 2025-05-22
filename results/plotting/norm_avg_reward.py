@@ -17,23 +17,25 @@ python plot_avg.py --metric success --data_root results ...
 python plot_avg.py --metric reward --data_root results ...
 """
 
-import argparse, json
+import argparse
+import json
 from pathlib import Path
 from typing import List
 
-import seaborn as sns
 import matplotlib.pyplot as plt
 import numpy as np
+import seaborn as sns
 import yaml
 from scipy.ndimage import gaussian_filter1d
 
-sns.set_theme(style="darkgrid", context="notebook")
+sns.set_theme(style="whitegrid", context="notebook")
 plt.rcParams['axes.grid'] = False
 
-CRIT = {0.9: 1.833, 0.95: 1.96, 0.99: 2.576}
+# CRIT = {0.9: 1.833, 0.95: 1.96, 0.99: 2.576}
+CRIT = {0.9: 1, 0.95: 1.96, 0.99: 2.576}
 METHOD_COLORS = {
     'EWC': '#12939A', 'MAS': '#FF6E54', 'AGEM': '#FFA600',
-    'L2': '#58508D', 'PackNet': '#BC5090', 'ReDo': '#003F5C', 'CBP': '#2F4B7C'
+    'L2': '#003F5C', 'PackNet': '#BC5090', 'ReDo': '#58508D', 'CBP': '#2F4B7C'
 }
 
 
@@ -41,17 +43,18 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('--data_root', required=True)
     p.add_argument('--algo', required=True)
+    p.add_argument('--arch', required=True)
     p.add_argument('--methods', nargs='+', required=True)
     p.add_argument('--strategy', required=True)
     p.add_argument('--seq_len', type=int, required=True)
-    p.add_argument('--steps_per_task', type=float, default=8e6)
+    p.add_argument('--steps_per_task', type=float, default=1e7)
     p.add_argument('--seeds', type=int, nargs='+', default=[1, 2, 3, 4, 5])
     p.add_argument('--sigma', type=float, default=1.5)
-    p.add_argument('--confidence', type=float, default=0.95,
+    p.add_argument('--confidence', type=float, default=0.9,
                    choices=[0.9, 0.95, 0.99])
     p.add_argument('--metric', choices=['reward'], default='reward')
     p.add_argument('--plot_name', default=None)
-    p.add_argument('--legend_anchor', type=float, default=0.0)
+    p.add_argument('--legend_anchor', type=float, default=0.87)
     p.add_argument('--baseline_file',
                    default='practical_reward_baseline_results.yaml',
                    help="Normalize reward curves by the baseline results from this file")
@@ -66,10 +69,10 @@ def load_series(fp: Path) -> np.ndarray:
     raise ValueError(f'Unsupported file suffix: {fp.suffix}')
 
 
-def collect_runs(base: Path, algo: str, method: str, strat: str,
+def collect_runs(base: Path, algo: str, method: str, arch: str, strat: str,
                  seq_len: int, seeds: List[int], metric: str,
                  baselines: dict | None):
-    folder = base / algo / method / f"{strat}_{seq_len}"
+    folder = base / algo / method / arch / f"{strat}_{seq_len}"
     env_names, per_seed = [], []
 
     for seed in seeds:
@@ -125,16 +128,16 @@ def plot():
     fig, ax = plt.subplots(figsize=(width, 4))
 
     for method in args.methods:
-        data, env_names = collect_runs(data_root, args.algo, method,
+        data, env_names = collect_runs(data_root, args.algo, method, args.arch,
                                        args.strategy, args.seq_len,
                                        args.seeds, args.metric, baselines)
         mu = gaussian_filter1d(np.nanmean(data, axis=0), sigma=args.sigma)
         sd = gaussian_filter1d(np.nanstd(data, axis=0), sigma=args.sigma)
         ci = CRIT[args.confidence] * sd / np.sqrt(data.shape[0])
         x = np.linspace(0, total_steps, len(mu))
-        color = METHOD_COLORS.get(method.upper())
+        color = METHOD_COLORS.get(method)
         ax.plot(x, mu, label=method, color=color)
-        ax.fill_between(x, mu - ci, mu + ci, color=color, alpha=0.15)
+        ax.fill_between(x, mu - ci, mu + ci, color=color, alpha=0.2)
 
     # vertical lines at task boundaries
     boundaries = [i * args.steps_per_task for i in range(args.seq_len + 1)]
@@ -148,16 +151,17 @@ def plot():
     mids = [(boundaries[i] + boundaries[i + 1]) / 2.0
             for i in range(args.seq_len)]
     secax.set_xticks(mids)
-    secax.set_xticklabels([str(i + 1) for i in range(args.seq_len)],
+    secax.set_xticklabels(["Task " + str(i + 1) for i in range(args.seq_len)],
                           fontsize=12)
     secax.tick_params(axis='x', length=0)
 
     # labels & legend
-    y_label = 'Average Success' if args.metric == 'success' else 'Average Reward'
+    y_label = 'Average Success' if args.metric == 'success' else 'Average Performance'
     ax.set_xlabel('Environment Steps')
     ax.set_ylabel(y_label)
     ax.set_xlim(0, total_steps)
-    ax.legend(loc='lower center', bbox_to_anchor=(0.5, args.legend_anchor), ncol=3)
+    ax.set_ylim(0, None)
+    ax.legend(loc='lower center', bbox_to_anchor=(0.5, args.legend_anchor), ncol=len(args.methods))
 
     plt.tight_layout()
     out = Path(__file__).resolve().parent.parent / 'plots'
