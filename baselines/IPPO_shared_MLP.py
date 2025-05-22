@@ -54,7 +54,7 @@ class Config:
     activation: str = "tanh"
     env_name: str = "overcooked"
     alg_name: str = "ippo"
-    cl_method: str = None
+    cl_method: str = "none"
 
     use_task_id: bool = False
     use_multihead: bool = False
