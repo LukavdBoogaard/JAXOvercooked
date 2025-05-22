@@ -28,3 +28,5 @@ events.out*
 model_*
 *.gif
 *.png
+*.pdf
+*.txt

@@ -5,20 +5,16 @@ os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
 from datetime import datetime
 from typing import Sequence, NamedTuple, Any, Optional, List
 
-import distrax
 import flax
-import flax.linen as nn
 import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
 from dotenv import load_dotenv
 from flax.core.frozen_dict import freeze, unfreeze
-from flax.linen.initializers import constant, orthogonal
 from flax.training.train_state import TrainState
 
 from jax_marl.environments.env_selection import generate_sequence
-from jax_marl.environments.overcooked_environment import overcooked_layouts
 from jax_marl.registration import make
 from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
 from jax_marl.wrappers.baselines import LogWrapper
@@ -42,7 +38,7 @@ class Config:
     lr: float = 3e-4
     num_envs: int = 16
     num_steps: int = 128
-    total_timesteps: float = 8e6
+    total_timesteps: float = 1e7
     update_epochs: int = 8
     num_minibatches: int = 8
     gamma: float = 0.99
@@ -51,31 +47,39 @@ class Config:
     ent_coef: float = 0.01
     vf_coef: float = 0.5
     max_grad_norm: float = 0.5
+
+    # reward shaping
+    reward_shaping: bool = True
     reward_shaping_horizon: float = 2.5e6
+
     explore_fraction: float = 0.0
-    activation: str = "tanh"
+    activation: str = "relu"
     env_name: str = "overcooked"
     alg_name: str = "ippo"
     cl_method: str = "EWC"
+    use_cnn: bool = False
     use_task_id: bool = False
     use_multihead: bool = False
     shared_backbone: bool = False
     normalize_fisher: bool = False
     regularize_critic: bool = False
     regularize_heads: bool = True
+    use_layer_norm: bool = False
+    big_network: bool = False
+
+    # EWC specific
+    ewc_mode: str = "online"  # "online", "last" or "multi"
+    ewc_lambda: float = 0.9  # Only for online EWC
+    ewc_decay: float = 0.9  # Only for online EWC
 
     # Environment
     seq_length: int = 2
     strategy: str = "random"
-    layouts: Optional[Sequence[str]] = field(
-        default_factory=lambda: [
-            "asymm_advantages", "smallest_kitchen", "cramped_room",
-            "easy_layout", "square_arena", "no_cooperation"
-        ]
-    )
+    layouts: Optional[Sequence[str]] = field(default_factory=lambda: [])
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
     evaluation: bool = True
+    record_gif: bool = True
     log_interval: int = 75
     eval_num_steps: int = 1000
     eval_num_episodes: int = 5
@@ -97,6 +101,7 @@ class Config:
     num_updates: int = 0
     minibatch_size: int = 0
 
+
 ############################
 ##### MAIN FUNCTION    #####
 ############################
@@ -110,6 +115,8 @@ def main():
     print("Device: ", jax.devices())
 
     config = tyro.cli(Config)
+
+    ewc = EWC(mode=config.ewc_mode, decay=config.ewc_decay)
 
      # generate a sequence of tasks 
     config = generate_sequence_of_tasks(config)
@@ -266,12 +273,13 @@ def main():
                 batched_obs = {}
                 for agent, v in obs.items():
                     v_b = jnp.expand_dims(v, axis=0)  # now (1, H, W, C)
-                    v_flat = jnp.reshape(v_b, (v_b.shape[0], -1))
-                    if config.use_task_id:
-                        onehot = make_task_onehot(env_idx, config.seq_length)  # shape (seq_length,)
-                        onehot = jnp.expand_dims(onehot, axis=0)  # (1, seq_length)
-                        v_flat = jnp.concatenate([v_flat, onehot], axis=1)
-                    batched_obs[agent] = v_flat
+                    if not config.use_cnn:
+                        v_b = jnp.reshape(v_b, (v_b.shape[0], -1))  # flatten
+                        if config.use_task_id:
+                            onehot = make_task_onehot(env_idx, config.seq_length)  # shape (seq_length,)
+                            onehot = jnp.expand_dims(onehot, axis=0)  # (1, seq_length)
+                            v_b = jnp.concatenate([v_b, onehot], axis=1)
+                    batched_obs[agent] = v_b
 
                 def select_action(train_state, rng, obs):
                     '''
@@ -351,6 +359,7 @@ def main():
     config.num_actors = temp_env.num_agents * config.num_envs
     config.num_updates = config.total_timesteps // config.num_steps // config.num_envs
     config.minibatch_size = (config.num_actors * config.num_steps) // config.num_minibatches
+    expected_obs_shape = temp_env.observation_space().shape
 
     def linear_schedule(count):
         '''
@@ -360,25 +369,23 @@ def main():
         frac = 1.0 - (count // (config.num_minibatches * config.update_epochs)) / config.num_updates
         return config.lr * frac
 
-    rew_shaping_anneal = optax.linear_schedule(
-        init_value=1.,
-        end_value=0.,
-        transition_steps=config.reward_shaping_horizon
-    )
+    ac_cls = CNNActorCritic if config.use_cnn else MLPActorCritic
 
-    network = ActorCritic(temp_env.action_space().n, activation=config.activation, use_multihead=config.use_multihead,
-                          num_tasks=config.seq_length, shared_backbone=config.shared_backbone)
+    network = ac_cls(temp_env.action_space().n, config.activation, config.seq_length, config.use_multihead,
+                     config.shared_backbone, config.big_network, config.use_task_id, config.regularize_heads,
+                     config.use_layer_norm)
 
-    obs_dim = np.prod(temp_env.observation_space().shape)
-
-    # Add the task ID one-hot of length seq_length
-    if config.use_task_id:
-        obs_dim += config.seq_length
+    obs_dim = temp_env.observation_space().shape
+    if not config.use_cnn:
+        obs_dim = np.prod(obs_dim)
+        # Add the task ID one-hot of length seq_length
+        if config.use_task_id:
+            obs_dim += config.seq_length
 
     # Initialize the network
     rng = jax.random.PRNGKey(config.seed)
     rng, network_rng = jax.random.split(rng)
-    init_x = jnp.zeros((1, obs_dim,))
+    init_x = jnp.zeros((1, *obs_dim)) if config.use_cnn else jnp.zeros((1, obs_dim,))
     network_params = network.init(network_rng, init_x)
 
     # Initialize the optimizer
@@ -403,7 +410,7 @@ def main():
     with open(yaml_loc, "r") as f:
         practical_baselines = OmegaConf.load(f)
 
-    @partial(jax.jit, static_argnums=(2,4))
+    @partial(jax.jit, static_argnums=(2, 4))
     def train_on_environment(rng, train_state, env, cl_state, env_idx):
         '''
         Trains the network using IPPO
@@ -433,7 +440,7 @@ def main():
         rew_shaping_anneal = optax.linear_schedule(
             init_value=1.,
             end_value=0.,
-            transition_steps=config.total_timesteps
+            transition_steps=reward_shaping_horizon
         )
 
         # TRAIN
@@ -443,6 +450,7 @@ def main():
             @param runner_state: the carry state that contains all important training information
             returns the updated runner state and the metrics
             '''
+
             # COLLECT TRAJECTORIES
             def _env_step(runner_state, _):
                 '''
@@ -458,10 +466,11 @@ def main():
                 rng, _rng = jax.random.split(rng)
 
                 # prepare the observations for the network
-                obs_batch = batchify(last_obs, env.agents, config.num_actors)  # (num_actors, obs_dim)
+                obs_batch = batchify(last_obs, env.agents, config.num_actors,
+                                     not config.use_cnn)  # (num_actors, obs_dim)
                 # print("obs_shape", obs_batch.shape)
 
-                if config.use_task_id:
+                if config.use_task_id and not config.use_cnn:
                     # Build a one-hot for env_idx of the sequence length and append it to each row.
                     onehot = make_task_onehot(env_idx, config.seq_length)
                     # Broadcast this so we can concat across the batch dimension e.g. shape (num_actors, seq_length)
@@ -485,7 +494,7 @@ def main():
 
                 # format the actions to be compatible with the environment
                 env_act = unbatchify(action, env.agents, config.num_envs, env.num_agents)
-                env_act = {k:v.flatten() for k,v in env_act.items()}
+                env_act = {k: v.flatten() for k, v in env_act.items()}
 
                 # STEP ENV
                 # split the random number generator for stepping the environment
@@ -493,7 +502,7 @@ def main():
                 rng_step = jax.random.split(_rng, config.num_envs)
 
                 # simultaniously step all environments with the selected actions (parallelized over the number of environments with vmap)
-                obsv, env_state, reward, done, info = jax.vmap(env.step, in_axes=(0,0,0))(
+                obsv, env_state, reward, done, info = jax.vmap(env.step, in_axes=(0, 0, 0))(
                     rng_step, env_state, env_act
                 )
 
@@ -505,14 +514,14 @@ def main():
                 current_timestep = update_step * config.num_steps * config.num_envs
 
                 # add the shaped reward to the normal reward
-                reward = jax.tree_util.tree_map(lambda x,y: 
-                                                x+y * rew_shaping_anneal(current_timestep), 
+                reward = jax.tree_util.tree_map(lambda x, y:
+                                                x + y * rew_shaping_anneal(current_timestep),
                                                 reward,
                                                 info["shaped_reward"]
                                                 )
 
                 transition = Transition(
-                    batchify(done, env.agents, config.num_actors).squeeze(),
+                    batchify(done, env.agents, config.num_actors, not config.use_cnn).squeeze(),
                     action,
                     value,
                     batchify(reward, env.agents, config.num_actors).squeeze(),
@@ -539,9 +548,9 @@ def main():
             train_state, env_state, last_obs, update_step, steps_for_env, rng = runner_state
 
             # create a batch of the observations that is compatible with the network
-            last_obs_batch = batchify(last_obs, env.agents, config.num_actors)
+            last_obs_batch = batchify(last_obs, env.agents, config.num_actors, not config.use_cnn)
 
-            if config.use_task_id:
+            if config.use_task_id and not config.use_cnn:
                 onehot = make_task_onehot(env_idx, config.seq_length)
                 onehot_batch = jnp.tile(onehot, (last_obs_batch.shape[0], 1))
                 last_obs_batch = jnp.concatenate([last_obs_batch, onehot_batch], axis=1)
@@ -581,7 +590,6 @@ def main():
 
                     return (gae, value), gae
 
-                
                 _, advantages = jax.lax.scan(
                     f=_get_advantages,
                     init=(jnp.zeros_like(last_val), last_val),
@@ -640,21 +648,21 @@ def main():
                         gae = (gae - gae.mean()) / (gae.std() + 1e-8)
                         loss_actor_unclipped = ratio * gae
                         loss_actor_clipped = (
-                            jnp.clip(
-                                ratio,
-                                1.0 - config.clip_eps,
-                                1.0 + config.clip_eps,
-                            )
-                            * gae
+                                jnp.clip(
+                                    ratio,
+                                    1.0 - config.clip_eps,
+                                    1.0 + config.clip_eps,
+                                )
+                                * gae
                         )
 
                         loss_actor = -jnp.minimum(loss_actor_unclipped,
-                                                  loss_actor_clipped) 
+                                                  loss_actor_clipped)
                         loss_actor = loss_actor.mean()
                         entropy = pi.entropy().mean()
 
                         # EWC penalty
-                        ewc_penalty = compute_ewc_loss(params, cl_state, config.reg_coef)
+                        ewc_penalty = ewc.penalty(params, cl_state, config.reg_coef)
 
                         total_loss = (loss_actor
                                       + config.vf_coef * value_loss
@@ -681,7 +689,7 @@ def main():
                 # set the batch size and check if it is correct
                 batch_size = config.minibatch_size * config.num_minibatches
                 assert (
-                    batch_size == config.num_steps * config.num_actors
+                        batch_size == config.num_steps * config.num_actors
                 ), "batch size must be equal to number of steps * number of actors"
 
                 # create a batch of the trajectory, advantages, and targets
@@ -700,7 +708,7 @@ def main():
                 # shuffle the batch
                 shuffled_batch = jax.tree_util.tree_map(
                     lambda x: jnp.take(x, permutation, axis=0), batch
-                ) # outputs a tuple of the batch, advantages, and targets shuffled
+                )  # outputs a tuple of the batch, advantages, and targets shuffled
 
                 minibatches = jax.tree_util.tree_map(
                     f=(lambda x: jnp.reshape(x, [config.num_minibatches, -1] + list(x.shape[1:]))), tree=shuffled_batch,
@@ -744,7 +752,8 @@ def main():
             metric["General/steps_for_env"] = steps_for_env
             metric["General/env_step"] = update_step * config.num_steps * config.num_envs
             if config.anneal_lr:
-                metric["General/learning_rate"] = linear_schedule(update_step * config.num_minibatches * config.update_epochs)
+                metric["General/learning_rate"] = linear_schedule(
+                    update_step * config.num_minibatches * config.update_epochs)
             else:
                 metric["General/learning_rate"] = config.lr
 
@@ -784,17 +793,18 @@ def main():
                 def log_metrics(metric, update_step):
                     if config.evaluation:
                         evaluations = evaluate_model(train_state_eval, eval_rng, env_idx)
-                        metric = compute_normalized_evaluation_rewards(evaluations, 
-                                                            config.layout_name, 
-                                                            practical_baselines, 
-                                                            metric)
+                        metric = compute_normalized_evaluation_rewards(evaluations,
+                                                                       config.layout_name,
+                                                                       practical_baselines,
+                                                                       metric)
+
                     def callback(args):
                         metric, update_step, env_counter = args
-                        real_step = (int(env_counter)-1) * config.num_updates + int(update_step)
-                        
-                        metric = compute_normalized_returns(config.layout_name, 
-                                                            practical_baselines, 
-                                                            metric, 
+                        real_step = (int(env_counter) - 1) * config.num_updates + int(update_step)
+
+                        metric = compute_normalized_returns(config.layout_name,
+                                                            practical_baselines,
+                                                            metric,
                                                             env_counter)
                         for key, value in metric.items():
                             writer.add_scalar(key, value, real_step)
@@ -840,15 +850,15 @@ def main():
         returns the runner state and the metrics
         '''
         # split the random number generator for training on the environments
-        rng, *env_rngs = jax.random.split(rng, len(envs)+1)
+        rng, *env_rngs = jax.random.split(rng, len(envs) + 1)
 
         visualizer = OvercookedVisualizer()
         # Evaluate the model on all environments before training
         if config.evaluation:
-            evaluation_matrix = jnp.zeros(((len(envs)+1), len(envs)))
+            evaluation_matrix = jnp.zeros(((len(envs) + 1), len(envs)))
             rng, eval_rng = jax.random.split(rng)
             evaluations = evaluate_model(train_state, eval_rng, 0)
-            evaluation_matrix = evaluation_matrix.at[0,:].set(evaluations)
+            evaluation_matrix = evaluation_matrix.at[0, :].set(evaluations)
 
         runner_state = None
         for i, (rng, env) in enumerate(zip(env_rngs, envs)):
@@ -857,20 +867,25 @@ def main():
             train_state = runner_state[0]
 
             # --- Compute new Fisher, then update ewc_state for next tasks ---
-            # fisher = compute_fisher_with_rollouts(config, train_state, envs[i], network, i, r, config.use_task_id, seq_length, i, config.normalize_fisher)
-            fisher = compute_fisher_with_rollouts(config, train_state, env, network, i, rng,
-                                                  normalize_fisher=config.normalize_fisher)
-            cl_state = update_ewc_state(cl_state, train_state.params, fisher)
+            fisher = ewc.compute_importance(
+                params=train_state.params, 
+                env=env, 
+                net=network, 
+                env_idx=i, 
+                key=rng,
+                use_cnn=config.use_cnn)
+            cl_state = ewc.update_state(cl_state, train_state.params, fisher)
 
-            # Generate & log a GIF after finishing task i
-            env_name = config.layout_name[i]
-            states = record_gif_of_episode(config, train_state, env, network, env_idx=i, max_steps=config.gif_len)
-            visualizer.animate(states, agent_view_size=5, task_idx=i, task_name=env_name, exp_dir=exp_dir)
+            if config.record_gif:
+                # Generate & log a GIF after finishing task i
+                env_name = config.layout_name[i]
+                states = record_gif_of_episode(config, train_state, env, network, env_idx=i, max_steps=config.gif_len)
+                visualizer.animate(states, agent_view_size=5, task_idx=i, task_name=env_name, exp_dir=exp_dir)
 
             if config.evaluation:
                 # Evaluate at the end of training to get the average performance of the task right after training
                 evaluations = evaluate_model(train_state, rng, i)
-                evaluation_matrix = evaluation_matrix.at[i,:].set(evaluations)
+                evaluation_matrix = evaluation_matrix.at[i, :].set(evaluations)
 
             # save the model
             path = f"checkpoints/overcooked/EWC/{run_name}/model_env_{i + 1}"
@@ -880,7 +895,6 @@ def main():
             # calculate the forward transfer and backward transfer
             show_heatmap_bwt(evaluation_matrix, run_name)
             show_heatmap_fwt(evaluation_matrix, run_name)
-
 
     def save_params(path, train_state):
         '''
@@ -900,9 +914,7 @@ def main():
 
     # Run the model
     rng, train_rng = jax.random.split(rng)
-    cl_state = init_cl_state(train_state.params,
-                             regularize_critic=config.regularize_critic,
-                             regularize_heads=config.regularize_heads)
+    cl_state = ewc.init_state(train_state.params, config.regularize_critic, config.regularize_heads)
 
     # apply the loop_over_envs function to the environments
     loop_over_envs(train_rng, train_state, cl_state, envs)
@@ -917,7 +929,7 @@ def record_gif_of_episode(config, train_state, env, network, env_idx=0, max_step
     states = [state]
 
     while not done and step_count < max_steps:
-        flat_obs = {}
+        obs_dict = {}
         for agent_id, obs_v in obs.items():
             # Determine the expected raw shape for this agent.
             expected_shape = env.observation_space().shape
@@ -926,18 +938,19 @@ def record_gif_of_episode(config, train_state, env, network, env_idx=0, max_step
                 obs_b = jnp.expand_dims(obs_v, axis=0)  # now (1, ...)
             else:
                 obs_b = obs_v
-            # Flatten the nonbatch dimensions.
-            flattened = jnp.reshape(obs_b, (obs_b.shape[0], -1))
-            if config.use_task_id:
-                onehot = make_task_onehot(env_idx, config.seq_length)  # (seq_length,)
-                onehot = jnp.expand_dims(onehot, axis=0)  # (1, seq_length)
-                flattened = jnp.concatenate([flattened, onehot], axis=1)
-            flat_obs[agent_id] = flattened
+            if not config.use_cnn:
+                # Flatten the nonbatch dimensions.
+                obs_b = jnp.reshape(obs_b, (obs_b.shape[0], -1))
+                if config.use_task_id:
+                    onehot = make_task_onehot(env_idx, config.seq_length)  # (seq_length,)
+                    onehot = jnp.expand_dims(onehot, axis=0)  # (1, seq_length)
+                    obs_b = jnp.concatenate([obs_b, onehot], axis=1)
+            obs_dict[agent_id] = obs_b
 
         actions = {}
         act_keys = jax.random.split(rng, env.num_agents)
         for i, agent_id in enumerate(env.agents):
-            pi, _ = network.apply(train_state.params, flat_obs[agent_id], env_idx=env_idx)
+            pi, _ = network.apply(train_state.params, obs_dict[agent_id], env_idx=env_idx)
             actions[agent_id] = jnp.squeeze(pi.sample(seed=act_keys[i]), axis=0)
 
         rng, key_step = jax.random.split(rng)
@@ -949,6 +962,7 @@ def record_gif_of_episode(config, train_state, env, network, env_idx=0, max_step
         states.append(state)
 
     return states
+
 
 if __name__ == "__main__":
     print("Running main...")

@@ -70,7 +70,7 @@ class Config:
 
     seq_length: int = 3
     strategy: str = "random"
-    layouts: Optional[Sequence[str]] = field(default_factory=lambda: ["asymm_advantages", "smallest_kitchen", "cramped_room", "easy_layout", "square_arena", "no_cooperation"])
+    layouts: Optional[Sequence[str]] = field(default_factory=lambda: [])
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
     log_interval: int = 50
@@ -114,10 +114,6 @@ def main():
     layouts = config.layouts
     config.env_kwargs, config.layout_name = generate_sequence(seq_length, strategy, layout_names=layouts, seed=config.seed)
 
-
-    for layout_config in config.env_kwargs:
-        layout_name = layout_config["layout"]
-        layout_config["layout"] = overcooked_layouts[layout_name]
     
     timestamp = datetime.now().strftime("%m-%d_%H-%M")
     run_name = f'{config.alg_name}_Packnet_seq{config.seq_length}_{config.strategy}_{timestamp}'

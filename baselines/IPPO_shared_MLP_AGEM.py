@@ -63,17 +63,14 @@ class Config:
     use_task_id: bool = False
     use_multihead: bool = False
     shared_backbone: bool = False
+    big_network: bool = False
+    use_layer_norm: bool = False
     max_memory_size: int = 10000
 
     # Environment
     seq_length: int = 2
     strategy: str = "random"
-    layouts: Optional[Sequence[str]] = field(
-        default_factory=lambda: [
-            "asymm_advantages", "smallest_kitchen", "cramped_room",
-            "easy_layout", "square_arena", "no_cooperation"
-        ]
-    )
+    layouts: Optional[Sequence[str]] = field(default_factory=lambda: [])
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
     evaluation: bool = True
@@ -377,7 +374,8 @@ def main():
                           activation=config.activation, 
                           use_multihead=config.use_multihead,
                           num_tasks=config.seq_length, 
-                          shared_backbone=config.shared_backbone)
+                          shared_backbone=config.shared_backbone,
+                          big_network=config.big_network)
 
     obs_dim = np.prod(temp_env.observation_space().shape)
 

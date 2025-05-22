@@ -72,9 +72,7 @@ class Config:
     # Sequence settings 
     seq_length: int = 2
     strategy: str = "random"
-    layouts: Optional[Sequence[str]] = field(
-        default_factory=lambda: ["asymm_advantages", "smallest_kitchen", "cramped_room", 
-                                 "easy_layout", "square_arena", "no_cooperation"])
+    layouts: Optional[Sequence[str]] = field(default_factory=lambda: [])
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
 
@@ -304,10 +302,6 @@ def main():
     )
 
     # Create the environments
-    for layout_config in config.env_kwargs:
-        layout_name = layout_config["layout"]
-        layout_config["layout"] = overcooked_layouts[layout_name]
-
     padded_envs = pad_observation_space()
     train_envs = []
     test_envs = []
