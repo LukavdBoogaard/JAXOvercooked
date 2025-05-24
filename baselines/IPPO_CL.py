@@ -5,19 +5,13 @@ from cl_methods.L2 import L2
 from cl_methods.MAS import MAS
 
 os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
-from datetime import datetime
-from typing import Sequence, NamedTuple, Any, Optional, List
+from typing import Sequence, Any, Optional, List
 
 import flax
-import jax
-import jax.numpy as jnp
-import numpy as np
 import optax
-from dotenv import load_dotenv
 from flax.core.frozen_dict import freeze, unfreeze
 from flax.training.train_state import TrainState
 
-from jax_marl.environments.env_selection import generate_sequence
 from jax_marl.registration import make
 from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
 from jax_marl.wrappers.baselines import LogWrapper
@@ -878,7 +872,7 @@ def main():
         # split the random number generator for training on the environments
         rng, *env_rngs = jax.random.split(rng, len(envs) + 1)
 
-        visualizer = OvercookedVisualizer()
+        visualizer = OvercookedVisualizer(num_agents=temp_env.num_agents)
         # Evaluate the model on the first environments before training
         if config.evaluation:
             evaluation_matrix = jnp.zeros(((len(envs) + 1), len(envs)))

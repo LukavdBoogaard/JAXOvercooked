@@ -513,3 +513,9 @@ overcooked_layouts = {
     **medium_layouts,
     **easy_layouts,
 }
+
+# Layouts for a single agent
+single_layouts = {
+    **easy_layouts,
+    **medium_layouts,
+}

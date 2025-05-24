@@ -304,22 +304,29 @@ def _pad_to(img: jnp.ndarray, target_shape):
 # ---------------------------------------------------------------
 # util: build a (2, …) batch without Python branches
 # ---------------------------------------------------------------
-def _prep_obs(raw_obs, use_cnn):
+def _prep_obs(raw_obs: dict[str, jnp.ndarray], use_cnn: bool) -> jnp.ndarray:
     """
-    Build a (2, …) batch: one row per agent.
-    zero-vector of length `seq_len` so that both
-    branches have the same dtype & length.
+    Stack per‐agent observations into a single array of shape
+    (num_agents, …).
+
+    If use_cnn=False, each obs is flattened to a 1D float32 vector first.
     """
 
-    def _single(obs):  # img: (H,W,C)
+    def _single(obs: jnp.ndarray) -> jnp.ndarray:
+        # flatten & cast when not using CNN
         if not use_cnn:
             obs = obs.reshape(-1).astype(jnp.float32)
-        return obs[None]  # (1, total_len)
+        # introduce a leading "agent" axis
+        return obs[None]
 
-    return jnp.concatenate(
-        [_single(raw_obs["agent_0"]),
-         _single(raw_obs["agent_1"])],
-        axis=0)  # (2, …)
+    # Sort the keys so that the agent‐ordering is deterministic
+    agent_ids = sorted(raw_obs.keys())
+
+    # Build a list of (1, …) arrays, one per agent
+    per_agent = [ _single(raw_obs[a]) for a in agent_ids ]
+
+    # Concatenate along the new leading axis → (num_agents, …)
+    return jnp.concatenate(per_agent, axis=0)
 
 
 def generate_sequence_of_tasks(config):
