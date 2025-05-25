@@ -1,21 +1,18 @@
-from datetime import datetime
 import os
 import uuid
+from datetime import datetime
 from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import seaborn as sns
-from flax.core.frozen_dict import FrozenDict
-from matplotlib import pyplot as plt
-import seaborn as sns
-import numpy as np
 import wandb
 from dotenv import load_dotenv
+from flax.core.frozen_dict import FrozenDict
+from matplotlib import pyplot as plt
 from tensorboardX import SummaryWriter
 
-from jax_marl.environments.overcooked_environment import overcooked_layouts
 from jax_marl.environments.env_selection import generate_sequence
 
 
@@ -323,7 +320,7 @@ def _prep_obs(raw_obs: dict[str, jnp.ndarray], use_cnn: bool) -> jnp.ndarray:
     agent_ids = sorted(raw_obs.keys())
 
     # Build a list of (1, …) arrays, one per agent
-    per_agent = [ _single(raw_obs[a]) for a in agent_ids ]
+    per_agent = [_single(raw_obs[a]) for a in agent_ids]
 
     # Concatenate along the new leading axis → (num_agents, …)
     return jnp.concatenate(per_agent, axis=0)
@@ -334,9 +331,9 @@ def generate_sequence_of_tasks(config):
     Generates a sequence of tasks based on the provided configuration.
     """
     config.env_kwargs, config.layout_name = generate_sequence(
-        sequence_length=config.seq_length, 
-        strategy=config.strategy, 
-        layout_names=config.layouts, 
+        sequence_length=config.seq_length,
+        strategy=config.strategy,
+        layout_names=config.layouts,
         seed=config.seed
     )
 
@@ -345,6 +342,7 @@ def generate_sequence_of_tasks(config):
     #     layout_config["layout"] = overcooked_layouts[layout_name]
 
     return config
+
 
 def create_run_name(config, network_architecture):
     """
