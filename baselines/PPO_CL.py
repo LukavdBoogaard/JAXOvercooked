@@ -36,7 +36,6 @@ from flax.training.train_state import TrainState
 from tensorboardX import SummaryWriter
 
 from architectures.cnn import ActorCritic as CNNActorCritic  # noqa: E402
-# Local imports --------------------------------------------------------------
 from architectures.shared_mlp import ActorCritic as MLPActorCritic  # noqa: E402
 from cl_methods.EWC import EWC  # noqa: E402
 from cl_methods.L2 import L2  # noqa: E402
@@ -234,10 +233,30 @@ def main():
     run_name = f'{cfg.alg_name}_{cfg.cl_method}_{network}_seq{cfg.seq_length}_{cfg.strategy}_seed_{cfg.seed}_{timestamp}'
     exp_dir = os.path.join("runs", run_name)
     load_dotenv()
+    wandb_tags = cfg.tags if cfg.tags is not None else []
     wandb.login(key=os.getenv("WANDB_API_KEY"))
-    wandb.init(project=cfg.project, config=vars(cfg), mode=cfg.wandb_mode, tags=cfg.tags, name=run_name)
+    wandb.init(
+        project=cfg.project,
+        config=cfg,
+        sync_tensorboard=True,
+        mode=cfg.wandb_mode,
+        tags=wandb_tags,
+        group=cfg.cl_method.upper(),
+        name=run_name,
+        id=run_name,
+    )
 
-    tb = SummaryWriter(exp_dir)
+    writer = SummaryWriter(exp_dir)
+    # add the hyperparameters to the tensorboard
+    rows = []
+    for k, value in vars(cfg).items():
+        value_str = str(value).replace("\n", "<br>")
+        value_str = value_str.replace("|", "\\|")  # escape pipe chars if needed
+        rows.append(f"|{k}|{value_str}|")
+
+    table_body = "\n".join(rows)
+    markdown = f"|param|value|\n|-|-|\n{table_body}"
+    writer.add_text("hyperparameters", markdown)
 
     # Visualiser for GIFs
     viz = OvercookedVisualizer(num_agents=1)
@@ -357,8 +376,9 @@ def train_on_task(env: OvercookedSingle, ts: TrainState, rng: chex.PRNGKey, cfg:
             idx = jax.random.permutation(sub, obs_f.shape[0])
             for i in range(cfg.num_minibatches):
                 sl = idx[i * cfg.minibatch_size:(i + 1) * cfg.minibatch_size]
-                (loss_val, aux), grads = grad_fn(params, obs_f[sl], a_f[sl], logp_f[sl], adv_f[sl], ret_f[sl], v_f[sl])
-                params = optax.apply_updates(params, ts.tx.update(grads, ts.opt_state, params)[0])
+                (loss_val, _), grads = grad_fn(params, obs_f[sl], a_f[sl], logp_f[sl], adv_f[sl], ret_f[sl], v_f[sl])
+                updates, opt_state = ts.tx.update(grads, ts.opt_state, params)
+                params = optax.apply_updates(params, updates)
             return (key, params), loss_val
 
         (key, new_params), _ = jax.lax.scan(epoch_step, (key, ts.params), None, length=cfg.update_epochs)
@@ -421,7 +441,7 @@ def record_gif(env, ts, net, rng, max_steps):
     frames = [SimpleNamespace(env_state=_to_vis_state(state))]
     for _ in range(max_steps):
         # flatten if not CNN, else keep shape
-        if net.__class__.__name__.startswith("CNN"):
+        if obs.ndim == 3:
             batch_obs = obs[None, ...]           # add batch dim → (1, H, W, C)
         else:
             batch_obs = obs.reshape(1, -1)  # (1, obs_dim)
