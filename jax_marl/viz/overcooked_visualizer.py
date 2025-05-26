@@ -71,8 +71,8 @@ class OvercookedVisualizer:
                 grid,
                 tile_size=tile_size,
                 highlight_mask=None,
-                agent_dir_idx=np.asarray(state.agent_dir_idx),
-                agent_inv=np.asarray(state.agent_inv),
+                agent_dir_idx=np.atleast_1d(state.agent_dir_idx),
+                agent_inv=np.atleast_1d(state.agent_inv),
             )
             return frame
 
