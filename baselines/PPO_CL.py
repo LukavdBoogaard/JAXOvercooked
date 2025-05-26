@@ -502,9 +502,7 @@ def main():
                 rng, _rng = jax.random.split(rng)
 
                 # prepare the observations for the network
-                obs_batch = batchify(last_obs, agents, config.num_actors,
-                                     not config.use_cnn)  # (num_actors, obs_dim)
-                # print("obs_shape", obs_batch.shape)
+                obs_batch = batchify(last_obs, agents, config.num_actors, not config.use_cnn)  # (num_actors, obs_dim)
 
                 # apply the policy network to the observations to get the suggested actions and their values
                 pi, value = network.apply(train_state.params, obs_batch, env_idx=env_idx)
@@ -521,7 +519,7 @@ def main():
                 log_prob = pi.log_prob(action)
 
                 # format the actions to be compatible with the environment
-                env_act = unbatchify(action, agents, config.num_envs, num_agents)
+                env_act = unbatchify(action, temp_env.agents, config.num_envs, num_agents)
                 env_act = {k: v.flatten() for k, v in env_act.items()}
 
                 # STEP ENV
@@ -552,7 +550,7 @@ def main():
                     batchify(done, agents, config.num_actors, not config.use_cnn).squeeze(),
                     action,
                     value,
-                    batchify(reward, agents, config.num_actors).squeeze(),
+                    batchify(reward["agent_0"], agents, config.num_actors).squeeze(),
                     log_prob,
                     obs_batch
                 )
