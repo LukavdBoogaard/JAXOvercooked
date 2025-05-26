@@ -390,7 +390,13 @@ def main():
 
     # set extra config parameters based on the environment
     temp_env = envs[0]
-    config.num_actors = temp_env.num_agents * config.num_envs
+    agents = temp_env.agents
+    if config.env_name == "overcooked_single":
+        # For single-chef, we only have one agent
+        agents = [temp_env.agents[0]]
+    num_agents = len(agents)
+
+    config.num_actors = num_agents * config.num_envs
     config.num_updates = config.total_timesteps // config.num_steps // config.num_envs
     config.minibatch_size = (config.num_actors * config.num_steps) // config.num_minibatches
 
@@ -411,12 +417,6 @@ def main():
     obs_dim = temp_env.observation_space().shape
     if not config.use_cnn:
         obs_dim = np.prod(obs_dim)
-
-    agents = temp_env.agents
-    if config.env_name == "overcooked_single":
-        # For single-chef, we only have one agent
-        agents = [temp_env.agents[0]]
-    num_agents = len(agents)
 
     # Initialize the network
     rng = jax.random.PRNGKey(config.seed)
@@ -502,7 +502,7 @@ def main():
                 rng, _rng = jax.random.split(rng)
 
                 # prepare the observations for the network
-                obs_batch = batchify(last_obs, env.agents, config.num_actors,
+                obs_batch = batchify(last_obs, agents, config.num_actors,
                                      not config.use_cnn)  # (num_actors, obs_dim)
                 # print("obs_shape", obs_batch.shape)
 
@@ -521,7 +521,7 @@ def main():
                 log_prob = pi.log_prob(action)
 
                 # format the actions to be compatible with the environment
-                env_act = unbatchify(action, env.agents, config.num_envs, env.num_agents)
+                env_act = unbatchify(action, agents, config.num_envs, num_agents)
                 env_act = {k: v.flatten() for k, v in env_act.items()}
 
                 # STEP ENV
@@ -549,10 +549,10 @@ def main():
                                                 )
 
                 transition = Transition(
-                    batchify(done, env.agents, config.num_actors, not config.use_cnn).squeeze(),
+                    batchify(done, agents, config.num_actors, not config.use_cnn).squeeze(),
                     action,
                     value,
-                    batchify(reward, env.agents, config.num_actors).squeeze(),
+                    batchify(reward, agents, config.num_actors).squeeze(),
                     log_prob,
                     obs_batch
                 )
@@ -576,7 +576,7 @@ def main():
             train_state, env_state, last_obs, update_step, steps_for_env, rng = runner_state
 
             # create a batch of the observations that is compatible with the network
-            last_obs_batch = batchify(last_obs, env.agents, config.num_actors, not config.use_cnn)
+            last_obs_batch = batchify(last_obs, agents, config.num_actors, not config.use_cnn)
 
             # apply the network to the batch of observations to get the value of the last state
             _, last_val = network.apply(train_state.params, last_obs_batch, env_idx=env_idx)
@@ -873,7 +873,7 @@ def main():
         # split the random number generator for training on the environments
         rng, *env_rngs = jax.random.split(rng, len(envs) + 1)
 
-        visualizer = OvercookedVisualizer(num_agents=temp_env.num_agents)
+        visualizer = OvercookedVisualizer(num_agents=num_agents)
         # Evaluate the model on the first environments before training
         if config.evaluation:
             evaluation_matrix = jnp.zeros(((len(envs) + 1), len(envs)))
@@ -895,7 +895,7 @@ def main():
             if config.record_gif:
                 # Generate & log a GIF after finishing task i
                 env_name = config.layout_name[i]
-                states = record_gif_of_episode(config, train_state, env, network, env_idx=i, max_steps=config.gif_len)
+                states = record_gif_of_episode(config, train_state, env, network, agents, i, config.gif_len)
                 visualizer.animate(states, agent_view_size=5, task_idx=i, task_name=env_name, exp_dir=exp_dir)
 
             if config.evaluation:
@@ -936,7 +936,7 @@ def main():
     loop_over_envs(train_rng, train_state, cl_state, envs)
 
 
-def record_gif_of_episode(config, train_state, env, network, env_idx=0, max_steps=300):
+def record_gif_of_episode(config, train_state, env, network, agents, env_idx=0, max_steps=300):
     rng = jax.random.PRNGKey(0)
     rng, env_rng = jax.random.split(rng)
     obs, state = env.reset(env_rng)
@@ -960,8 +960,8 @@ def record_gif_of_episode(config, train_state, env, network, env_idx=0, max_step
             obs_dict[agent_id] = obs_b
 
         actions = {}
-        act_keys = jax.random.split(rng, env.num_agents)
-        for i, agent_id in enumerate(env.agents):
+        act_keys = jax.random.split(rng, len(agents))
+        for i, agent_id in enumerate(agents):
             pi, _ = network.apply(train_state.params, obs_dict[agent_id], env_idx=env_idx)
             actions[agent_id] = jnp.squeeze(pi.sample(seed=act_keys[i]), axis=0)
 
