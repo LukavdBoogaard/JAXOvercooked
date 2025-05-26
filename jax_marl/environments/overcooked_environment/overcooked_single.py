@@ -296,8 +296,7 @@ class OvercookedSingle(MultiAgentEnv):
         is_pickable = (obj_id == OBJECT_TO_INDEX["plate"]) | (obj_id == OBJECT_TO_INDEX["onion"]) | (
                 obj_id == OBJECT_TO_INDEX["dish"])
         table_empty = (obj_id == OBJECT_TO_INDEX["empty"]) | (obj_id == OBJECT_TO_INDEX["wall"])
-        # table_wall = wall_map[row, col]
-        table_wall = jnp.all(wall_map[row, col])
+        table_wall = wall_map[row, col]
         is_table = jnp.logical_and(table_wall, ~is_pot)
 
         inv_empty = inventory == OBJECT_TO_INDEX["empty"]
