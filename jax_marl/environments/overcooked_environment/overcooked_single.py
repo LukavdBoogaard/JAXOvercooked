@@ -39,24 +39,16 @@ class OvercookedSingle(Overcooked):
     def reset(self, key):
         obs, state = super().reset(key)
         state = _park_dummy(state, self)
-
         obs = self.get_obs(state)
-        obs["agent_1"] = jnp.zeros_like(obs["agent_0"])  # dummy view
         return obs, state
 
     def step_env(self, key, state, actions):
         # ignore whatever the trainer sends for agent_1
         a0 = actions["agent_0"] if isinstance(actions, dict) else actions
         full_act = {"agent_0": a0, "agent_1": Actions.stay}
-
         obs, state, rew, done, info = super().step_env(key, state, full_act)
         state = _park_dummy(state, self)
-
         obs = self.get_obs(state)
-        obs["agent_1"] = jnp.zeros_like(obs["agent_0"])
-
-        # zero-out dummy reward so it never pollutes logs
-        rew["agent_1"] = 0.0
         return obs, state, rew, done, info
 
     # optional sugar
