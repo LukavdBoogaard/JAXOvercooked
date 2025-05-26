@@ -140,8 +140,8 @@ class OvercookedVisualizer:
             grid,
             tile_size,
             highlight_mask=highlight_mask if highlight else None,
-            agent_dir_idx=state.agent_dir_idx,
-            agent_inv=state.agent_inv
+            agent_dir_idx=np.atleast_1d(state.agent_dir_idx),
+            agent_inv=np.atleast_1d(state.agent_inv),
         )
         self.window.show_img(img)
 
