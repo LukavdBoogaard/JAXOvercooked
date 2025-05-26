@@ -150,7 +150,8 @@ class OvercookedSingle(MultiAgentEnv):
         agent_inv = (
             OBJECT_TO_INDEX["empty"]
             if not self.random_reset
-            else int(jax.random.choice(subkey, jnp.array([OBJECT_TO_INDEX[x] for x in ["empty", "onion", "plate", "dish"]])))
+            else int(
+                jax.random.choice(subkey, jnp.array([OBJECT_TO_INDEX[x] for x in ["empty", "onion", "plate", "dish"]])))
         )
 
         goal_pos = self._fixed_vec("goal_idx")
@@ -172,7 +173,7 @@ class OvercookedSingle(MultiAgentEnv):
             pad_obs=True,
             num_agents=1,
             agent_view_size=self.agent_view_size,
-            )
+        )
 
         state = State(
             agent_pos=agent_pos,
@@ -193,10 +194,12 @@ class OvercookedSingle(MultiAgentEnv):
     ) -> Tuple[Dict[str, chex.Array], State, Dict[str, float], Dict[str, bool], Dict]:
         act = self.action_set[actions["agent_0"]]
         state, reward, shaped = self._step_agent(state, act)
-        state = state.replace(time=state.time + 1, terminal=self.is_terminal(state))
+        state = state.replace(time=state.time + 1)
         obs = self.get_obs(state)
-        done = state.terminal
-        return obs, state, {"agent_0": reward}, {"agent_0": done, "__all__": done}, {"shaped_reward": {"agent_0": shaped}}
+        done = self.is_terminal(state)
+        state = state.replace(terminal=done)
+        return obs, state, {"agent_0": reward}, {"agent_0": done, "__all__": done}, {
+            "shaped_reward": {"agent_0": shaped}}
 
     # ------------------------------------------------------------------
     # Inner mechanics (movement + interact)  — single‑agent is simpler!
@@ -213,8 +216,8 @@ class OvercookedSingle(MultiAgentEnv):
 
         fwd_pos = jnp.clip(state.agent_pos + new_dir * is_move, 0, jnp.array([self.width - 1, self.height - 1]))
         diag_block = (
-                state.wall_map[state.agent_pos[1], fwd_pos[0]] &   # wall beside
-                state.wall_map[fwd_pos[1], state.agent_pos[0]]     # wall above/below
+                state.wall_map[state.agent_pos[1], fwd_pos[0]] &  # wall beside
+                state.wall_map[fwd_pos[1], state.agent_pos[0]]  # wall above/below
         )
         # Block on walls/goals
         blocked = state.wall_map[fwd_pos[1], fwd_pos[0]] | diag_block \
@@ -230,10 +233,11 @@ class OvercookedSingle(MultiAgentEnv):
         def do_interact(args):
             m, inv, r, s = self._process_interact(maze_map, state.wall_map, new_pos, state.agent_inv)
             return (m, inv, r, s)
+
         def no_interact(_):
             return (maze_map, state.agent_inv, jnp.float32(0.0), jnp.float32(0.0))
 
-        maze_map, new_inv, reward, shaped = lax.cond(action==Actions.interact, do_interact, no_interact, operand=None)
+        maze_map, new_inv, reward, shaped = lax.cond(action == Actions.interact, do_interact, no_interact, operand=None)
 
         # Update agent vec in map (remove old, add new)
         padding = (maze_map.shape[0] - self.height) // 2
@@ -243,6 +247,22 @@ class OvercookedSingle(MultiAgentEnv):
         maze_map = maze_map.at[padding + old_y, padding + old_x, :].set(empty_vec)
         agent_vec = jnp.array([OBJECT_TO_INDEX["agent"], COLOR_TO_INDEX["red"], new_dir_idx], dtype=jnp.uint8)
         maze_map = maze_map.at[padding + new_y, padding + new_x, :].set(agent_vec)
+
+        # ── Cook pots: count down when status ∈ (1 … 20) ───────────────────────
+        pad = (maze_map.shape[0] - self.height) // 2
+
+        def _cook(pot_vec):
+            status = pot_vec[-1]
+            status = jnp.where((status <= POT_FULL_STATUS) & (status > POT_READY_STATUS),
+                               status - 1,
+                               status)
+            return pot_vec.at[-1].set(status)
+
+        pot_x = state.pot_pos[:, 0]
+        pot_y = state.pot_pos[:, 1]
+        pots = maze_map[pad + pot_y, pad + pot_x, :]
+        pots = jax.vmap(_cook)(pots)
+        maze_map = maze_map.at[pad + pot_y, pad + pot_x, :].set(pots)
 
         new_state = state.replace(
             agent_pos=new_pos,
@@ -270,49 +290,50 @@ class OvercookedSingle(MultiAgentEnv):
         obj_id = cell[0]
 
         # flags ─────────────────────────────────────────────────────────────
-        is_pile      = (obj_id == OBJECT_TO_INDEX["plate_pile"]) | (obj_id == OBJECT_TO_INDEX["onion_pile"])
-        is_pot       =  obj_id == OBJECT_TO_INDEX["pot"]
-        is_goal      =  obj_id == OBJECT_TO_INDEX["goal"]
-        is_pickable  = (obj_id == OBJECT_TO_INDEX["plate"]) | (obj_id == OBJECT_TO_INDEX["onion"]) | (obj_id == OBJECT_TO_INDEX["dish"])
-        table_empty  = (obj_id == OBJECT_TO_INDEX["empty"]) | (obj_id == OBJECT_TO_INDEX["wall"])
+        is_pile = (obj_id == OBJECT_TO_INDEX["plate_pile"]) | (obj_id == OBJECT_TO_INDEX["onion_pile"])
+        is_pot = obj_id == OBJECT_TO_INDEX["pot"]
+        is_goal = obj_id == OBJECT_TO_INDEX["goal"]
+        is_pickable = (obj_id == OBJECT_TO_INDEX["plate"]) | (obj_id == OBJECT_TO_INDEX["onion"]) | (
+                obj_id == OBJECT_TO_INDEX["dish"])
+        table_empty = (obj_id == OBJECT_TO_INDEX["empty"]) | (obj_id == OBJECT_TO_INDEX["wall"])
         # table_wall = wall_map[row, col]
         table_wall = jnp.all(wall_map[row, col])
-        is_table   = jnp.logical_and(table_wall, ~is_pot)
+        is_table = jnp.logical_and(table_wall, ~is_pot)
 
-        inv_empty    = inventory == OBJECT_TO_INDEX["empty"]
-        holding_onion  = inventory == OBJECT_TO_INDEX["onion"]
-        holding_plate  = inventory == OBJECT_TO_INDEX["plate"]
-        holding_dish   = inventory == OBJECT_TO_INDEX["dish"]
+        inv_empty = inventory == OBJECT_TO_INDEX["empty"]
+        holding_onion = inventory == OBJECT_TO_INDEX["onion"]
+        holding_plate = inventory == OBJECT_TO_INDEX["plate"]
+        holding_dish = inventory == OBJECT_TO_INDEX["dish"]
 
         pot_status = cell[-1]
 
         # pot logic ─────────────────────────────────────────────────────────
-        add_onion   = is_pot & (pot_status > POT_FULL_STATUS)  & holding_onion
-        take_soup   = is_pot & (pot_status == POT_READY_STATUS) & holding_plate
-        wait_pot    = is_pot & (POT_READY_STATUS < pot_status) & (pot_status <= POT_FULL_STATUS)
+        add_onion = is_pot & (pot_status > POT_FULL_STATUS) & holding_onion
+        take_soup = is_pot & (pot_status == POT_READY_STATUS) & holding_plate
+        wait_pot = is_pot & (POT_READY_STATUS < pot_status) & (pot_status <= POT_FULL_STATUS)
 
         pot_status_new = (
             jnp.where(add_onion, pot_status - 1,
                       jnp.where(take_soup, POT_EMPTY_STATUS, pot_status))
         )
 
-        inv_new = jnp.where(add_onion | take_soup,     # emptied or got dish
+        inv_new = jnp.where(add_onion | take_soup,  # emptied or got dish
                             jnp.where(take_soup, OBJECT_TO_INDEX["dish"], OBJECT_TO_INDEX["empty"]),
                             inventory)
 
         shaped = (BASE_REW_SHAPING_PARAMS["PLACEMENT_IN_POT_REW"] * add_onion +
-                  BASE_REW_SHAPING_PARAMS["SOUP_PICKUP_REWARD"]   * take_soup)
+                  BASE_REW_SHAPING_PARAMS["SOUP_PICKUP_REWARD"] * take_soup)
         shaped = jnp.float32(shaped)
 
         # generic pickup / drop / delivery ──────────────────────────────────
         pickup = is_table & (~table_empty) & inv_empty & (is_pile | is_pickable)
-        drop   = is_table & table_empty   & (~inv_empty)
-        deliver= is_goal  & holding_dish
+        drop = is_table & table_empty & (~inv_empty)
+        deliver = is_goal & holding_dish
 
         # inventory transitions
         inv_new = jnp.where(pickup,
-                            jnp.where(obj_id == OBJECT_TO_INDEX["plate_pile"],  OBJECT_TO_INDEX["plate"],
-                                      jnp.where(obj_id == OBJECT_TO_INDEX["onion_pile"],  OBJECT_TO_INDEX["onion"],
+                            jnp.where(obj_id == OBJECT_TO_INDEX["plate_pile"], OBJECT_TO_INDEX["plate"],
+                                      jnp.where(obj_id == OBJECT_TO_INDEX["onion_pile"], OBJECT_TO_INDEX["onion"],
                                                 obj_id)),
                             inv_new)
 
@@ -329,7 +350,6 @@ class OvercookedSingle(MultiAgentEnv):
         reward = jnp.where(deliver, DELIVERY_REWARD, jnp.float32(0.0))
         return maze_map, jnp.asarray(inv_new, jnp.uint8), reward, shaped
 
-
     # ------------------------------------------------------------------
     # Obs: keep 26‑channel tensor so downstream code needs no edits
     # ------------------------------------------------------------------
@@ -339,6 +359,7 @@ class OvercookedSingle(MultiAgentEnv):
         padding = (state.maze_map.shape[0] - height) // 2
 
         maze = state.maze_map[padding:-padding, padding:-padding, 0]
+
         # layer 0: self pos, layer 1: *dead* (zeros) to match old shape
         pos_layers = jnp.zeros((2, height, width), dtype=jnp.uint8)
         pos_layers = pos_layers.at[0, state.agent_pos[1], state.agent_pos[0]].set(1)
@@ -347,27 +368,37 @@ class OvercookedSingle(MultiAgentEnv):
         dir_layers = jnp.zeros((8, height, width), dtype=jnp.uint8)
         dir_layers = dir_layers.at[state.agent_dir_idx, state.agent_pos[1], state.agent_pos[0]].set(1)
 
-        # env layers copied wholesale from original impl. (unchanged)
-        pot_layer = maze == OBJECT_TO_INDEX["pot"]
+        soup_loc = (maze == OBJECT_TO_INDEX["dish"]).astype(jnp.uint8)
+
+        pot_layer = (maze == OBJECT_TO_INDEX["pot"]).astype(jnp.uint8)
+        pot_status = state.maze_map[padding:-padding, padding:-padding, 2] * pot_layer
+
+        onions_in_pot = jnp.minimum(POT_EMPTY_STATUS - pot_status, MAX_ONIONS_IN_POT) * (pot_status >= POT_FULL_STATUS)
+        onions_in_soup = jnp.minimum(POT_EMPTY_STATUS - pot_status, MAX_ONIONS_IN_POT) * (
+                    pot_status < POT_FULL_STATUS) * pot_layer \
+                         + MAX_ONIONS_IN_POT * soup_loc
+        pot_timer = pot_status * (pot_status < POT_FULL_STATUS)
+        soup_ready = pot_layer * (pot_status == POT_READY_STATUS) + soup_loc
+        urgency = jnp.ones_like(maze, dtype=jnp.uint8) * ((self.max_steps - state.time) < URGENCY_CUTOFF)
+
         env_layers = [
-            pot_layer.astype(jnp.uint8),
+            pot_layer.astype(jnp.uint8),  # 10 pot locations
             (maze == OBJECT_TO_INDEX["wall"]).astype(jnp.uint8),
             (maze == OBJECT_TO_INDEX["onion_pile"]).astype(jnp.uint8),
-            jnp.zeros_like(maze, dtype=jnp.uint8),  # tomato pile (unused)
+            jnp.zeros_like(maze, dtype=jnp.uint8),  # tomato pile
             (maze == OBJECT_TO_INDEX["plate_pile"]).astype(jnp.uint8),
             (maze == OBJECT_TO_INDEX["goal"]).astype(jnp.uint8),
-            jnp.zeros_like(maze, dtype=jnp.uint8),  # 16 onions in pot — skipped for minimal impl.
-            jnp.zeros_like(maze, dtype=jnp.uint8),
-            jnp.zeros_like(maze, dtype=jnp.uint8),
-            jnp.zeros_like(maze, dtype=jnp.uint8),
-            jnp.zeros_like(maze, dtype=jnp.uint8),
-            jnp.zeros_like(maze, dtype=jnp.uint8),
+            onions_in_pot.astype(jnp.uint8),  # 16 onions in pot
+            jnp.zeros_like(maze, dtype=jnp.uint8),  # tomatoes in pot
+            onions_in_soup.astype(jnp.uint8),  # onions in soup / plated
+            jnp.zeros_like(maze, dtype=jnp.uint8),  # tomatoes in soup
+            pot_timer.astype(jnp.uint8),  # 20 cooking timer
+            soup_ready.astype(jnp.uint8),  # soup done flag
             (maze == OBJECT_TO_INDEX["plate"]).astype(jnp.uint8),
             (maze == OBJECT_TO_INDEX["onion"]).astype(jnp.uint8),
-            jnp.zeros_like(maze, dtype=jnp.uint8),
-            jnp.ones_like(maze, dtype=jnp.uint8)
-            * ((self.max_steps - state.time) < URGENCY_CUTOFF),
-            ]
+            jnp.zeros_like(maze, dtype=jnp.uint8),  # tomatoes
+            urgency,  # 25 urgency
+        ]
 
         obs = jnp.transpose(
             jnp.concatenate([pos_layers, dir_layers, jnp.stack(env_layers)], axis=0), (1, 2, 0)
