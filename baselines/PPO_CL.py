@@ -412,8 +412,11 @@ def main():
     if not config.use_cnn:
         obs_dim = np.prod(obs_dim)
 
-    agents = temp_env.agents  # ["agent_0"] for single-chef, ["agent_0","agent_1"] for original overcooked
-    num_agents = temp_env.num_agents
+    agents = temp_env.agents
+    if config.env_name == "overcooked_single":
+        # For single-chef, we only have one agent
+        agents = [temp_env.agents[0]]
+    num_agents = len(agents)
 
     # Initialize the network
     rng = jax.random.PRNGKey(config.seed)
