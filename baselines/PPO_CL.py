@@ -32,6 +32,7 @@ from tensorboardX import SummaryWriter
 class Config:
     reg_coef: float = 1e7
     lr: float = 3e-4
+    num_agents: int = 1
     num_envs: int = 16
     num_steps: int = 128
     total_timesteps: float = 1e7
@@ -50,7 +51,7 @@ class Config:
 
     explore_fraction: float = 0.0
     activation: str = "relu"
-    env_name: str = "overcooked_single"
+    env_name: str = "overcooked"
     alg_name: str = "ippo"
     cl_method: str = None
     use_cnn: bool = False
@@ -180,7 +181,7 @@ def main():
         envs = []
         for env_args in config.env_kwargs:
             # Create the environment
-            env = make(config.env_name, **env_args)
+            env = make(config.env_name, **env_args, num_agents=config.num_agents)
             envs.append(env)
 
         # find the environment with the largest observation space
@@ -368,7 +369,7 @@ def main():
         envs = pad_observation_space()
 
         for eval_idx, env in enumerate(envs):
-            env = make(config.env_name, layout=env)  # Create the environment
+            env = make(config.env_name, layout=env, num_agents=config.num_agents)  # Create the environment
 
             # Run k episodes
             all_rewards = jax.vmap(lambda k: run_episode_while(env, k, config.eval_num_steps))(
@@ -381,20 +382,17 @@ def main():
         return all_avg_rewards
 
     padded_envs = pad_observation_space()
+    num_agents = config.num_agents
 
     envs = []
     for env_layout in padded_envs:
-        env = make(config.env_name, layout=env_layout)
+        env = make(config.env_name, layout=env_layout, num_agents=num_agents)
         env = LogWrapper(env, replace_info=False)
         envs.append(env)
 
     # set extra config parameters based on the environment
     temp_env = envs[0]
     agents = temp_env.agents
-    if config.env_name == "overcooked_single":
-        # For single-chef, we only have one agent
-        agents = [temp_env.agents[0]]
-    num_agents = len(agents)
 
     config.num_actors = num_agents * config.num_envs
     config.num_updates = config.total_timesteps // config.num_steps // config.num_envs
