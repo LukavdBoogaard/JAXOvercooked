@@ -231,7 +231,7 @@ class Overcooked(MultiAgentEnv):
             state.agent_pos + move_mask[:, None] * step_vec,
             a_min=0,
             a_max=jnp.array((self.width - 1, self.height - 1), jnp.uint32),
-        )
+        ).astype(jnp.uint32)
 
         # block by walls / goals
         wall_block = state.wall_map[proposed[:, 1], proposed[:, 0]]
@@ -257,13 +257,13 @@ class Overcooked(MultiAgentEnv):
             swap = swap & (~jnp.eye(n, dtype=bool))
             blocked = coll | swap.any(-1)
 
-        return jnp.where(blocked[:, None], current, proposed)
+        return jnp.where(blocked[:, None], current, proposed).astype(jnp.uint32)
 
     def step_agents(self, key, state, action):
         assert action.shape == (self.num_agents,)
         # positions ------------------------------------------------------------
         proposed = self._proposed_positions(state, action)
-        agent_pos = self._resolve_collisions(state.agent_pos, proposed)
+        agent_pos = self._resolve_collisions(state.agent_pos, proposed).astype(jnp.uint32)
 
         # directions -----------------------------------------------------------
         agent_dir_idx = jnp.where(action < 4, action, state.agent_dir_idx)
