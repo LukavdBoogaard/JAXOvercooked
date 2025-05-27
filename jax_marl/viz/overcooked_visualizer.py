@@ -18,7 +18,7 @@ def _colour_to_agent_index(col_idx: int) -> int:
     Overcooked colours go 0,2,4,…  → map even index → consecutive agent id.
     e.g. 0→0 (red), 2→1 (blue), 4→2 (green) …
     """
-    return col_idx
+    return col_idx // 2
 
 
 class OvercookedVisualizer:

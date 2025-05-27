@@ -14,7 +14,7 @@ from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
 # ---------------------------------------------------------------------
 # 1. Set up env (deterministic reset -> we know the spawn)
 # ---------------------------------------------------------------------
-env = Overcooked(layout=FrozenDict(cramped_room), num_agents=1, random_reset=False, max_steps=400)
+env = Overcooked(layout=FrozenDict(cramped_room), num_agents=2, random_reset=False, max_steps=400)
 rng = jax.random.PRNGKey(0)
 obs, state = env.reset(rng)
 
@@ -61,27 +61,31 @@ actions += [
     A['I'],  # deliver!
 ]
 
+actions_agent_2 = [A['S']] * 50
+
 # ---------------------------------------------------------------------
 # 3. Roll out, asserting everything we care about
 # ---------------------------------------------------------------------
 total_reward = 0.0
-total_shaped = 0.0
+total_shaped_1 = 0.0
+total_shaped_2 = 0.0
 onions_in_pot_expected = POT_FULL_STATUS + 3  # = 20 after 3 drops
 
 for t, act in enumerate(actions, start=1):
     rng, step_key = jax.random.split(rng)
     obs, state, rew, done, info = env.step_env(
-        step_key, state, {"agent_0": jnp.uint32(act)}
+        step_key, state, {"agent_0": jnp.uint32(act), "agent_1": jnp.uint32(actions_agent_2[t])}
     )
 
     total_reward += float(rew["agent_0"])
-    total_shaped += float(info["shaped_reward"]["agent_0"])
+    total_shaped_1 += float(info["shaped_reward"]["agent_0"])
+    total_shaped_2 += float(info["shaped_reward"]["agent_1"])
     add_frame(state)
 
 # ---------------------------------------------------------------------
 # 4. Write GIF
 # ---------------------------------------------------------------------
-gif_path = "gifs/single_agent_cramped_room.gif"
+gif_path = "gifs/double_agent_cramped_room.gif"
 makedirs("gifs", exist_ok=True)
 iio.imwrite(gif_path, frames, loop=0, fps=12)
 print(f"GIF saved to {gif_path}")
@@ -90,9 +94,10 @@ print(f"GIF saved to {gif_path}")
 # 5. Assertions
 # ---------------------------------------------------------------------
 expected_shaped = 3 * 3 + 3 + 5  # 3 onions + plate + soup = 17
-assert np.isclose(total_shaped, expected_shaped), f"shaped reward {total_shaped} != {expected_shaped}"
-# assert total_reward >= float(DELIVERY_REWARD), "didn’t get delivery reward!"
+assert np.isclose(total_shaped_1, expected_shaped), f"shaped reward {total_shaped_1} != {expected_shaped}"
+assert total_reward >= float(DELIVERY_REWARD), "didn’t get delivery reward!"
 assert done["__all__"] is False, "episode ended prematurely"
 
 print(f"Success! total_reward = {total_reward}")
-print(f"Success! total_shaped = {total_shaped}")
+print(f"Success! total_shaped_1 = {total_shaped_1}")
+print(f"Success! total_shaped_2 = {total_shaped_2}")

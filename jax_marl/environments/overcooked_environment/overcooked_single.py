@@ -1,55 +1,49 @@
-# overcooked_single.py  (replace the previous wrapper)
-
 import jax.numpy as jnp
+from jax import lax
 
-from .overcooked import Overcooked, Actions, DIR_TO_VEC, OBJECT_INDEX_TO_VEC
-
-
-def _park_dummy(state, env):
-    """
-    Move dummy agent 1 to the outer padded wall (0,0) and
-    clear its previous tile so it never blocks gameplay.
-    """
-    dummy_old_x, dummy_old_y = state.agent_pos[1]
-    h = env.obs_shape[1]
-    pad = (state.maze_map.shape[0] - h) // 2
-    empty_vec = OBJECT_INDEX_TO_VEC[1]  # 'empty'
-
-    # scrub where the dummy used to be
-    state = state.replace(
-        maze_map=state.maze_map.at[pad + dummy_old_y,
-                 pad + dummy_old_x, :].set(empty_vec)
-    )
-    # park it at the corner wall
-    state = state.replace(
-        agent_pos=state.agent_pos.at[1].set(jnp.array([0, 0], jnp.uint32)),
-        agent_dir=state.agent_dir.at[1].set(DIR_TO_VEC[0]),
-        agent_dir_idx=state.agent_dir_idx.at[1].set(0),
-    )
-    return state
+from jax_marl.environments.overcooked_environment.overcooked import (
+    Overcooked as BaseOvercooked)
 
 
-class OvercookedSingle(Overcooked):
-    """
-    One-chef façade around the stock 2-chef Overcooked.
-    • agent_0 plays,
-    • agent_1 is parked off-board and gets zero-obs/zero-reward.
-    """
+class OvercookedSingle(BaseOvercooked):
+    """One-chef flavour of Overcooked."""
 
+    def __init__(self, **kwargs):
+        super().__init__(num_agents=1, **kwargs)
+
+        self.agents = ["agent_0"]
+
+    # ------------------------------------------------------------------
+    #  ↓ Everything that referenced agent_1 shrinks to scalar logic ↓
+    # ------------------------------------------------------------------
+
+    # 1. step_env handles a single action instead of a dict of two
+    def step_env(self, key, state, actions):
+        # cast to array because BaseOvercooked expects an array
+        action = actions["agent_0"] if isinstance(actions, dict) else actions
+
+        state, reward, shaped = self.step_agents(key, state, action)
+        state = state.replace(time=state.time + 1, terminal=self.is_terminal(state))
+
+        obs = self.get_obs(state)
+        done = state.terminal
+
+        return (
+            lax.stop_gradient(obs),
+            lax.stop_gradient(state),
+            {"agent_0": reward},
+            {"agent_0": done, "__all__": done},
+            {"shaped_reward": {"agent_0": shaped}},
+        )
+
+    # 2. reset returns only one observation
     def reset(self, key):
         obs, state = super().reset(key)
-        state = _park_dummy(state, self)
-        obs = self.get_obs(state)
+        # obs is already a dict with {"agent_0": …}; nothing to tweak
         return obs, state
 
-    def step_env(self, key, state, actions):
-        # ignore whatever the trainer sends for agent_1
-        a0 = actions["agent_0"] if isinstance(actions, dict) else actions
-        full_act = {"agent_0": a0, "agent_1": Actions.stay}
-        obs, state, rew, done, info = super().step_env(key, state, full_act)
-        state = _park_dummy(state, self)
-        obs = self.get_obs(state)
-        return obs, state, rew, done, info
-
-    # optional sugar
-    step = step_env
+    # 3. get_obs generates one view instead of two
+    def get_obs(self, state):
+        # build exactly the same 26-layer tensor …
+        full = super().get_obs(state)["agent_0"]
+        return {"agent_0": full}
