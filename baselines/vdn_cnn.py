@@ -63,9 +63,9 @@ class Config:
 
     rew_shaping_horizon: float = 2.5e6
     test_during_training: bool = True
-    test_interval: float = 0.05 #fraction 
+    test_interval: float = 0.1 #fraction 
     test_num_steps: int = 400
-    test_num_envs: int = 256 # number of episodes to average over
+    test_num_envs: int = 32
     eval_num_episodes: int = 10
     seed: int = 30
 
