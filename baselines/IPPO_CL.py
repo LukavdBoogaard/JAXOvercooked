@@ -106,6 +106,7 @@ class Config:
     entity: Optional[str] = ""
     project: str = "COOX"
     tags: List[str] = field(default_factory=list)
+    group: str = None
 
     # to be computed during runtime
     num_actors: int = 0
@@ -158,7 +159,7 @@ def main():
         sync_tensorboard=True,
         mode=config.wandb_mode,
         tags=wandb_tags,
-        group=config.cl_method.upper(),
+        group=config.group,
         name=run_name,
         id=run_name,
     )
