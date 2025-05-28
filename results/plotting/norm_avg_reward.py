@@ -131,6 +131,8 @@ def plot():
         data, env_names = collect_runs(data_root, args.algo, method, args.arch,
                                        args.strategy, args.seq_len,
                                        args.seeds, args.metric, baselines)
+        print(data.shape, data)
+        exit(0)
         mu = gaussian_filter1d(np.nanmean(data, axis=0), sigma=args.sigma)
         sd = gaussian_filter1d(np.nanstd(data, axis=0), sigma=args.sigma)
         ci = CRIT[args.confidence] * sd / np.sqrt(data.shape[0])

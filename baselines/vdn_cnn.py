@@ -43,7 +43,7 @@ import uuid
 @dataclass
 class Config:
     total_timesteps: float = 5e6
-    num_envs: int = 32
+    num_envs: int = 64
     num_steps: int = 1
     hidden_size: int = 64
     eps_start: float = 1.0
@@ -63,16 +63,18 @@ class Config:
 
     rew_shaping_horizon: float = 2.5e6
     test_during_training: bool = True
-    test_interval: float = 0.05 #fraction 
+    test_interval: float = 0.1 #fraction 
     test_num_steps: int = 400
-    test_num_envs: int = 256 # number of episodes to average over
+    test_num_envs: int = 32
     eval_num_episodes: int = 10
     seed: int = 30
 
     # Sequence settings 
     seq_length: int = 2
     strategy: str = "random"
-    layouts: Optional[Sequence[str]] = field(default_factory=lambda: [])
+    layouts: Optional[Sequence[str]] = field(
+        default_factory=lambda: ["asymm_advantages", "smallest_kitchen", "cramped_room", 
+                                 "easy_layout", "square_arena", "no_cooperation"])
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
 
@@ -733,6 +735,62 @@ def main():
     rng, train_rng = jax.random.split(rng)
 
     runner_state = loop_over_envs(train_rng, train_state, train_envs, test_envs, buffer_state)
+
+# def record_gif_of_episode(config, train_state, env, network, env_idx=0, max_steps=300):
+#     rng = jax.random.PRNGKey(0)
+#     rng, env_rng = jax.random.split(rng)
+#     obs, state = env.reset(env_rng)
+#     done = False
+#     step_count = 0
+#     states = [state]
+
+#     while not done and step_count < max_steps:
+#         obs_dict = {}
+#         for agent_id, obs_v in obs.items():
+#             # Determine the expected raw shape for this agent.
+#             expected_shape = env.observation_space().shape
+#             # If the observation is unbatched, add a batch dimension.
+#             if obs_v.ndim == len(expected_shape):
+#                 obs_b = jnp.expand_dims(obs_v, axis=0)  # now (1, ...)
+#             else:
+#                 obs_b = obs_v
+#             if not config.use_cnn:
+#                 # Flatten the nonbatch dimensions.
+#                 obs_b = jnp.reshape(obs_b, (obs_b.shape[0], -1))
+#             obs_dict[agent_id] = obs_b
+
+#         actions = {}
+#         act_keys = jax.random.split(rng, env.num_agents)
+#         for i, agent_id in enumerate(env.agents):
+#             pi, _ = network.apply(train_state.params, obs_dict[agent_id], env_idx=env_idx)
+#             actions[agent_id] = jnp.squeeze(pi.sample(seed=act_keys[i]), axis=0)
+
+
+#         # Compute Q-values for all agents
+#         q_vals = jax.vmap(network.apply, in_axes=(None, 0))(
+#             train_state.params,
+#             batchify(obs, env.agents), 
+#         )  # (num_agents, num_envs, num_actions)
+
+
+#         # perform epsilon-greedy exploration
+#         eps = eps_scheduler(train_state.n_updates)
+#         _rngs = jax.random.split(rng_action, env.num_agents)
+#         new_action = jax.vmap(eps_greedy_exploration, in_axes=(0, 0, None, 0))(
+#             _rngs, q_vals, eps, batchify(avail_actions, env.agents)
+#         )
+#         actions = unbatchify(new_action, env.agents)
+
+#         rng, key_step = jax.random.split(rng)
+#         next_obs, next_state, reward, done_info, info = env.step(key_step, state, actions)
+#         done = done_info["__all__"]
+
+#         obs, state = next_obs, next_state
+#         step_count += 1
+#         states.append(state)
+
+#     return states
+
         
 
 if __name__ == "__main__":

@@ -28,7 +28,7 @@ from results.download.common import cli, want
 EVAL_PREFIX = "Scaled_returns/evaluation_"
 KEY_PATTERN = re.compile(rf"^{re.escape(EVAL_PREFIX)}(\d+)__(.+)_scaled$")
 TRAINING_KEY = "Scaled_returns/returned_episode_returns_scaled"
-
+TAG_ORDERING = ['shared_backbone', 'use_multihead', 'task_id']
 
 # ---------------------------------------------------------------------------
 # HELPERS
@@ -102,7 +102,7 @@ def main() -> None:
 
         strategy = cfg.get("strategy")
         seq_len = cfg.get("seq_length")
-        seed = max(cfg.get("seed", 1), 1)
+        seed = cfg.get("seed", 0)
         arch = "CNN" if cfg.get("use_cnn") else "MLP"
 
         # find eval keys as W&B actually logged them
@@ -111,8 +111,15 @@ def main() -> None:
             print(f"[warn] {run.name} has no Scaled_returns/ keys")
             continue
 
-        out_base = (base_workspace / args.output / algo / cl_method / arch /
-                    f"{strategy}_{seq_len}" / f"seed_{seed}")
+        tags = cfg.get("tags", [])
+        tag_path = Path()
+        for tag_substr in TAG_ORDERING:
+            for tag in tags:
+                if tag_substr in tag:
+                    tag_path /= tag
+
+        out_base = (base_workspace / args.output / algo / cl_method /
+                    f"{strategy}_{seq_len}" / arch / tag_path / f"seed_{seed}")
 
         # iterate keys, skipping existing files unless overwrite
         for key in discover_eval_keys(run):

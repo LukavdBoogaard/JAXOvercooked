@@ -44,7 +44,7 @@ class Config:
     update_epochs: int = 8
     num_minibatches: int = 8
     gamma: float = 0.99
-    gae_lambda: float = 0.957
+    gae_lambda: float = 0.95
     clip_eps: float = 0.2
     ent_coef: float = 0.01
     vf_coef: float = 0.5
@@ -128,11 +128,12 @@ def main():
 
     config = tyro.cli(Config)
 
-    method_map = dict(ewc=EWC(mode=config.ewc_mode, decay=config.ewc_decay),
-                      mas=MAS(),
-                      l2=L2())
+    if config.cl_method is not None:
+        method_map = dict(ewc=EWC(mode=config.ewc_mode, decay=config.ewc_decay),
+                        mas=MAS(),
+                        l2=L2())
 
-    cl = method_map[config.cl_method.lower()]
+        cl = method_map[config.cl_method.lower()]
 
     # generate a sequence of tasks
     config.env_kwargs, config.layout_name = generate_sequence(
@@ -140,9 +141,9 @@ def main():
         strategy=config.strategy,
         layout_names=config.layouts,
         seed=config.seed,
-        height_rng=(config.height_min, config.height_max),
-        width_rng=(config.width_min, config.width_max),
-        wall_density=config.wall_density,
+        # height_rng=(config.height_min, config.height_max),
+        # width_rng=(config.width_min, config.width_max),
+        # wall_density=config.wall_density,
     )
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")[:-3]
     network = "shared_mlp" if config.shared_backbone else "mlp"
@@ -688,8 +689,11 @@ def main():
                         loss_actor = loss_actor.mean()
                         entropy = pi.entropy().mean()
 
-                        # EWC penalty
-                        cl_penalty = cl.penalty(params, cl_state, config.reg_coef)
+                        if config.cl_method is not None:
+                            # EWC penalty
+                            cl_penalty = cl.penalty(params, cl_state, config.reg_coef)
+                        else:
+                            cl_penalty = jnp.zeros(())
 
                         total_loss = (loss_actor
                                       + config.vf_coef * value_loss
@@ -892,11 +896,13 @@ def main():
             runner_state, metric = train_on_environment(rng, train_state, env, cl_state, i)
             train_state = runner_state[0]
 
-            importance = cl.compute_importance(train_state.params, env, network, i, rng, config.use_cnn,
-                                               config.importance_episodes, config.importance_steps,
-                                               config.normalize_importance)
+            if config.cl_method is not None:
+                importance = cl.compute_importance(train_state.params, env, network, i, rng, config.use_cnn,
+                                                config.importance_episodes, config.importance_steps,
+                                                config.normalize_importance)
 
-            cl_state = cl.update_state(cl_state, train_state.params, importance)
+                cl_state = cl.update_state(cl_state, train_state.params, importance)
+            
 
             if config.record_gif:
                 # Generate & log a GIF after finishing task i
@@ -936,7 +942,11 @@ def main():
 
     # Run the model
     rng, train_rng = jax.random.split(rng)
-    cl_state = cl.init_state(train_state.params, config.regularize_critic, config.regularize_heads)
+
+    if config.cl_method is not None:
+        cl_state = cl.init_state(train_state.params, config.regularize_critic, config.regularize_heads)
+    else:
+        cl_state = jnp.zeros(())
 
     # apply the loop_over_envs function to the environments
     loop_over_envs(train_rng, train_state, cl_state, envs)
