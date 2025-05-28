@@ -11,6 +11,7 @@ FORBIDDEN_TAGS = ['TEST', 'LOCAL']
 TAG_TO_FOLDER = {}
 
 
+
 def main(args: argparse.Namespace) -> None:
     api = wandb.Api()
     # Project is specified by <entity/project-name>
@@ -49,11 +50,11 @@ def store_data(run: Run, args: argparse.Namespace) -> None:
     # Construct folder path for each configuration
     # folder_path = os.path.join(args.output, f"{TAG_TO_FOLDER[tag]}", algo, cl_method, f"{strategy}_{seq_length}")
     base_dir = Path(__file__).resolve().parent.parent
-    folder_path = os.path.join(base_dir, args.output, algo, cl_method, arch, f"{strategy}_{seq_length}", f"seed_{seed}")
+    folder_path = os.path.join(base_dir, args.output, run.group, algo, cl_method, arch, f"{strategy}_{seq_length}", f"seed_{seed}")
     os.makedirs(folder_path, exist_ok=True)  # Ensure the directory exists
 
     # Filename based on metric
-    file_name = f"summary.csv"
+    file_name = f"{run.name}_summary.csv"
     file_path = os.path.join(folder_path, file_name)
 
     # If the file already exists and we don't want to overwrite, skip

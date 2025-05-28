@@ -43,7 +43,7 @@ import uuid
 @dataclass
 class Config:
     total_timesteps: float = 5e6
-    num_envs: int = 32
+    num_envs: int = 64
     num_steps: int = 1
     hidden_size: int = 64
     eps_start: float = 1.0

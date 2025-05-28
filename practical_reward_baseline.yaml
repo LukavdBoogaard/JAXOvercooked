@@ -49,10 +49,10 @@
 0__forced_teamwork:
   avg_rewards: 0.0
   max_rewards: 0.0
-0__most_efficient:
+0__vertical_corridors:
   avg_rewards: 390.0
   max_rewards: 400.0
-0__most_efficient_horizontal:
+0__horizontal_corridors:
   avg_rewards: 316.0
   max_rewards: 340.0
 0__no_cooperation:
@@ -76,3 +76,4 @@
 0__square_arena:
   avg_rewards: 253.0
   max_rewards: 260.0
+  
