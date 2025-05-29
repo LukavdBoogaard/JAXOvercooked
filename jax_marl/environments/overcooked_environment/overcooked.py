@@ -71,10 +71,11 @@ class Overcooked(MultiAgentEnv):
             self,
             layout: dict | None = None,
             layout_name="cramped_room",
-            random_reset: bool = False,
+            random_reset: bool = True,
             max_steps: int = 400,
             task_id: int = 0,
             num_agents: int = 2,
+            start_idx: tuple[int, ...] | None = None,
     ):
         super().__init__(num_agents=num_agents)
 
@@ -90,6 +91,7 @@ class Overcooked(MultiAgentEnv):
         self.layout = layout if layout is not None else FrozenDict(layouts["cramped_room"])
         self.layout_name = layout_name
         self.agents = [f"agent_{i}" for i in range(num_agents)]
+        self.start_idx = None if start_idx is None else jnp.array(start_idx, jnp.uint32)
 
         self.action_set = jnp.array(list(Actions), dtype=jnp.uint8)
 
@@ -303,8 +305,8 @@ class Overcooked(MultiAgentEnv):
         pot_x, pot_y = state.pot_pos[:, 0], state.pot_pos[:, 1]
 
         def _tick(pot):
-            status   = pot[-1]
-            cooking  = (status <= POT_FULL_STATUS) & (status > POT_READY_STATUS)
+            status = pot[-1]
+            cooking = (status <= POT_FULL_STATUS) & (status > POT_READY_STATUS)
             return pot.at[-1].set(jnp.where(cooking, status - 1, status))
 
         pots = jax.vmap(_tick)(maze_map[pad + pot_y, pad + pot_x])
@@ -373,7 +375,6 @@ class Overcooked(MultiAgentEnv):
             {'shaped_reward': shaped_dict},
         )
 
-
     def reset(
             self,
             key: chex.PRNGKey,
@@ -396,34 +397,57 @@ class Overcooked(MultiAgentEnv):
         all_pos = np.arange(h * w, dtype=jnp.uint32)
 
         wall_idx = layout.get("wall_idx")
-        occupied_mask = jnp.zeros_like(all_pos).at[wall_idx].set(1)
+        occupied = jnp.zeros_like(all_pos).at[wall_idx].set(1)
 
         # -------------- choose starting squares ----------------------
-        if not random_reset and "agent_idx" in layout:
-            # layout may have more start squares than requested agents – trim
-            layout_idx = layout["agent_idx"][: self.num_agents]
-            agent_idx = layout_idx
-        else:                                           # fully random reset
-            key, subkey = jax.random.split(key)
-            agent_idx = jax.random.choice(
-                subkey,
-                all_pos,
-                shape=(self.num_agents,),
-                p=(~occupied_mask).astype(jnp.float32),
-                replace=False,
+        #  Priority:
+        #  1. user-supplied `start_idx`
+        #  2. if random_reset → ignore layout, sample every chef uniformly
+        #  3. layout-provided squares + (if n_agents > layout) sample the remainder
+        #
+        #  all samples are drawn only from free counter tiles (no walls / fixtures)
+        #
+        provided_idx = (
+            self.start_idx  # 1️⃣ explicit hard-coded spawn
+            if self.start_idx is not None
+            else (  # 2️⃣ fully random episode
+                jnp.array([], jnp.uint32)
+                if self.random_reset
+                else layout.get("agent_idx", jnp.array([], jnp.uint32))  # 3️⃣ layout default
             )
+        )
 
-        wall_map = occupied_mask.reshape(h, w).astype(jnp.bool_)
+        n_provided = provided_idx.shape[0]
+        n_missing = self.num_agents - n_provided
+        agent_idx = provided_idx[: self.num_agents]
 
-        # Reset agent position + dir
-        # key, subkey = jax.random.split(key)
-        # agent_idx = jax.random.choice(subkey, all_pos, shape=(num_agents,),
-        #                               p=(~occupied_mask.astype(jnp.bool_)).astype(jnp.float32), replace=False)
+        if n_missing > 0:
+            # ————————————————— mask out forbidden squares —————————————————
+            occupied_mask = occupied.at[agent_idx].set(1)
+
+            fixture_idx = (layout["onion_pile_idx"]
+                           | layout["plate_pile_idx"]
+                           | layout["goal_idx"]
+                           | layout["pot_idx"])
+            occupied_mask = occupied_mask.at[fixture_idx].set(1)
+
+            # ————————————————— sample the remainder ——————————————————————
+            key, sub = jax.random.split(key)
+            extra_idx = jax.random.choice(
+                sub,
+                all_pos,
+                shape=(n_missing,),
+                replace=False,
+                p=(~occupied_mask).astype(jnp.float32),
+            )
+            agent_idx = jnp.concatenate([agent_idx, extra_idx], axis=0)
+
+        wall_map = occupied.reshape(h, w).astype(jnp.bool_)
 
         # Replace with fixed layout if applicable. Also randomize if agent position not provided
         # agent_idx = random_reset * agent_idx + (1 - random_reset) * layout.get("agent_idx", agent_idx)
         agent_pos = jnp.array([agent_idx % w, agent_idx // w], dtype=jnp.uint32).transpose()  # dim = n_agents x 2
-        occupied_mask = occupied_mask.at[agent_idx].set(1)
+        occupied = occupied.at[agent_idx].set(1)
 
         key, subkey = jax.random.split(key)
         agent_dir_idx = jax.random.choice(subkey, jnp.arange(len(DIR_TO_VEC), dtype=jnp.int32), shape=(num_agents,))
@@ -480,9 +504,11 @@ class Overcooked(MultiAgentEnv):
         key, subkey = jax.random.split(key)
         possible_items = jnp.array([OBJECT_TO_INDEX['empty'], OBJECT_TO_INDEX['onion'],
                                     OBJECT_TO_INDEX['plate'], OBJECT_TO_INDEX['dish']])
-        random_agent_inv = jax.random.choice(subkey, possible_items, shape=(num_agents,), replace=True)
-        agent_inv = random_reset * random_agent_inv + \
-                    (1 - random_reset) * jnp.array([OBJECT_TO_INDEX['empty'], OBJECT_TO_INDEX['empty']])
+
+        # inventories: length == num_agents
+        default_inv = jnp.full((self.num_agents,), OBJECT_TO_INDEX["empty"])
+        random_agent_inv = jax.random.choice(subkey, possible_items, shape=(self.num_agents,), replace=True)
+        agent_inv = jnp.where(self.random_reset, random_agent_inv, default_inv)
 
         state = State(
             agent_pos=agent_pos,
@@ -501,7 +527,6 @@ class Overcooked(MultiAgentEnv):
         obs = self.get_obs(state)
 
         return lax.stop_gradient(obs), lax.stop_gradient(state)
-
 
     def process_interact(
             self,
@@ -638,12 +663,10 @@ class Overcooked(MultiAgentEnv):
         reward = jnp.array(successful_delivery, dtype=float) * DELIVERY_REWARD
         return maze_map, inventory, reward, shaped_reward
 
-
     def is_terminal(self, state: State) -> bool:
         """Check whether state is terminal."""
         done_steps = state.time >= self.max_steps
         return done_steps | state.terminal
-
 
     def get_eval_solved_rate_fn(self):
         def _fn(ep_stats):
@@ -651,18 +674,15 @@ class Overcooked(MultiAgentEnv):
 
         return _fn
 
-
     @property
     def name(self) -> str:
         """Environment name."""
         return self.layout_name
 
-
     @property
     def num_actions(self) -> int:
         """Number of actions possible in environment."""
         return len(self.action_set)
-
 
     def action_space(self, agent_id="") -> spaces.Discrete:
         """Action space of the environment. Agent_id not used since action_space is uniform for all agents"""
@@ -671,11 +691,9 @@ class Overcooked(MultiAgentEnv):
             dtype=jnp.uint32
         )
 
-
     def observation_space(self) -> spaces.Box:
         """Observation space of the environment."""
         return spaces.Box(0, 255, self.obs_shape)
-
 
     def state_space(self) -> spaces.Dict:
         """State space of the environment."""
@@ -690,7 +708,6 @@ class Overcooked(MultiAgentEnv):
             "time": spaces.Discrete(self.max_steps),
             "terminal": spaces.Discrete(2),
         })
-
 
     def max_steps(self) -> int:
         return self.max_steps

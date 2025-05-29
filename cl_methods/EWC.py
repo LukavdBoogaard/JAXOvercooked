@@ -129,7 +129,7 @@ def compute_fisher(params: FrozenDict,
         fisher_acc = jax.tree_util.tree_map(jnp.add, fisher_acc, g2)
 
         # env step (batched over agents internally by env)
-        act_dict = {"agent_0": actions[0], "agent_1": actions[1]}
+        act_dict = { agent: actions[i] for i, agent in enumerate(env.agents) }
         obs_next, env_state, _, done_info, _ = env.step(key_step, env_state, act_dict)
         done = done_info["__all__"]
 
