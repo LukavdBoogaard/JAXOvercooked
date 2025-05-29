@@ -71,7 +71,7 @@ class Overcooked(MultiAgentEnv):
             self,
             layout: dict | None = None,
             layout_name="cramped_room",
-            random_reset: bool = True,
+            random_reset: bool = False,
             max_steps: int = 400,
             task_id: int = 0,
             num_agents: int = 2,
@@ -432,13 +432,25 @@ class Overcooked(MultiAgentEnv):
             occupied_mask = occupied_mask.at[fixture_idx].set(1)
 
             # ————————————————— sample the remainder ——————————————————————
+            # build a boolean “can-spawn-here” mask
+            blocked = occupied_mask.at[(
+                       layout["onion_pile_idx"]
+                       | layout["plate_pile_idx"]
+                       | layout["goal_idx"]
+                       | layout["pot_idx"]
+                   )].set(1)
+
             key, sub = jax.random.split(key)
+
+            weights = (~blocked).astype(jnp.float32)      # 1 = floor, 0 = not allowed
+            weights = weights / weights.sum()             # normalise for choice()
+
             extra_idx = jax.random.choice(
-                sub,
-                all_pos,
-                shape=(n_missing,),
+                   sub,                                       # PRNG
+                   all_pos,                                   # *static* 1-D index vector
+                   shape=(n_missing,),
                 replace=False,
-                p=(~occupied_mask).astype(jnp.float32),
+                p=weights,                                 # zero-probability ⇒ never picked
             )
             agent_idx = jnp.concatenate([agent_idx, extra_idx], axis=0)
 
