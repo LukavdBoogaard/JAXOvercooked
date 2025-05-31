@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 
+from cl_methods.FT import FT
 from cl_methods.L2 import L2
 from cl_methods.MAS import MAS
 
@@ -85,11 +86,11 @@ class Config:
     gif_len: int = 300
 
     # ─── random‐layout generator knobs ───────────────────────────────────────
-    height_min: int = 5  # minimum layout height
-    height_max: int = 10  # maximum layout height
-    width_min: int = 5  # minimum layout width
-    width_max: int = 10  # maximum layout width
-    wall_density: float = 0.15  # fraction of internal tiles that are walls
+    height_min: int = 6  # minimum layout height
+    height_max: int = 8  # maximum layout height
+    width_min: int = 6  # minimum layout width
+    width_max: int = 8  # maximum layout width
+    wall_density: float = 0.25  # fraction of internal tiles that are untraversable
 
     anneal_lr: bool = False
     seed: int = 30
@@ -108,7 +109,7 @@ class Config:
 
 
 ############################
-##### MAIN FUNCTION    #####
+######  MAIN FUNCTION  #####
 ############################
 
 
@@ -123,7 +124,8 @@ def main():
 
     method_map = dict(ewc=EWC(mode=config.ewc_mode, decay=config.ewc_decay),
                       mas=MAS(),
-                      l2=L2())
+                      l2=L2(),
+                      ft=FT())
 
     cl = method_map[config.cl_method.lower()]
 
@@ -874,6 +876,8 @@ def main():
 
         visualizer = OvercookedVisualizer(num_agents=temp_env.num_agents)
         # Evaluate the model on the first environments before training
+
+        evaluation_matrix = None
         if config.evaluation:
             evaluation_matrix = jnp.zeros(((len(envs) + 1), len(envs)))
             rng, eval_rng = jax.random.split(rng)
@@ -900,16 +904,16 @@ def main():
             if config.evaluation:
                 # Evaluate at the end of training to get the average performance of the task right after training
                 evaluations = evaluate_model(train_state, rng)
-            evaluation_matrix = evaluation_matrix.at[i, :].set(evaluations)
+                evaluation_matrix = evaluation_matrix.at[i, :].set(evaluations)
 
             # save the model
-            path = f"checkpoints/overcooked/EWC/{run_name}/model_env_{i + 1}"
+            path = f"{repo_root}/checkpoints/overcooked/{config.cl_method}/{run_name}/model_env_{i + 1}"
             save_params(path, train_state)
 
             if config.evaluation:
                 # calculate the forward transfer and backward transfer
                 show_heatmap_bwt(evaluation_matrix, run_name)
-            show_heatmap_fwt(evaluation_matrix, run_name)
+                show_heatmap_fwt(evaluation_matrix, run_name)
 
     def save_params(path, train_state):
         '''

@@ -42,6 +42,7 @@ def generate_sequence(
         strategy: str = "random",
         layout_names: Sequence[str] | None = None,
         seed: int | None = None,
+        num_agents: int = 2,
         height_rng: Tuple[int, int] = (5, 10),
         width_rng: Tuple[int, int] = (5, 10),
         wall_density: float = 0.15,
@@ -83,6 +84,7 @@ def generate_sequence(
         base = seed if seed is not None else random.randrange(1 << 30)
         for i in range(sequence_length):
             _, layout = generate_random_layout(
+                num_agents=num_agents,
                 height_rng=height_rng,
                 width_rng=width_rng,
                 wall_density=wall_density,
@@ -90,6 +92,7 @@ def generate_sequence(
             )
             env_kwargs.append({"layout": layout})  # already a FrozenDict
             names.append(f"gen_{i}")
+            print(f"Generated layout {i}: {names[-1]}")
 
     else:
         raise NotImplementedError(f"Unknown strategy '{strategy}'")

@@ -130,6 +130,7 @@ def main():
 
     # generate a sequence of tasks
     config.env_kwargs, config.layout_name = generate_sequence(
+        num_agents=config.num_agents,
         sequence_length=config.seq_length,
         strategy=config.strategy,
         layout_names=config.layouts,
@@ -900,7 +901,7 @@ def main():
             evaluation_matrix = evaluation_matrix.at[i, :].set(evaluations)
 
             # save the model
-            path = f"checkpoints/overcooked/EWC/{run_name}/model_env_{i + 1}"
+            path = f"{repo_root}/checkpoints/overcooked/{config.cl_method}/{run_name}/model_env_{i + 1}"
             save_params(path, train_state)
 
             if config.evaluation:
