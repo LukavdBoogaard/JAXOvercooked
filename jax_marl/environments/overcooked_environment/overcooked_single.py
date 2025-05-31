@@ -1,7 +1,7 @@
 import jax.numpy as jnp
 from jax import lax
 
-from jax_marl.environments.overcooked_environment.overcooked import (
+from jax_marl.environments.overcooked_environment.overcooked_n_agent import (
     Overcooked as BaseOvercooked)
 
 

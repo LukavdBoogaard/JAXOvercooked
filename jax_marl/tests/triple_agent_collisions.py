@@ -8,7 +8,7 @@ import numpy as np
 from flax.core import FrozenDict
 
 from jax_marl.environments.overcooked_environment.layouts import cramped_room
-from jax_marl.environments.overcooked_environment.overcooked import Overcooked
+from jax_marl.environments.overcooked_environment.overcooked_n_agent import Overcooked
 from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
 
 # ---------------------------------------------------------------------
