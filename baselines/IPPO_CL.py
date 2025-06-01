@@ -16,12 +16,12 @@ from flax.training.train_state import TrainState
 from jax_marl.registration import make
 from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
 from jax_marl.wrappers.baselines import LogWrapper
+from jax_marl.environments.overcooked_environment.overcooked_upper_bound import estimate_max_soup
 from architectures.shared_mlp import ActorCritic as MLPActorCritic
 from architectures.cnn import ActorCritic as CNNActorCritic
 from baselines.utils import *
 from cl_methods.EWC import EWC
 
-from omegaconf import OmegaConf
 import wandb
 from functools import partial
 from dataclasses import dataclass, field
@@ -77,8 +77,8 @@ class Config:
     strategy: str = "random"
     layouts: Optional[Sequence[str]] = field(default_factory=lambda: [])
     env_kwargs: Optional[Sequence[dict]] = None
-    layout_name: Optional[Sequence[str]] = None
     evaluation: bool = True
+    eval_forward_transfer: bool = False
     record_gif: bool = True
     log_interval: int = 75
     eval_num_steps: int = 1000
@@ -130,7 +130,7 @@ def main():
     cl = method_map[config.cl_method.lower()]
 
     # generate a sequence of tasks
-    config.env_kwargs, config.layout_name = generate_sequence(
+    config.env_kwargs, layout_names = generate_sequence(
         sequence_length=config.seq_length,
         strategy=config.strategy,
         layout_names=config.layouts,
@@ -140,7 +140,7 @@ def main():
         wall_density=config.wall_density,
     )
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")[:-3]
-    network = "shared_mlp" if config.shared_backbone else "mlp"
+    network = "cnn" if config.use_cnn else "mlp"
     run_name = f'{config.alg_name}_{config.cl_method}_{network}_seq{config.seq_length}_{config.strategy}_seed_{config.seed}_{timestamp}'
     exp_dir = os.path.join("runs", run_name)
 
@@ -291,6 +291,7 @@ def main():
                 obs: Any
                 done: bool
                 total_reward: float
+                soup: float
                 step_count: int
 
             def cond_fun(state: EvalState):
@@ -308,7 +309,7 @@ def main():
                 returns the updated state
                 '''
 
-                key, state_env, obs, _, total_reward, step_count = state
+                key, state_env, obs, _, total_reward, soups_this_step, step_count = state
                 key, key_a0, key_a1, key_s = jax.random.split(key, 4)
 
                 # ***Create a batched copy for the network only.***
@@ -348,15 +349,16 @@ def main():
                 next_obs, next_state, reward, done_step, info = env.step(key_s, state_env, actions)
                 done = done_step["__all__"]
                 reward = reward["agent_0"]  # Common reward
+                soup = state.soup + soups_this_step
                 total_reward += reward
                 step_count += 1
 
-                return EvalState(key, next_state, next_obs, done, total_reward, step_count)
+                return EvalState(key, next_state, next_obs, done, total_reward, soup, step_count)
 
             # Initialize
             key, key_s = jax.random.split(key_r)
             obs, state = env.reset(key_s)
-            init_state = EvalState(key, state, obs, False, 0.0, 0)
+            init_state = EvalState(key, state, obs, False, 0.0, 0.0, 0)
 
             # Run while loop
             final_state = jax.lax.while_loop(
@@ -365,10 +367,11 @@ def main():
                 init_val=init_state
             )
 
-            return final_state.total_reward
+            return final_state.total_reward, final_state.soup
 
         # Loop through all environments
         all_avg_rewards = []
+        all_avg_soups = []
 
         envs = pad_observation_space()
 
@@ -376,22 +379,29 @@ def main():
             env = make(config.env_name, layout=env)  # Create the environment
 
             # Run k episodes
-            all_rewards = jax.vmap(lambda k: run_episode_while(env, k, config.eval_num_steps))(
+            all_rewards, all_soups = jax.vmap(lambda k: run_episode_while(env, k, config.eval_num_steps))(
                 jax.random.split(key, config.eval_num_episodes)
             )
 
             avg_reward = jnp.mean(all_rewards)
+            avg_soups = jnp.mean(all_soups)
             all_avg_rewards.append(avg_reward)
+            all_avg_soups.append(avg_soups)
 
-        return all_avg_rewards
+        return all_avg_rewards, all_avg_soups
 
     padded_envs = pad_observation_space()
 
     envs = []
-    for env_layout in padded_envs:
-        env = make(config.env_name, layout=env_layout)
+    env_names = []
+    max_soup_dict = {}
+    for i, env_layout in enumerate(padded_envs):
+        env = make(config.env_name, layout=env_layout, layout_name=layout_names[i], task_id=i)
         env = LogWrapper(env, replace_info=False)
+        env_name = env.layout_name
         envs.append(env)
+        env_names.append(env_name)
+        max_soup_dict[env_name] = estimate_max_soup(env_layout, env.max_steps, n_agents=env.num_agents)
 
     # set extra config parameters based on the environment
     temp_env = envs[0]
@@ -439,12 +449,6 @@ def main():
         tx=tx
     )
 
-    # Load the practical baseline yaml file as a dictionary
-    repo_root = Path(__file__).resolve().parent.parent
-    yaml_loc = os.path.join(repo_root, "practical_reward_baseline.yaml")
-    with open(yaml_loc, "r") as f:
-        practical_baselines = OmegaConf.load(f)
-
     @partial(jax.jit, static_argnums=(2, 4))
     def train_on_environment(rng, train_state, env, cl_state, env_idx):
         '''
@@ -453,7 +457,7 @@ def main():
         returns the runner state and the metrics
         '''
 
-        print(f"Training on environment: {config.layout_name[env_idx]}")
+        print(f"Training on environment: {env.task_id} - {env.layout_name}")
 
         # How many steps to explore the environment with random actions
         exploration_steps = int(config.explore_fraction * config.total_timesteps)
@@ -759,85 +763,80 @@ def main():
 
             # unpack update_state
             train_state, traj_batch, advantages, targets, steps_for_env, rng = update_state
-            metric = info
             current_timestep = update_step * config.num_steps * config.num_envs
-            metric = jax.tree_util.tree_map(lambda x: x.mean(), metric)
+            metrics = jax.tree_util.tree_map(lambda x: x.mean(), info)
 
             # General section
             # Update the step counter
             update_step += 1
             mean_explore = jnp.mean(info["explore"])
 
-            metric["General/env_index"] = env_idx
-            metric["General/explore"] = mean_explore
-            metric["General/update_step"] = update_step
-            metric["General/steps_for_env"] = steps_for_env
-            metric["General/env_step"] = update_step * config.num_steps * config.num_envs
+            metrics["General/env_index"] = env_idx
+            metrics["General/explore"] = mean_explore
+            metrics["General/update_step"] = update_step
+            metrics["General/steps_for_env"] = steps_for_env
+            metrics["General/env_step"] = update_step * config.num_steps * config.num_envs
             if config.anneal_lr:
-                metric["General/learning_rate"] = linear_schedule(
+                metrics["General/learning_rate"] = linear_schedule(
                     update_step * config.num_minibatches * config.update_epochs)
             else:
-                metric["General/learning_rate"] = config.lr
+                metrics["General/learning_rate"] = config.lr
 
             # Losses section
             total_loss, (value_loss, loss_actor, entropy, reg_loss) = loss_info
-            metric["Losses/total_loss"] = total_loss.mean()
-            metric["Losses/value_loss"] = value_loss.mean()
-            metric["Losses/actor_loss"] = loss_actor.mean()
-            metric["Losses/entropy"] = entropy.mean()
-            metric["Losses/reg_loss"] = reg_loss.mean()
+            metrics["Losses/total_loss"] = total_loss.mean()
+            metrics["Losses/value_loss"] = value_loss.mean()
+            metrics["Losses/actor_loss"] = loss_actor.mean()
+            metrics["Losses/entropy"] = entropy.mean()
+            metrics["Losses/reg_loss"] = reg_loss.mean()
+
+            # Soup section
+            agent_0_soup = info["soups"]["agent_0"].mean()
+            agent_1_soup = info["soups"]["agent_1"].mean()
+            soup_delivered = agent_0_soup + agent_1_soup
+            metrics["Soup/agent_0_soup"] = agent_0_soup
+            metrics["Soup/agent_1_soup"] = agent_1_soup
+            metrics["Soup/total"] = soup_delivered
+            metrics["Soup/scaled"] = soup_delivered / max_soup_dict[env_names[env_idx]]
+            metrics.pop('soups', None)
 
             # Rewards section
-            metric["General/shaped_reward_agent0"] = metric["shaped_reward"]["agent_0"]
-            metric["General/shaped_reward_agent1"] = metric["shaped_reward"]["agent_1"]
-            metric.pop('shaped_reward', None)
-            metric["General/shaped_reward_annealed_agent0"] = metric[
-                                                                  "General/shaped_reward_agent0"] * rew_shaping_anneal(
+            metrics["General/shaped_reward_agent0"] = metrics["shaped_reward"]["agent_0"]
+            metrics["General/shaped_reward_agent1"] = metrics["shaped_reward"]["agent_1"]
+            metrics.pop('shaped_reward', None)
+            metrics["General/shaped_reward_annealed_agent0"] = metrics[
+                                                                   "General/shaped_reward_agent0"] * rew_shaping_anneal(
                 current_timestep)
-            metric["General/shaped_reward_annealed_agent1"] = metric[
-                                                                  "General/shaped_reward_agent1"] * rew_shaping_anneal(
+            metrics["General/shaped_reward_annealed_agent1"] = metrics[
+                                                                   "General/shaped_reward_agent1"] * rew_shaping_anneal(
                 current_timestep)
 
             # Advantages and Targets section
-            metric["Advantage_Targets/advantages"] = advantages.mean()
-            metric["Advantage_Targets/targets"] = targets.mean()
-
-            # Evaluation section
-            if config.evaluation:
-                for i in range(len(config.layout_name)):
-                    metric[f"Evaluation/{config.layout_name[i]}"] = jnp.nan
-                    metric[f"Scaled returns/evaluation_{config.layout_name[i]}_scaled"] = jnp.nan
+            metrics["Advantage_Targets/advantages"] = advantages.mean()
+            metrics["Advantage_Targets/targets"] = targets.mean()
 
             def evaluate_and_log(rng, update_step):
                 rng, eval_rng = jax.random.split(rng)
                 train_state_eval = jax.tree_util.tree_map(lambda x: x.copy(), train_state)
 
-                def log_metrics(metric, update_step):
+                def log_metrics(metrics, update_step):
                     if config.evaluation:
-                        evaluations = evaluate_model(train_state_eval, eval_rng)
-                        metric = compute_normalized_evaluation_rewards(evaluations,
-                                                                       config.layout_name,
-                                                                       practical_baselines,
-                                                                       metric)
+                        avg_rewards, avg_soups = evaluate_model(train_state_eval, eval_rng)
+                        metrics = add_eval_metrics(avg_rewards, avg_soups, env_names, max_soup_dict, metrics)
 
                     def callback(args):
-                        metric, update_step, env_counter = args
+                        metrics, update_step, env_counter = args
                         real_step = (int(env_counter) - 1) * config.num_updates + int(update_step)
-
-                        metric = compute_normalized_returns(config.layout_name,
-                                                            practical_baselines,
-                                                            metric,
-                                                            env_counter)
-                        for key, value in metric.items():
+                        for key, value in metrics.items():
                             writer.add_scalar(key, value, real_step)
 
-                    jax.experimental.io_callback(callback, None, (metric, update_step, env_idx + 1))
+                    jax.experimental.io_callback(callback, None, (metrics, update_step, env_idx + 1))
                     return None
 
-                def do_not_log(metric, update_step):
+                def do_not_log(metrics, update_step):
                     return None
 
-                jax.lax.cond((update_step % config.log_interval) == 0, log_metrics, do_not_log, metric, update_step)
+                jax.lax.cond((update_step % config.log_interval) == 0, log_metrics, do_not_log, metrics, update_step)
 
             # Evaluate the model and log the metrics
             evaluate_and_log(rng=rng, update_step=update_step)
@@ -845,7 +844,7 @@ def main():
             rng = update_state[-1]
             runner_state = (train_state, env_state, last_obs, update_step, steps_for_env, rng)
 
-            return runner_state, metric
+            return runner_state, metrics
 
         rng, train_rng = jax.random.split(rng)
 
@@ -853,15 +852,15 @@ def main():
         runner_state = (train_state, env_state, obsv, 0, 0, train_rng)
 
         # apply the _update_step function a series of times, while keeping track of the state
-        runner_state, metric = jax.lax.scan(
+        runner_state, metrics = jax.lax.scan(
             f=_update_step,
             init=runner_state,
             xs=None,
             length=config.num_updates
         )
 
-        # Return the runner state after the training loop, and the metric arrays
-        return runner_state, metric
+        # Return the runner state after the training loop, and the metrics arrays
+        return runner_state, metrics
 
     def loop_over_envs(rng, train_state, cl_state, envs):
         '''
@@ -875,10 +874,9 @@ def main():
         rng, *env_rngs = jax.random.split(rng, len(envs) + 1)
 
         visualizer = OvercookedVisualizer(num_agents=temp_env.num_agents)
-        # Evaluate the model on the first environments before training
 
         evaluation_matrix = None
-        if config.evaluation:
+        if config.eval_forward_transfer:
             evaluation_matrix = jnp.zeros(((len(envs) + 1), len(envs)))
             rng, eval_rng = jax.random.split(rng)
             evaluations = evaluate_model(train_state, eval_rng)
@@ -886,7 +884,7 @@ def main():
 
         for i, (rng, env) in enumerate(zip(env_rngs, envs)):
             # --- Train on environment i using the *current* ewc_state ---
-            runner_state, metric = train_on_environment(rng, train_state, env, cl_state, i)
+            runner_state, metrics = train_on_environment(rng, train_state, env, cl_state, i)
             train_state = runner_state[0]
 
             importance = cl.compute_importance(train_state.params, env, network, i, rng, config.use_cnn,
@@ -897,20 +895,21 @@ def main():
 
             if config.record_gif:
                 # Generate & log a GIF after finishing task i
-                env_name = config.layout_name[i]
+                env_name = f"{i}__{env.layout_name}"
                 states = record_gif_of_episode(config, train_state, env, network, env_idx=i, max_steps=config.gif_len)
                 visualizer.animate(states, agent_view_size=5, task_idx=i, task_name=env_name, exp_dir=exp_dir)
 
-            if config.evaluation:
+            if config.eval_forward_transfer:
                 # Evaluate at the end of training to get the average performance of the task right after training
                 evaluations = evaluate_model(train_state, rng)
                 evaluation_matrix = evaluation_matrix.at[i, :].set(evaluations)
 
             # save the model
+            repo_root = Path(__file__).resolve().parent.parent
             path = f"{repo_root}/checkpoints/overcooked/{config.cl_method}/{run_name}/model_env_{i + 1}"
             save_params(path, train_state)
 
-            if config.evaluation:
+            if config.eval_forward_transfer:
                 # calculate the forward transfer and backward transfer
                 show_heatmap_bwt(evaluation_matrix, run_name)
                 show_heatmap_fwt(evaluation_matrix, run_name)

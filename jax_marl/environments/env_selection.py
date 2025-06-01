@@ -98,6 +98,6 @@ def generate_sequence(
         raise NotImplementedError(f"Unknown strategy '{strategy}'")
 
     # prefix with index so logs stay ordered
-    names = [f"{i}__{n}" for i, n in enumerate(names)]
-    print("Selected layouts:", names)
+    ordered_names = [f"{i}__{n}" for i, n in enumerate(names)]
+    print("Selected layouts:", ordered_names)
     return env_kwargs, names

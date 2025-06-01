@@ -140,7 +140,7 @@ def main():
         wall_density=config.wall_density,
     )
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")[:-3]
-    network = "shared_mlp" if config.shared_backbone else "mlp"
+    network = "cnn" if config.use_cnn else "mlp"
     run_name = f'{config.alg_name}_{config.cl_method}_{network}_seq{config.seq_length}_{config.strategy}_seed_{config.seed}_{timestamp}'
     exp_dir = os.path.join("runs", run_name)
 
@@ -811,19 +811,19 @@ def main():
                 def log_metrics(metric, update_step):
                     if config.evaluation:
                         evaluations = evaluate_model(train_state_eval, eval_rng)
-                        metric = compute_normalized_evaluation_rewards(evaluations,
-                                                                       config.layout_name,
-                                                                       practical_baselines,
-                                                                       metric)
+                        metric = add_eval_metrics(evaluations,
+                                                  config.layout_name,
+                                                  practical_baselines,
+                                                  metric)
 
                     def callback(args):
                         metric, update_step, env_counter = args
                         real_step = (int(env_counter) - 1) * config.num_updates + int(update_step)
 
-                        metric = compute_normalized_returns(config.layout_name,
-                                                            practical_baselines,
-                                                            metric,
-                                                            env_counter)
+                        metric = normalize_soup(config.layout_name,
+                                                practical_baselines,
+                                                metric,
+                                                env_counter)
                         for key, value in metric.items():
                             writer.add_scalar(key, value, real_step)
 

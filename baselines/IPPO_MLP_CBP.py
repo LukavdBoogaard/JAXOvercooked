@@ -757,10 +757,10 @@ def main():
                 def log_metrics(metric, update_step):
                     if config.evaluation:
                         evaluations = evaluate_model(train_state_eval, eval_rng)
-                        metric = compute_normalized_evaluation_rewards(evaluations, 
-                                                            config.layout_name, 
-                                                            practical_baselines, 
-                                                            metric)
+                        metric = add_eval_metrics(evaluations,
+                                                  config.layout_name,
+                                                  practical_baselines,
+                                                  metric)
                     
                     # params = jax.tree_util.tree_map(lambda x: x, train_state_eval.params)  # ["params"])
                     params = train_state_eval.params
@@ -770,10 +770,10 @@ def main():
                         metric, update_step, env_counter = args
                         real_step = (int(env_counter)-1) * config.num_updates + int(update_step)
 
-                        metric = compute_normalized_returns(config.layout_name, 
-                                                            practical_baselines, 
-                                                            metric, 
-                                                            env_counter)
+                        metric = normalize_soup(config.layout_name,
+                                                practical_baselines,
+                                                metric,
+                                                env_counter)
                         for key, value in metric.items():
                             writer.add_scalar(key, value, real_step)
 

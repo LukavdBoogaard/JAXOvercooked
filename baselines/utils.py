@@ -194,66 +194,12 @@ def show_heatmap_fwt(matrix, run_name, save_folder="heatmap_images"):
     plt.close()
 
 
-def compute_normalized_evaluation_rewards(evaluations, layout_names, practical_baselines, metric):
-    """Normalize evaluation rewards using JAX-friendly operations"""
+def add_eval_metrics(avg_rewards, avg_soups, layout_names, max_soup_dict, metrics):
     for i, layout_name in enumerate(layout_names):
-        # Record raw evaluation score
-        metric[f"Evaluation/{layout_name}"] = evaluations[i]
-
-        # Extract the base layout name
-        if "__" in layout_name:
-            bare_layout = layout_name.split("__")[1]
-        else:
-            bare_layout = layout_name
-
-        baseline_key = f"0__{bare_layout}"
-
-        # Default to the unnormalized value
-        normalized = evaluations[i]
-
-        # Check if the baseline exists
-        if baseline_key in practical_baselines:
-            baseline = practical_baselines[baseline_key]["avg_rewards"]
-
-            # Only divide when baseline > 0
-            normalized = jnp.where(
-                baseline > 0,
-                evaluations[i] / baseline,
-                1
-            )
-
-        metric[f"Scaled returns/evaluation_{layout_name}_scaled"] = normalized
-
-    return metric
-
-
-def compute_normalized_returns(layouts, practical_baselines, metric, env_counter):
-    """
-    Computes the normalized returns based on the practical baselines using JAX-friendly operations
-    @param layouts: list of layouts
-    @param practical_baselines: dictionary of practical baselines
-    @param metric: dictionary to store the metrics
-    @param env_counter: counter for the environment
-    """
-    env_name = layouts[env_counter - 1]
-    bare_layout = env_name.split("__")[1].strip()
-    baseline_format = f"0__{bare_layout}"
-
-    # Default to unnormalized value
-    normalized = metric["returned_episode_returns"]
-
-    if baseline_format in practical_baselines:
-        baseline_result = practical_baselines[baseline_format]["avg_rewards"]
-
-        normalized = jnp.where(
-            baseline_result > 0,
-            metric["returned_episode_returns"] / baseline_result,
-            1
-        )
-
-    metric["Scaled returns/returned_episode_returns_scaled"] = normalized
-
-    return metric
+        metrics[f"Evaluation/Returns/{i}__{layout_name}"] = avg_rewards[i]
+        metrics[f"Evaluation/Soup/{i}__{layout_name}"] = avg_soups[i]
+        metrics[f"Evaluation/Soup_Scaled/{i}__{layout_name}"] = avg_soups[i] / max_soup_dict[layout_name]
+    return metrics
 
 
 def build_reg_weights(params, regularize_critic: bool, regularize_heads: bool) -> FrozenDict:

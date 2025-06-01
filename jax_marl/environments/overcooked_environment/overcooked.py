@@ -114,7 +114,7 @@ class Overcooked(MultiAgentEnv):
 
         acts = self.action_set.take(indices=jnp.array([actions["agent_0"], actions["agent_1"]]))
 
-        state, reward, shaped_rewards = self.step_agents(key, state, acts)
+        state, reward, shaped_rewards, soups_delivered = self.step_agents(key, state, acts)
 
         state = state.replace(time=state.time + 1)
 
@@ -124,14 +124,19 @@ class Overcooked(MultiAgentEnv):
         obs = self.get_obs(state)
         rewards = {"agent_0": reward, "agent_1": reward}
         shaped_rewards = {"agent_0": shaped_rewards[0], "agent_1": shaped_rewards[1]}
+        soups_delivered = {"agent_0": soups_delivered[0], "agent_1": soups_delivered[1]}
         dones = {"agent_0": done, "agent_1": done, "__all__": done}
+        info = {
+            'shaped_reward': shaped_rewards,
+            'soups': soups_delivered,
+        }
 
         return (
             lax.stop_gradient(obs),
             lax.stop_gradient(state),
             rewards,
             dones,
-            {'shaped_reward': shaped_rewards},
+            info,
         )
 
     def reset(
@@ -305,9 +310,9 @@ class Overcooked(MultiAgentEnv):
         pot_loc_layer = jnp.array(maze_map == OBJECT_TO_INDEX["pot"], dtype=jnp.uint8)
         pot_status = state.maze_map[padding:-padding, padding:-padding, 2] * pot_loc_layer
         onions_in_pot_layer = jnp.minimum(POT_EMPTY_STATUS - pot_status, MAX_ONIONS_IN_POT) * (
-                    pot_status >= POT_FULL_STATUS)  # 0/1/2/3, as long as not cooking or not done
+                pot_status >= POT_FULL_STATUS)  # 0/1/2/3, as long as not cooking or not done
         onions_in_soup_layer = jnp.minimum(POT_EMPTY_STATUS - pot_status, MAX_ONIONS_IN_POT) * (
-                    pot_status < POT_FULL_STATUS) \
+                pot_status < POT_FULL_STATUS) \
                                * pot_loc_layer + MAX_ONIONS_IN_POT * soup_loc  # 0/3, as long as cooking or done
         pot_cooking_time_layer = pot_status * (pot_status < POT_FULL_STATUS)  # Timer: 19 to 0
         soup_ready_layer = pot_loc_layer * (pot_status == POT_READY_STATUS) + soup_loc  # Ready soups, plated or not
@@ -369,7 +374,7 @@ class Overcooked(MultiAgentEnv):
 
     def step_agents(
             self, key: chex.PRNGKey, state: State, action: chex.Array,
-    ) -> Tuple[State, float]:
+    ) -> Tuple[State, float, Tuple[float], Tuple[float]]:
         # Update agent position (forward action)
         is_move_action = jnp.logical_and(action != Actions.stay, action != Actions.interact)
         is_move_action_transposed = jnp.expand_dims(is_move_action, 0).transpose()  # Necessary to broadcast correctly
@@ -472,6 +477,9 @@ class Overcooked(MultiAgentEnv):
         bob_reward = jax.lax.select(bob_interact, bob_reward, 0.)
         bob_shaped_reward = jax.lax.select(bob_interact, bob_shaped_reward, 0.)
 
+        alice_soups = alice_reward / DELIVERY_REWARD
+        bob_soups = bob_reward / DELIVERY_REWARD
+
         agent_inv = jnp.array([alice_inv, bob_inv])
 
         # Update agent component in maze_map
@@ -520,7 +528,8 @@ class Overcooked(MultiAgentEnv):
                 maze_map=maze_map,
                 terminal=False),
             reward,
-            (alice_shaped_reward, bob_shaped_reward)
+            (alice_shaped_reward, bob_shaped_reward),
+            (alice_soups, bob_soups)
         )
 
     def process_interact(
