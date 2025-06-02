@@ -385,7 +385,7 @@ def main():
             )
 
             avg_reward = jnp.mean(all_rewards)
-            avg_soups = jnp.mean(all_soups)
+            avg_soups = jnp.sum(all_soups)
             all_avg_rewards.append(avg_reward)
             all_avg_soups.append(avg_soups)
 
