@@ -309,7 +309,7 @@ def main():
                 returns the updated state
                 '''
 
-                key, state_env, obs, _, total_reward, soups_this_step, step_count = state
+                key, state_env, obs, _, total_reward, total_soup, step_count = state
                 key, key_a0, key_a1, key_s = jax.random.split(key, 4)
 
                 # ***Create a batched copy for the network only.***
@@ -349,11 +349,12 @@ def main():
                 next_obs, next_state, reward, done_step, info = env.step(key_s, state_env, actions)
                 done = done_step["__all__"]
                 reward = reward["agent_0"]  # Common reward
-                soup = state.soup + soups_this_step
+                soups_this_step = info["soups"]["agent_0"] + info["soups"]["agent_1"]
                 total_reward += reward
+                total_soup += soups_this_step
                 step_count += 1
 
-                return EvalState(key, next_state, next_obs, done, total_reward, soup, step_count)
+                return EvalState(key, next_state, next_obs, done, total_reward, total_soup, step_count)
 
             # Initialize
             key, key_s = jax.random.split(key_r)
