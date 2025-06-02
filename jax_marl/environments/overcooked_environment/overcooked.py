@@ -645,7 +645,10 @@ class Overcooked(MultiAgentEnv):
         num_notempty_pots = jnp.sum((padded_map != POT_EMPTY_STATUS) * pot_loc_layer)
         is_dish_pickup_useful = num_plates_in_inv < num_notempty_pots
 
-        shaped_reward += has_picked_up_plate * is_dish_pickup_useful * BASE_REW_SHAPING_PARAMS[
+        plate_loc_layer = jnp.array(maze_map == OBJECT_TO_INDEX["plate"], dtype=jnp.uint8)
+        no_plates_on_counters = jnp.sum(plate_loc_layer) == 0
+
+        shaped_reward += no_plates_on_counters * has_picked_up_plate * is_dish_pickup_useful * BASE_REW_SHAPING_PARAMS[
             "PLATE_PICKUP_REWARD"]
 
         inventory = new_object_in_inv
