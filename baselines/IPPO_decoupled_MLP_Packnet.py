@@ -69,7 +69,7 @@ class Config:
     finetune_lr: float = 1e-4
     finetune_timesteps: int = 1e6
 
-    seq_length: int = 3
+    seq_length: int = 5
     strategy: str = "random"
     layouts: Optional[Sequence[str]] = field(default_factory=lambda: [])
     env_kwargs: Optional[Sequence[dict]] = None
@@ -80,7 +80,7 @@ class Config:
     eval_num_episodes: int = 5 
     gif_len: int = 300
     
-    anneal_lr: bool = False
+    anneal_lr: bool = True
     seed: int = 30
     num_seeds: int = 1
     

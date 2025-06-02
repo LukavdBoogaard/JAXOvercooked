@@ -48,7 +48,7 @@ class Config:
     hidden_size: int = 64
     eps_start: float = 1.0
     eps_finish: float = 0.05
-    eps_decay: float = 0.1
+    eps_decay: float = 0.3
     max_grad_norm: int = 1
     num_epochs: int = 4
     lr: float = 0.00007
@@ -331,9 +331,9 @@ def main():
         config.eps_decay * config.num_updates,
     )
 
-    rew_shaping_anneal = optax.linear_schedule(
-        init_value=1.0, end_value=0.0, transition_steps=config.rew_shaping_horizon
-    )
+    # rew_shaping_anneal = optax.linear_schedule(
+    #     init_value=1.0, end_value=0.0, transition_steps=config.rew_shaping_horizon
+    # )
 
     # Initialize the network
     rng = jax.random.PRNGKey(config.seed)
@@ -429,9 +429,13 @@ def main():
         new_optimizer = tx.init(train_state.params)
         train_state = train_state.replace(tx=tx, opt_state=new_optimizer, n_updates=0)
 
-        # # reset the entire training state
-        # train_state = train_state.replace(params=init_network_params)
-        # train_state = train_state.replace(target_network_params=init_network_params)
+        reward_shaping_horizon = config.total_timesteps / 2
+        rew_shaping_anneal = optax.linear_schedule(
+            init_value=1.,
+            end_value=0.,
+            transition_steps=reward_shaping_horizon
+        )
+
 
         def _update_step(runner_state, unused):
 

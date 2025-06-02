@@ -135,7 +135,7 @@ class Packnet():
         '''
         assert self.seq_length is not None, "Sequence length not provided"
 
-        num_tasks_left = self.seq_length - state.current_task
+        num_tasks_left = (self.seq_length - state.current_task) - 1
         prune_percentage = num_tasks_left/(num_tasks_left + 1)
         return prune_percentage
         
@@ -170,6 +170,7 @@ class Packnet():
 
         # Compute the pruning quantile
         prune_perc = self.create_pruning_percentage(state)
+        jax.debug.print("pruning_percentage = {prune_perc}", prune_perc=prune_perc)
 
         # Get the combined mask of all previous tasks
         combined_mask = self.combine_masks(state.masks, state.current_task)

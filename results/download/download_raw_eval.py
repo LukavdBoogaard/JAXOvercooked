@@ -25,9 +25,9 @@ from results.download.common import cli, want
 # ---------------------------------------------------------------------------
 # CONSTANTS
 # ---------------------------------------------------------------------------
-EVAL_PREFIX = "Scaled_returns/evaluation_"
-KEY_PATTERN = re.compile(rf"^{re.escape(EVAL_PREFIX)}(\d+)__(.+)_scaled$")
-TRAINING_KEY = "Scaled_returns/returned_episode_returns_scaled"
+EVAL_PREFIX = "Evaluation/evaluation_"
+KEY_PATTERN = re.compile(rf"^{re.escape(EVAL_PREFIX)}(\d+)__(.+)$")
+TRAINING_KEY = "returned_episode_returns"
 TAG_ORDERING = ['shared_backbone', 'use_multihead', 'task_id']
 
 # ---------------------------------------------------------------------------
@@ -103,6 +103,7 @@ def main() -> None:
         strategy = cfg.get("strategy")
         seq_len = cfg.get("seq_length")
         seed = cfg.get("seed", 0)
+        print('\n', seed, '\n')
         arch = "CNN" if cfg.get("use_cnn") else "MLP"
 
         # find eval keys as W&B actually logged them
