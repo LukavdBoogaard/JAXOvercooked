@@ -791,13 +791,14 @@ def main():
             metrics["Losses/reg_loss"] = reg_loss.mean()
 
             # Soup section
-            agent_0_soup = info["soups"]["agent_0"].mean()
-            agent_1_soup = info["soups"]["agent_1"].mean()
+            agent_0_soup = info["soups"]["agent_0"].sum()
+            agent_1_soup = info["soups"]["agent_1"].sum()
             soup_delivered = agent_0_soup + agent_1_soup
+            episode_frac = config.num_steps / env.max_steps
             metrics["Soup/agent_0_soup"] = agent_0_soup
             metrics["Soup/agent_1_soup"] = agent_1_soup
             metrics["Soup/total"] = soup_delivered
-            metrics["Soup/scaled"] = soup_delivered / max_soup_dict[env_names[env_idx]]
+            metrics["Soup/scaled"] = soup_delivered / (max_soup_dict[env_names[env_idx]] * episode_frac)
             metrics.pop('soups', None)
 
             # Rewards section
