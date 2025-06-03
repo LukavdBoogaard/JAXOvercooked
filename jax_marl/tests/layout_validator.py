@@ -13,8 +13,10 @@ from flax.core import FrozenDict
 
 from jax_marl.environments import Overcooked
 from jax_marl.environments.overcooked_environment.env_generator import (
-    generate_random_layout, evaluate_grid, WALL, FLOOR, AGENT,
-    GOAL, ONION_PILE, POT, layout_grid_to_dict
+    generate_random_layout, layout_grid_to_dict
+)
+from jax_marl.environments.overcooked_environment.env_validator import (
+    evaluate_grid, WALL, FLOOR, AGENT, GOAL, ONION_PILE, POT
 )
 from jax_marl.gridworld.grid_viz import TILE_PIXELS
 from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
