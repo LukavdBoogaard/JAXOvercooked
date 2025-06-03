@@ -84,7 +84,7 @@ class OvercookedVisualizer:
         if wandb.run is not None:
             wandb.log({file_name: wandb.Video(file_path, format="gif")})
 
-    def render_grid(self, grid, tile_size=TILE_PIXELS, k_rot90=0, agent_dir_idx=None):
+    def render_grid(self, grid, tile_size=TILE_PIXELS, k_rot90=0, agent_dir_idx=None, title: str | None = None):
         self._lazy_init_window()
 
         img = self._render_grid(
@@ -96,6 +96,9 @@ class OvercookedVisualizer:
         # img = np.transpose(img, axes=(1,0,2))
         if k_rot90 > 0:
             img = np.rot90(img, k=k_rot90)
+
+        if title is not None and hasattr(self, "window"):
+            self.window.set_caption(title)  # one-liner caption
 
         self.window.show_img(img)
 
