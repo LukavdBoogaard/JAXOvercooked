@@ -73,8 +73,9 @@ class Config:
     ewc_decay: float = 0.9  # Only for online EWC
 
     # Environment
-    seq_length: int = 2
-    strategy: str = "random"
+    seq_length: int = 10
+    repeat_sequence: int = 1
+    strategy: str = "generate"
     layouts: Optional[Sequence[str]] = field(default_factory=lambda: [])
     env_kwargs: Optional[Sequence[dict]] = None
     evaluation: bool = True
@@ -139,6 +140,11 @@ def main():
         width_rng=(config.width_min, config.width_max),
         wall_density=config.wall_density,
     )
+
+    # repeat the base sequence `repeat_sequence` times
+    config.env_kwargs = config.env_kwargs * config.repeat_sequence
+    layout_names = layout_names * config.repeat_sequence
+
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")[:-3]
     network = "cnn" if config.use_cnn else "mlp"
     run_name = f'{config.alg_name}_{config.cl_method}_{network}_seq{config.seq_length}_{config.strategy}_seed_{config.seed}_{timestamp}'
@@ -824,6 +830,8 @@ def main():
                 def log_metrics(metrics, update_step):
                     if config.evaluation:
                         avg_rewards, avg_soups = evaluate_model(train_state_eval, eval_rng)
+                        episode_frac = config.eval_num_steps / env.max_steps
+                        avg_soups = [soup * episode_frac for soup, env_name in zip(avg_soups, env_names)]
                         metrics = add_eval_metrics(avg_rewards, avg_soups, env_names, max_soup_dict, metrics)
 
                     def callback(args):
