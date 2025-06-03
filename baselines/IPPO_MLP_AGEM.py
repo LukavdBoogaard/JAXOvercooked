@@ -47,7 +47,7 @@ class Config:
     anneal_lr: bool = True
     num_envs: int = 16
     num_steps: int = 128
-    total_timesteps: float = 8e6
+    total_timesteps: float = 1e7
     update_epochs: int = 8
     num_minibatches: int = 8
     gamma: float = 0.99
@@ -273,10 +273,10 @@ def main():
                 for agent, v in obs.items():
                     v_b = jnp.expand_dims(v, axis=0)  # now (1, H, W, C)
                     v_flat = jnp.reshape(v_b, (v_b.shape[0], -1))
-                    if config.use_task_id:
-                        onehot = make_task_onehot(eval_idx, config.seq_length)  # shape (seq_length,)
-                        onehot = jnp.expand_dims(onehot, axis=0)  # (1, seq_length)
-                        v_flat = jnp.concatenate([v_flat, onehot], axis=1)
+                    # if config.use_task_id:
+                    #     onehot = make_task_onehot(eval_idx, config.seq_length)  # shape (seq_length,)
+                    #     onehot = jnp.expand_dims(onehot, axis=0)  # (1, seq_length)
+                    #     v_flat = jnp.concatenate([v_flat, onehot], axis=1)
                     batched_obs[agent] = v_flat
 
                 def select_action(train_state, rng, obs):
@@ -379,12 +379,13 @@ def main():
                           use_multihead=config.use_multihead,
                           num_tasks=config.seq_length, 
                           shared_backbone=config.shared_backbone,
-                          big_network=config.big_network)
+                          big_network=config.big_network,
+                          use_task_id=config.use_task_id)
     
     # if we use the task id we should add that to the obs space
     obs_dim = np.prod(temp_env.observation_space().shape)
-    if config.use_task_id:
-        obs_dim += config.seq_length
+    # if config.use_task_id:
+    #     obs_dim += config.seq_length
 
     # Initialize the network
     rng = jax.random.PRNGKey(config.seed)
@@ -469,10 +470,10 @@ def main():
                 # prepare the observations for the network
                 obs_batch = batchify(last_obs, env.agents, config.num_actors)
 
-                if config.use_task_id:
-                    onehot = make_task_onehot(env_idx, config.seq_length)
-                    onehot_batch = jnp.tile(onehot, (obs_batch.shape[0], 1))
-                    obs_batch = jnp.concatenate([obs_batch, onehot_batch], axis=1)
+                # if config.use_task_id:
+                #     onehot = make_task_onehot(env_idx, config.seq_length)
+                #     onehot_batch = jnp.tile(onehot, (obs_batch.shape[0], 1))
+                #     obs_batch = jnp.concatenate([obs_batch, onehot_batch], axis=1)
                 
                 # apply the policy network to the observations to get the suggested actions and their values
                 pi, value = network.apply(train_state.params, obs_batch, env_idx=env_idx)
@@ -541,10 +542,10 @@ def main():
             # create a batch of the observations that is compatible with the network
             last_obs_batch = batchify(last_obs, env.agents, config.num_actors)
 
-            if config.use_task_id:
-                onehot = make_task_onehot(env_idx, config.seq_length)
-                onehot_batch = jnp.tile(onehot, (last_obs_batch.shape[0], 1))
-                last_obs_batch = jnp.concatenate([last_obs_batch, onehot_batch], axis=1)
+            # if config.use_task_id:
+            #     onehot = make_task_onehot(env_idx, config.seq_length)
+            #     onehot_batch = jnp.tile(onehot, (last_obs_batch.shape[0], 1))
+            #     last_obs_batch = jnp.concatenate([last_obs_batch, onehot_batch], axis=1)
 
             # apply the network to the batch of observations to get the value of the last state
             _, last_val = network.apply(train_state.params, last_obs_batch)
