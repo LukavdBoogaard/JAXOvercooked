@@ -800,18 +800,17 @@ def main():
                 )
 
                 # Handle different return formats based on CL method
+                total_loss, grads, agem_stats = loss_information
+                # Create a dictionary to store all loss information
+                loss_dict = {
+                    "total_loss": total_loss
+                }
                 if config.cl_method.lower() == "agem" and env_idx > 0:
-                    total_loss, grads, agem_stats = loss_information
-                    # Add AGEM stats to total_loss for logging
-                    for k, v in agem_stats.items():
-                        if v.size > 0:  # Only add if there are values
-                            total_loss = total_loss._replace(**{k: jnp.mean(v, axis=0)})
-                else:
-                    total_loss, grads, stats = loss_information
+                    loss_dict["agem_stats"] = agem_stats
 
                 avg_grads = jax.tree_util.tree_map(lambda x: jnp.mean(x, axis=0), grads)
                 update_state = (train_state, traj_batch, advantages, targets, steps_for_env, rng)
-                return update_state, total_loss
+                return update_state, loss_dict
 
             # create a tuple to be passed into the jax.lax.scan function
             update_state = (train_state, traj_batch, advantages, targets, steps_for_env, rng)
@@ -845,12 +844,25 @@ def main():
                 metrics["General/learning_rate"] = config.lr
 
             # Losses section
-            total_loss, (value_loss, loss_actor, entropy, reg_loss) = loss_info
+            # Extract total_loss and components from loss_info
+            loss_dict = loss_info
+            total_loss = loss_dict["total_loss"]
+            # Unpack the components of total_loss
+            value_loss, loss_actor, entropy, reg_loss = total_loss[1]
+            total_loss = total_loss[0]  # The actual scalar loss value
+
             metrics["Losses/total_loss"] = total_loss.mean()
             metrics["Losses/value_loss"] = value_loss.mean()
             metrics["Losses/actor_loss"] = loss_actor.mean()
             metrics["Losses/entropy"] = entropy.mean()
             metrics["Losses/reg_loss"] = reg_loss.mean()
+
+            # Add AGEM stats to metrics if they exist
+            if "agem_stats" in loss_dict:
+                agem_stats = loss_dict["agem_stats"]
+                for k, v in agem_stats.items():
+                    if v.size > 0:  # Only add if there are values
+                        metrics[k] = jnp.mean(v, axis=0)
 
             # Soup section
             agent_0_soup = info["soups"]["agent_0"].sum()
