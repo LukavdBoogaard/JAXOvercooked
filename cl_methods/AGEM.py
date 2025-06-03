@@ -1,8 +1,7 @@
-import os
 import jax
 import jax.numpy as jnp
-import flax 
 from flax import struct
+
 
 @struct.dataclass
 class AGEMMemory:
@@ -49,8 +48,8 @@ class AGEM:
         # We return None for now, and handle it in update_state
         return None
 
-    def compute_importance(self, params, env, network, env_idx, rng, use_cnn=False, 
-                          num_episodes=5, max_steps=100, normalize=False):
+    def compute_importance(self, params, env, network, env_idx, rng, use_cnn=False,
+                           num_episodes=5, max_steps=100, normalize=False):
         """
         Compute the importance of parameters for a task.
 
@@ -167,7 +166,8 @@ def compute_memory_gradient(network, params,
                             clip_eps, vf_coef, ent_coef,
                             mem_obs, mem_actions,
                             mem_advs, mem_log_probs,
-                            mem_targets, mem_values):
+                            mem_targets, mem_values,
+                            env_idx=0):
     """Compute the same clipped PPO loss on the memory data."""
 
     # Stop gradient flow through memory data
@@ -179,7 +179,7 @@ def compute_memory_gradient(network, params,
     mem_values = jax.lax.stop_gradient(mem_values)
 
     def loss_fn(params):
-        pi, value = network.apply(params, mem_obs)  # shapes: [B]
+        pi, value = network.apply(params, mem_obs, env_idx=env_idx)  # shapes: [B]
         log_prob = pi.log_prob(mem_actions)
 
         ratio = jnp.exp(log_prob - mem_log_probs)

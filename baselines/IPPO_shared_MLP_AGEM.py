@@ -690,7 +690,8 @@ def main():
                             network, train_state.params,
                             config.clip_eps, config.vf_coef, config.ent_coef,
                             mem_obs, mem_actions, mem_log_probs,
-                            mem_advs, mem_targets, mem_values
+                            mem_advs, mem_targets, mem_values,
+                            env_idx=env_idx
                         )
 
                         # 3) Project new grads
@@ -855,16 +856,16 @@ def main():
                                                   config.layout_name,
                                                   practical_baselines,
                                                   metric)
-                    
+
                     def callback(args):
                         metric, update_step, env_counter = args
                         real_step = (int(env_counter)-1) * config.num_updates + int(update_step)
-                        
+
                         metric = normalize_soup(config.layout_name,
                                                 practical_baselines,
                                                 metric,
                                                 env_counter)
-                        
+
                         for key, value in metric.items():
                             writer.add_scalar(key, value, real_step)
 

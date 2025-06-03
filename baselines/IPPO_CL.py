@@ -746,7 +746,8 @@ def main():
                             network, train_state.params,
                             config.clip_eps, config.vf_coef, config.ent_coef,
                             mem_obs, mem_actions, mem_advs, mem_log_probs,
-                            mem_targets, mem_values
+                            mem_targets, mem_values,
+                            env_idx=env_idx
                         )
 
                         # Project new grads
