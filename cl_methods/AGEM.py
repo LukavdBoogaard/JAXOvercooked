@@ -14,6 +14,101 @@ class AGEMMemory:
     values: jnp.ndarray
 
 
+class AGEM:
+    """
+    AGEM (Averaged Gradient Episodic Memory) continual learning method.
+
+    This class implements the AGEM method for IPPO_CL.py.
+    """
+
+    def __init__(self, memory_size=1000, sample_size=128):
+        """
+        Initialize the AGEM method.
+
+        Args:
+            memory_size: Size of the memory buffer
+            sample_size: Number of samples to use for gradient projection
+        """
+        self.memory_size = memory_size
+        self.sample_size = sample_size
+
+    def init_state(self, params, regularize_critic=True, regularize_heads=True):
+        """
+        Initialize the AGEM state.
+
+        Args:
+            params: Initial parameters
+            regularize_critic: Whether to regularize the critic (not used in AGEM)
+            regularize_heads: Whether to regularize the heads (not used in AGEM)
+
+        Returns:
+            AGEM state (memory buffer)
+        """
+        # For AGEM, we'll initialize an empty memory buffer
+        # The actual initialization will happen in the first call to update_state
+        # We return None for now, and handle it in update_state
+        return None
+
+    def compute_importance(self, params, env, network, env_idx, rng, use_cnn=False, 
+                          num_episodes=5, max_steps=100, normalize=False):
+        """
+        Compute the importance of parameters for a task.
+
+        For AGEM, this is not used, but we need to implement it for compatibility.
+
+        Args:
+            params: Parameters to compute importance for
+            env: Environment
+            network: Network
+            env_idx: Environment index
+            rng: Random number generator
+            use_cnn: Whether to use CNN
+            num_episodes: Number of episodes to run
+            max_steps: Maximum number of steps per episode
+            normalize: Whether to normalize importance
+
+        Returns:
+            Importance (not used in AGEM, so we return None)
+        """
+        # AGEM doesn't use importance, so we return None
+        return None
+
+    def update_state(self, state, params, importance):
+        """
+        Update the AGEM state with new parameters and importance.
+
+        For AGEM, this would update the memory buffer, but we'll handle that
+        separately in the training loop.
+
+        Args:
+            state: Current AGEM state
+            params: New parameters
+            importance: Importance (not used in AGEM)
+
+        Returns:
+            Updated AGEM state
+        """
+        # AGEM doesn't update state based on importance, so we just return the current state
+        return state
+
+    def penalty(self, params, state, reg_coef):
+        """
+        Calculate the regularization penalty.
+
+        For AGEM, there is no regularization penalty, so we return 0.
+
+        Args:
+            params: Parameters to calculate penalty for
+            state: AGEM state
+            reg_coef: Regularization coefficient
+
+        Returns:
+            Regularization penalty (0 for AGEM)
+        """
+        # AGEM doesn't use a regularization penalty, so we return 0
+        return 0.0
+
+
 def init_agem_memory(max_memory_size: int, obs_dim: int):
     return AGEMMemory(
         obs=jnp.zeros((max_memory_size, obs_dim)),
@@ -74,6 +169,14 @@ def compute_memory_gradient(network, params,
                             mem_advs, mem_log_probs,
                             mem_targets, mem_values):
     """Compute the same clipped PPO loss on the memory data."""
+
+    # Stop gradient flow through memory data
+    mem_obs = jax.lax.stop_gradient(mem_obs)
+    mem_actions = jax.lax.stop_gradient(mem_actions)
+    mem_advs = jax.lax.stop_gradient(mem_advs)
+    mem_log_probs = jax.lax.stop_gradient(mem_log_probs)
+    mem_targets = jax.lax.stop_gradient(mem_targets)
+    mem_values = jax.lax.stop_gradient(mem_values)
 
     def loss_fn(params):
         pi, value = network.apply(params, mem_obs)  # shapes: [B]

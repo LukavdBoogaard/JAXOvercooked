@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 
+from cl_methods.AGEM import AGEM, init_agem_memory, sample_memory, compute_memory_gradient, agem_project, \
+    update_agem_memory
 from cl_methods.FT import FT
 from cl_methods.L2 import L2
 from cl_methods.MAS import MAS
@@ -72,6 +74,10 @@ class Config:
     ewc_mode: str = "online"  # "online", "last" or "multi"
     ewc_decay: float = 0.9  # Only for online EWC
 
+    # AGEM specific
+    agem_memory_size: int = 1000
+    agem_sample_size: int = 128
+
     # Environment
     seq_length: int = 10
     repeat_sequence: int = 1
@@ -126,7 +132,8 @@ def main():
     method_map = dict(ewc=EWC(mode=config.ewc_mode, decay=config.ewc_decay),
                       mas=MAS(),
                       l2=L2(),
-                      ft=FT())
+                      ft=FT(),
+                      agem=AGEM(memory_size=config.agem_memory_size, sample_size=config.agem_sample_size))
 
     cl = method_map[config.cl_method.lower()]
 
@@ -466,6 +473,21 @@ def main():
 
         print(f"Training on environment: {env.task_id} - {env.layout_name}")
 
+        # Initialize AGEM memory if using AGEM and this is the first environment
+        agem_mem = None
+        if config.cl_method.lower() == "agem" and env_idx > 0:
+            # For AGEM, we need to initialize the memory buffer if it doesn't exist
+            if cl_state is None:
+                # Get observation dimension
+                obs_dim = env.observation_space().shape
+                if not config.use_cnn:
+                    obs_dim = (np.prod(obs_dim),)
+                else:
+                    obs_dim = obs_dim
+
+                # Initialize memory buffer
+                agem_mem = init_agem_memory(config.agem_memory_size, obs_dim[0])
+
         # How many steps to explore the environment with random actions
         exploration_steps = int(config.explore_fraction * config.total_timesteps)
 
@@ -694,7 +716,7 @@ def main():
                         loss_actor = loss_actor.mean()
                         entropy = pi.entropy().mean()
 
-                        # EWC penalty
+                        # CL penalty (for regularization-based methods)
                         cl_penalty = cl.penalty(params, cl_state, config.reg_coef)
 
                         total_loss = (loss_actor
@@ -709,7 +731,31 @@ def main():
                     # call the grad_fn function to get the total loss and the gradients
                     total_loss, grads = grad_fn(train_state.params, traj_batch, advantages, targets)
 
-                    loss_information = total_loss, grads
+                    # For AGEM, we need to project the gradients if this is not the first environment
+                    agem_stats = {}
+                    if config.cl_method.lower() == "agem" and env_idx > 0 and agem_mem is not None:
+                        # Sample from memory
+                        rng_1, sample_rng = jax.random.split(rng)
+                        # Pick a random sample from AGEM memory
+                        mem_obs, mem_actions, mem_log_probs, mem_advs, mem_targets, mem_values = sample_memory(
+                            agem_mem, config.agem_sample_size, sample_rng
+                        )
+
+                        # Compute memory gradient
+                        grads_mem, grads_stats = compute_memory_gradient(
+                            network, train_state.params,
+                            config.clip_eps, config.vf_coef, config.ent_coef,
+                            mem_obs, mem_actions, mem_advs, mem_log_probs,
+                            mem_targets, mem_values
+                        )
+
+                        # Project new grads
+                        grads, proj_stats = agem_project(grads, grads_mem)
+
+                        # Combine stats for logging
+                        agem_stats = {**grads_stats, **proj_stats}
+
+                    loss_information = total_loss, grads, agem_stats
 
                     # apply the gradients to the network
                     train_state = train_state.apply_gradients(grads=grads)
@@ -753,7 +799,16 @@ def main():
                     xs=minibatches
                 )
 
-                total_loss, grads = loss_information
+                # Handle different return formats based on CL method
+                if config.cl_method.lower() == "agem" and env_idx > 0:
+                    total_loss, grads, agem_stats = loss_information
+                    # Add AGEM stats to total_loss for logging
+                    for k, v in agem_stats.items():
+                        if v.size > 0:  # Only add if there are values
+                            total_loss = total_loss._replace(**{k: jnp.mean(v, axis=0)})
+                else:
+                    total_loss, grads, stats = loss_information
+
                 avg_grads = jax.tree_util.tree_map(lambda x: jnp.mean(x, axis=0), grads)
                 update_state = (train_state, traj_batch, advantages, targets, steps_for_env, rng)
                 return update_state, total_loss
@@ -868,6 +923,38 @@ def main():
             xs=None,
             length=config.num_updates
         )
+
+        # Update AGEM memory if using AGEM and this is not the first environment
+        if config.cl_method.lower() == "agem" and env_idx > 0 and agem_mem is not None:
+            # Sample a batch of data from the current environment
+            # We'll use the last batch from the training loop
+            train_state, env_state, last_obs, update_step, steps_for_env, rng = runner_state
+
+            # Prepare the data for updating the memory
+            obs_batch = batchify(last_obs, env.agents, config.num_actors, not config.use_cnn)
+
+            # Get values and log_probs for the current observations
+            pi, value = network.apply(train_state.params, obs_batch, env_idx=env_idx)
+
+            # Sample actions from the policy
+            rng, _rng = jax.random.split(rng)
+            actions = pi.sample(seed=_rng)
+            log_probs = pi.log_prob(actions)
+
+            # Use dummy advantages and targets (these will be replaced in the next environment)
+            advantages = jnp.zeros_like(log_probs)
+            targets = jnp.zeros_like(log_probs)
+
+            # Update the memory buffer
+            agem_mem = update_agem_memory(
+                agem_mem,
+                obs_batch, actions, log_probs,
+                advantages, targets, value,
+                config.agem_memory_size
+            )
+
+            # Store the updated memory in cl_state
+            cl_state = agem_mem
 
         # Return the runner state after the training loop, and the metrics arrays
         return runner_state, metrics
