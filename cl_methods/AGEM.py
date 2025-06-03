@@ -68,7 +68,7 @@ def sample_memory(agem_mem: AGEMMemory, sample_size: int, rng: jax.random.PRNGKe
     return obs, actions, log_probs, advs, targets, vals
 
 
-def compute_memory_gradient(network, params,
+def compute_memory_gradient(train_state, params,
                             clip_eps, vf_coef, ent_coef,
                             mem_obs, mem_actions,
                             mem_advs, mem_log_probs,
@@ -76,7 +76,9 @@ def compute_memory_gradient(network, params,
     """Compute the same clipped PPO loss on the memory data."""
 
     def loss_fn(params):
-        pi, value = network.apply(params, mem_obs)  # shapes: [B]
+        # pi, value = network.apply(params, mem_obs)  # shapes: [B]
+        network_apply = train_state.apply_fn
+        pi, value = network_apply(params, mem_obs)
         log_prob = pi.log_prob(mem_actions)
 
         ratio = jnp.exp(log_prob - mem_log_probs)
