@@ -25,9 +25,9 @@ from results.download.common import cli, want
 # ---------------------------------------------------------------------------
 # CONSTANTS
 # ---------------------------------------------------------------------------
-EVAL_PREFIX = "Scaled_returns/evaluation_"
-KEY_PATTERN = re.compile(rf"^{re.escape(EVAL_PREFIX)}(\d+)__(.+)_scaled$")
-TRAINING_KEY = "Scaled_returns/returned_episode_returns_scaled"
+EVAL_PREFIX = "Evaluation/Soup_Scaled/"
+KEY_PATTERN = re.compile(rf"^{re.escape(EVAL_PREFIX)}(\d+)__(.+)_(\d+)$")
+TRAINING_KEY = "Soup/scaled"
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +93,7 @@ def main() -> None:
         if 'EWC' in run.name:
             cl_method = 'EWC'
             if cfg.get("ewc_mode") == "online":
-                cl_method = "Online EWC"
+                cl_method = "Online_EWC"
         elif 'MAS' in run.name:
             cl_method = 'MAS'
         elif cl_method is None:
@@ -118,10 +118,10 @@ def main() -> None:
         for key in discover_eval_keys(run):
             # choose filename
             if key == TRAINING_KEY:
-                filename = f"training_reward.{ext}"
+                filename = f"training_soup.{ext}"
             else:
-                idx, name = KEY_PATTERN.match(key).groups()
-                filename = f"{idx}_{name}_reward.{ext}"
+                idx, name, _ = KEY_PATTERN.match(key).groups()
+                filename = f"{idx}_{name}_soup.{ext}"
 
             out = out_base / filename
             if out.exists() and not args.overwrite:

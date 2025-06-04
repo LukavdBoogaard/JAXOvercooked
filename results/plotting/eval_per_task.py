@@ -14,144 +14,120 @@ Additional features:
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 from typing import List
 
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
-from scipy.ndimage import gaussian_filter1d
 
-# plotting defaults ---------------------------------------------------
-sns.set_theme(style="whitegrid", context="notebook")
-plt.rcParams["axes.grid"] = False
-
-CRIT = {0.9: 1.833, 0.95: 1.96, 0.99: 2.576}
+# Import utilities from the utils package
+try:
+    # Try relative import first (when imported as a module)
+    from .utils import (
+        collect_env_curves, smooth_and_ci, add_task_boundaries,
+        setup_task_axes, save_plot, CRIT
+    )
+except ImportError:
+    # Fall back to absolute import (when run as a script)
+    from results.plotting.utils import (
+        collect_env_curves, smooth_and_ci, add_task_boundaries,
+        setup_task_axes, save_plot, CRIT
+    )
 
 
 def parse_args():
-    p = argparse.ArgumentParser()
-    p.add_argument('--data_root', required=True)
-    p.add_argument('--algo', required=True)
-    p.add_argument('--methods', nargs='+', required=True)
-    p.add_argument('--strategy', required=True)
-    p.add_argument('--seq_len', type=int, required=True)
-    p.add_argument('--steps_per_task', type=float, default=1e7)
-    p.add_argument('--seeds', type=int, nargs='+', default=[1, 2, 3, 4, 5])
-    p.add_argument('--sigma', type=float, default=1.5)
-    p.add_argument('--confidence', type=float, default=0.95, choices=[0.9, 0.95, 0.99])
-    p.add_argument('--plot_name', default=None)
+    """Parse command line arguments for the per-task evaluation plot script."""
+    p = argparse.ArgumentParser(description="Plot per-task evaluation metrics for MARL continual-learning benchmark")
+    p.add_argument('--data_root', required=True, help="Root directory for data")
+    p.add_argument('--algo', required=True, help="Algorithm name")
+    p.add_argument('--methods', nargs='+', required=True, help="Method names to plot")
+    p.add_argument('--strategy', required=True, help="Training strategy")
+    p.add_argument('--seq_len', type=int, required=True, help="Sequence length")
+    p.add_argument('--steps_per_task', type=float, default=1e7, help="Steps per task")
+    p.add_argument('--seeds', type=int, nargs='+', default=[1, 2, 3, 4, 5], help="Seeds to include")
+    p.add_argument('--sigma', type=float, default=1.5, help="Smoothing parameter")
+    p.add_argument('--confidence', type=float, default=0.95, choices=[0.9, 0.95, 0.99], help="Confidence level")
+    p.add_argument('--metric', choices=['reward', 'soup'], default='reward', help="Metric to plot")
+    p.add_argument('--plot_name', default=None, help="Custom plot name")
     return p.parse_args()
 
 
-def load_series(fp: Path) -> np.ndarray:
-    if fp.suffix == '.json':
-        return np.array(json.loads(fp.read_text()), dtype=float)
-    if fp.suffix == '.npz':
-        return np.load(fp)['data'].astype(float)
-    raise ValueError(f'Unsupported suffix: {fp.suffix}')
-
-
-def collect_env_curves(base: Path, algo: str, method: str, strat: str,
-                       seq_len: int, seeds: List[int]):
-    folder = base / algo / method / f"{strat}_{seq_len}"
-    env_names, per_env_seed = [], []
-
-    # discover envs
-    for seed in seeds:
-        sd = folder / f"seed_{seed}"
-        if not sd.exists():
-            continue
-        files = sorted(f for f in sd.glob(f"*_reward.*") if "training" not in f.name)
-        if not files:
-            continue
-        suffix = "_reward"
-        env_names = [f.name.split('_', 1)[1].rsplit(suffix, 1)[0] for f in files]
-        per_env_seed = [[] for _ in env_names]
-        break
-    if not env_names: raise RuntimeError(f'No data for {method}')
-
-    # gather
-    for seed in seeds:
-        sd = folder / f"seed_{seed}"
-        if not sd.exists(): continue
-        for idx, env in enumerate(env_names):
-            fp = sd / f"{idx}_{env}_reward.json"
-            if not fp.exists(): fp = sd / f"{idx}_{env}_reward.npz"
-            if not fp.exists(): continue
-            arr = load_series(fp)
-            per_env_seed[idx].append(arr)
-
-    T_max = max(max(map(len, curves)) for curves in per_env_seed if curves)
-    curves = []
-    for env_curves in per_env_seed:
-        if env_curves:
-            stacked = np.vstack([np.pad(a, (0, T_max - len(a)), constant_values=np.nan)
-                                 for a in env_curves])
-        else:
-            stacked = np.full((1, T_max), np.nan)
-        curves.append(stacked)
-
-    return env_names, curves
-
-
-def smooth_and_ci(data: np.ndarray, sigma: float, conf: float):
-    mean = gaussian_filter1d(np.nanmean(data, axis=0), sigma=sigma)
-    sd = gaussian_filter1d(np.nanstd(data, axis=0), sigma=sigma)
-    ci = CRIT[conf] * sd / np.sqrt(data.shape[0])
-    return mean, ci
-
-
 def plot():
+    """
+    Main plotting function for per-task evaluation metrics.
+
+    Creates one subplot per method, with one colored line per environment/task.
+    Adds task boundaries and colored task labels.
+    """
     args = parse_args()
     data_root = Path(__file__).resolve().parent.parent / args.data_root
 
-    total = args.seq_len * args.steps_per_task
-    colours = sns.color_palette("hls", args.seq_len)
+    # Calculate total steps and set up boundaries
+    total_steps = args.seq_len * args.steps_per_task
+    task_colors = sns.color_palette("hls", args.seq_len)
     boundaries = [i * args.steps_per_task for i in range(args.seq_len + 1)]
     mids = [(boundaries[i] + boundaries[i + 1]) / 2 for i in range(args.seq_len)]
 
+    # Set up figure with one subplot per method
     methods = args.methods
-    fig_h = 2.5 * len(methods) if len(methods) > 1 else 2.8
-    fig, axes = plt.subplots(len(methods), 1, sharex=False, sharey=True, figsize=(12, fig_h))
-    if len(methods) == 1: axes = [axes]
+    fig_height = 2.5 * len(methods) if len(methods) > 1 else 2.8
+    fig, axes = plt.subplots(len(methods), 1, sharex=False, sharey=True, figsize=(12, fig_height))
+    if len(methods) == 1: 
+        axes = [axes]
 
+    # Create one subplot per method
     for m_idx, method in enumerate(methods):
         ax = axes[m_idx]
-        envs, curves = collect_env_curves(data_root, args.algo, method, args.strategy, args.seq_len, args.seeds)
 
+        # Collect data for this method
+        envs, curves = collect_env_curves(
+            data_root, args.algo, method, args.strategy, 
+            args.seq_len, args.seeds, args.metric
+        )
+
+        # Add task boundaries
+        add_task_boundaries(ax, boundaries, color='gray', linewidth=0.5)
+
+        # Set up x-axis ticks
         ax.set_xticks(boundaries)
         ax.ticklabel_format(style='scientific', axis='x', scilimits=(0, 0))
-        for b in boundaries: ax.axvline(b, linestyle='--', linewidth=0.5, color='gray')
 
+        # Plot one curve per environment/task
         for i, curve in enumerate(curves):
             mean, ci = smooth_and_ci(curve, args.sigma, args.confidence)
-            x = np.linspace(0, total, len(mean))
-            ax.plot(x, mean, color=colours[i])
-            ax.fill_between(x, mean - ci, mean + ci, alpha=0.2, color=colours[i])
+            x = np.linspace(0, total_steps, len(mean))
+            ax.plot(x, mean, color=task_colors[i])
+            ax.fill_between(x, mean - ci, mean + ci, alpha=0.2, color=task_colors[i])
 
-        ax.set_xlim(0, total)
+        # Set axis limits and labels
+        ax.set_xlim(0, total_steps)
         ax.set_ylim(0, 1)
-        ax.set_ylabel("Normalized Score")
+        ax.set_ylabel(f"Normalized {args.metric.capitalize()}")
         ax.set_title(method, fontsize=11)
 
+        # Set up secondary x-axis with task labels
         twin = ax.twiny()
         twin.set_xlim(ax.get_xlim())
         twin.set_xticks(mids)
         labels = [f"Task {i + 1}" for i in range(args.seq_len)]
         twin.set_xticklabels(labels, fontsize=10)
         twin.tick_params(axis='x', length=0)
-        for idx, label in enumerate(twin.get_xticklabels()):
-            label.set_color(colours[idx])
 
+        # Color task labels to match task curves
+        for idx, label in enumerate(twin.get_xticklabels()):
+            label.set_color(task_colors[idx])
+
+    # Set x-axis label on the bottom subplot
     axes[-1].set_xlabel('Environment Steps')
+
+    # Finalize and save the plot
     plt.tight_layout()
-    out = Path(__file__).resolve().parent.parent / 'plots'
-    out.mkdir(exist_ok=True)
-    name = args.plot_name or f"per_task_norm_reward"
-    plt.savefig(out / f"{name}.png")
-    plt.savefig(out / f"{name}.pdf")
+    out_dir = Path(__file__).resolve().parent.parent / 'plots'
+    name = args.plot_name or f"per_task_norm_{args.metric}"
+    save_plot(fig, out_dir, name)
+
+    # Display the plot
     plt.show()
 
 

@@ -20,6 +20,7 @@ runs/
 outputs/
 models/
 /results/data/
+/results/data_nips/
 *.dat
 
 .idea
