@@ -56,6 +56,12 @@ def agem_project(grads_ppo, grads_mem):
     }
     return grads_projected, stats
 
+def scale_by_batch_size(grads_mem, mem_bs, ppo_bs):
+    """Multiply every leaf so that the *average* per-sample gradient
+       of the memory batch has the same magnitude as that of PPO."""
+    factor = ppo_bs / mem_bs          # e.g. 2048 / 128 = 16
+    return jax.tree_util.tree_map(lambda g: g * factor, grads_mem)
+
 
 def sample_memory(agem_mem: AGEMMemory, sample_size: int, rng: jax.random.PRNGKey):
     idxs = jax.random.randint(rng, (sample_size,), minval=0, maxval=agem_mem.obs.shape[0])

@@ -10,7 +10,7 @@ import distrax
 
 
 class CNN(nn.Module):
-    activation: str = "tanh"
+    activation: str = "relu"
     @nn.compact
     def __call__(self, x):
         if self.activation == "relu":

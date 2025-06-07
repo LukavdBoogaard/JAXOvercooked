@@ -521,6 +521,121 @@ W     A   W
 WWWWWWWWWWW
 """
 
+
+###############################################################################################################
+###############################################################################################################
+###############################################################################################################
+
+# We create several copies for the 'easy_layout' layout so that we can test the performance of the model
+# on very similar environments 
+
+easy_layout_2 = """
+WWWWWW
+W A  X
+W    W
+W A  W
+O    B
+WWPWWW
+"""
+
+easy_layout_3 = """
+WWWWWW
+WO   P
+W A  W
+W  A W
+X    B
+WWWWWW
+"""
+
+easy_layout_4 = """
+WWWWWW
+WB  AW
+W    W
+W A  O
+W    P
+WWWXWW
+"""
+
+easy_layout_5 = """
+WWOXWW
+W A  W
+W    W
+W A  W
+W    W
+WBPWWW
+"""
+
+# And now we create the same ones but with extra padding: 
+
+easy_layout_padded = """
+WWWWWWWWWW
+WWWWWWWWWW
+WWWWWWWWWW
+WWO  A WWW
+WWP  A WWW
+WWB    WWW
+WWW  X WWW
+WWWWWWWWWW
+WWWWWWWWWW
+WWWWWWWWWW
+"""
+
+easy_layout_2_padded = """
+WWWWWWWWWW
+WWWWWWWWWW
+WWWWWWWWWW
+WWW A  XWW
+WWW    WWW
+WWW A  WWW
+WWO    BWW
+WWWWPWWWWW
+WWWWWWWWWW
+WWWWWWWWWW
+"""
+
+easy_layout_3_padded = """
+WWWWWWWWWW
+WWWWWWWWWW
+WWWWWWWWWW
+WWWO   PWW
+WWW A  WWW
+WWW  A WWW
+WWX    BWW
+WWWWWWWWWW
+WWWWWWWWWW
+WWWWWWWWWW
+"""
+
+easy_layout_4_padded = """
+WWWWWWWWWW
+WWWWWWWWWW
+WWWWWWWWWW
+WWWB  AWWW
+WWW    WWW
+WWW A  OWW
+WWW    PWW
+WWWWWXWWWW
+WWWWWWWWWW
+WWWWWWWWWW
+"""
+
+easy_layout_5_padded = """
+WWWWWWWWWW
+WWWWWWWWWW
+WWWWOXWWWW
+WWW A  WWW
+WWW    WWW
+WWW A  WWW
+WWW    WWW
+WWWBPWWWWW
+WWWWWWWWWW
+WWWWWWWWWW
+"""
+
+###############################################################################################################
+###############################################################################################################
+###############################################################################################################
+
 # Hard layouts
 hard_layouts = {
     "forced_coord": FrozenDict(forced_coord),
@@ -550,6 +665,10 @@ easy_layouts = {
     "shared_wall": layout_grid_to_dict(shared_wall),
     "smallest_kitchen": layout_grid_to_dict(smallest_kitchen),
     "easy_layout": layout_grid_to_dict(easy_layout),
+    "easy_layout_2": layout_grid_to_dict(easy_layout_2),
+    "easy_layout_3": layout_grid_to_dict(easy_layout_3),
+    "easy_layout_4": layout_grid_to_dict(easy_layout_4),
+    "easy_layout_5": layout_grid_to_dict(easy_layout_5),
     "no_cooperation": layout_grid_to_dict(no_cooperation),
     "vertical_corridors": layout_grid_to_dict(vertical_corridors),
     "horizontal_corridors": layout_grid_to_dict(horizontal_corridors),
@@ -563,9 +682,26 @@ easy_layouts = {
     "shared_wall_vertical": layout_grid_to_dict(shared_wall_vertical),
 }
 
+same_size_easy_layouts = { 
+    "easy_layout": layout_grid_to_dict(easy_layout),
+    "easy_layout_2": layout_grid_to_dict(easy_layout_2),
+    "easy_layout_3": layout_grid_to_dict(easy_layout_3),
+    "easy_layout_4": layout_grid_to_dict(easy_layout_4),
+    "easy_layout_5": layout_grid_to_dict(easy_layout_5),
+}   
+
+padded_layouts = {
+    "easy_layout_padded": layout_grid_to_dict(easy_layout_padded),
+    "easy_layout_padded_2": layout_grid_to_dict(easy_layout_2_padded),
+    "easy_layout_padded_3": layout_grid_to_dict(easy_layout_3_padded),
+    "easy_layout_padded_4": layout_grid_to_dict(easy_layout_4_padded),
+    "easy_layout_padded_5": layout_grid_to_dict(easy_layout_5_padded),
+}
+
 # All layouts
 overcooked_layouts = {
     **hard_layouts,
     **medium_layouts,
     **easy_layouts,
+    **padded_layouts
 }

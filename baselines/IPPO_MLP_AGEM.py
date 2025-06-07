@@ -67,7 +67,11 @@ class Config:
     shared_backbone: bool = False
     big_network: bool = False
     use_layer_norm: bool = False
-    activation: str = "tanh"
+    activation: str = "relu"
+    use_cnn: bool = False
+    regularize_critic: bool = False
+    regularize_heads: bool = True
+    use_layer_norm: bool = True
 
     # AGEM parameters
     max_memory_size: int = 10000
@@ -115,7 +119,6 @@ def main():
 
     # print the device that is being used
     print("Device: ", jax.devices())
-    
     config = tyro.cli(Config)
 
     # generate a sequence of tasks 
@@ -272,12 +275,9 @@ def main():
                 batched_obs = {}
                 for agent, v in obs.items():
                     v_b = jnp.expand_dims(v, axis=0)  # now (1, H, W, C)
-                    v_flat = jnp.reshape(v_b, (v_b.shape[0], -1))
-                    # if config.use_task_id:
-                    #     onehot = make_task_onehot(eval_idx, config.seq_length)  # shape (seq_length,)
-                    #     onehot = jnp.expand_dims(onehot, axis=0)  # (1, seq_length)
-                    #     v_flat = jnp.concatenate([v_flat, onehot], axis=1)
-                    batched_obs[agent] = v_flat
+                    if not config.use_cnn:
+                        v_b = jnp.reshape(v_b, (v_b.shape[0], -1))  # flatten
+                    batched_obs[agent] = v_b
 
                 def select_action(train_state, rng, obs):
                     '''
@@ -380,17 +380,19 @@ def main():
                           num_tasks=config.seq_length, 
                           shared_backbone=config.shared_backbone,
                           big_network=config.big_network,
-                          use_task_id=config.use_task_id)
+                          use_task_id=config.use_task_id,
+                          regularize_heads=config.regularize_heads,
+                          use_layer_norm=config.use_layer_norm)
     
     # if we use the task id we should add that to the obs space
-    obs_dim = np.prod(temp_env.observation_space().shape)
-    # if config.use_task_id:
-    #     obs_dim += config.seq_length
+    obs_dim = temp_env.observation_space().shape
+    if not config.use_cnn:
+        obs_dim = np.prod(obs_dim)
 
     # Initialize the network
     rng = jax.random.PRNGKey(config.seed)
     rng, network_rng = jax.random.split(rng)
-    init_x = jnp.zeros((1, obs_dim,))
+    init_x = jnp.zeros((1, *obs_dim)) if config.use_cnn else jnp.zeros((1, obs_dim,))
     network_params = network.init(network_rng, init_x)
 
     # Initialize the optimizer
@@ -542,13 +544,8 @@ def main():
             # create a batch of the observations that is compatible with the network
             last_obs_batch = batchify(last_obs, env.agents, config.num_actors)
 
-            # if config.use_task_id:
-            #     onehot = make_task_onehot(env_idx, config.seq_length)
-            #     onehot_batch = jnp.tile(onehot, (last_obs_batch.shape[0], 1))
-            #     last_obs_batch = jnp.concatenate([last_obs_batch, onehot_batch], axis=1)
-
             # apply the network to the batch of observations to get the value of the last state
-            _, last_val = network.apply(train_state.params, last_obs_batch)
+            _, last_val = network.apply(train_state.params, last_obs_batch, env_idx=env_idx)
             # this returns the value network for the last observation batch
             
             # @profile
@@ -625,7 +622,7 @@ def main():
                         returns the total loss and the value loss, actor loss, and entropy
                         '''
                         # apply the network to the observations in the trajectory batch
-                        pi, value = network.apply(params, traj_batch.obs) 
+                        pi, value = network.apply(params, traj_batch.obs, env_idx=env_idx) 
                         log_prob = pi.log_prob(traj_batch.action)
 
                         # calculate critic loss 
@@ -678,13 +675,17 @@ def main():
                             mem_obs, mem_actions, mem_log_probs,
                             mem_advs, mem_targets, mem_values
                         )
+                        # mem_bs = mem_obs.shape[0]
+                        # ppo_bs = config.minibatch_size
+                        # grads_mem = scale_by_batch_size(grads_mem, mem_bs, ppo_bs)
 
                         # Project the gradients to the half-space
                         grads_proj, agem_stats = agem_project(grads, grads_mem)
-
+                        
                         new_train_state = train_state.apply_gradients(grads=grads_proj)
 
                         final_stats = {**grads_stats, **agem_stats}
+                        
                         return new_train_state, final_stats
                     
                     def do_plain_ippo(train_state, grads, rng):
@@ -946,9 +947,6 @@ def main():
 
         for i, (env_rng, env) in enumerate(zip(env_rngs, envs)):
             train_state, rng, agem_mem = train_on_environment(env_rng, train_state, env, i, agem_mem)
-
-            # unpack the runner state
-            # train_state, env_state, last_obs, update_step, traj_batch, advantages, targets, rng = runner_state
 
             # Generate & log a GIF after finishing task i
             env_name = config.layout_name[i]
