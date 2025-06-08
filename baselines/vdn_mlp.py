@@ -28,29 +28,30 @@ from jax_marl.wrappers.baselines import (
     CTRolloutManager,
 )
 from jax_marl.environments.overcooked_environment import overcooked_layouts
-from architectures.q_network import QNetwork
+from architectures.Q_MLP import QNetwork
 from baselines.utils_vdn import (
     Timestep,
     CustomTrainState,
-    vdn_batchify as batchify,
-    vdn_unbatchify as unbatchify,
     eps_greedy_exploration,
-    get_greedy_actions
+    get_greedy_actions, 
+    vdn_batchify,
+    vdn_unbatchify
 )
+from baselines.utils import batchify, unbatchify
 import uuid
 
 
 @dataclass
 class Config:
-    total_timesteps: float = 5e6
-    num_envs: int = 64
-    num_steps: int = 1
+    total_timesteps: float = 1e7
+    num_envs: int = 16
+    num_steps: int = 128
     hidden_size: int = 64
     eps_start: float = 1.0
     eps_finish: float = 0.05
     eps_decay: float = 0.3
     max_grad_norm: int = 1
-    num_epochs: int = 4
+    num_epochs: int = 8
     lr: float = 0.00007
     lr_linear_decay: bool = True
     lambda_: float = 0.5 
@@ -68,6 +69,18 @@ class Config:
     test_num_envs: int = 32
     eval_num_episodes: int = 10
     seed: int = 30
+    
+    #architecture settings
+    use_cnn: bool = False
+    use_task_id: bool = False
+    use_multihead: bool = False
+    shared_backbone: bool = False
+    normalize_importance: bool = False
+    regularize_critic: bool = False
+    regularize_heads: bool = True
+    big_network: bool = False
+    use_layer_norm: bool = True
+    activation = "tanh"
 
     # Sequence settings 
     seq_length: int = 2
@@ -92,6 +105,7 @@ class Config:
 
     # To be computed during runtime
     num_updates: int = 0
+    num_actors: int = 0
 
 
 ###################################################
@@ -253,13 +267,26 @@ def main():
             '''
             def evaluation_step(step_state, unused):
                 last_obs, env_state, rng = step_state
+
                 rng, rng_a, rng_s = jax.random.split(rng, 3)
-                q_vals = jax.vmap(network.apply, in_axes=(None, 0))(
-                    train_state.params,
-                    batchify(last_obs, env.agents),  # (num_agents, num_envs, num_actions)
-                )  # (num_agents, num_envs, num_actions)
+
+                batched_obs = {}
+                for agent, v in last_obs.items():
+                    v_b = jnp.expand_dims(v, axis=0)  # now (1, H, W, C)
+                    if not config.use_cnn:
+                        v_b = jnp.reshape(v_b, (v_b.shape[0], -1))  # flatten
+                    batched_obs[agent] = v_b
+
+
+                # q_vals = jax.vmap(network.apply, in_axes=(None, 0))(
+                #     train_state.params,
+                #     batchify(batched_obs, env.agents, config.num_actors),  # (num_agents, num_envs, num_actions)
+                # )  # (num_agents, num_envs, num_actions)
+
+                q_vals = network.apply(train_state.params, batched_obs)
+
                 actions = jnp.argmax(q_vals, axis=-1)
-                actions = unbatchify(actions, env.agents)
+                actions = vdn_unbatchify(actions, env.agents)
                 new_obs, new_env_state, rewards, dones, infos = test_env.batch_step(
                     rng_s, env_state, actions
                 )
@@ -324,6 +351,7 @@ def main():
     config.num_updates = (
         config.total_timesteps // config.num_steps // config.num_envs
     )
+    
 
     eps_scheduler = optax.linear_schedule(
         config.eps_start,
@@ -331,21 +359,35 @@ def main():
         config.eps_decay * config.num_updates,
     )
 
-    # rew_shaping_anneal = optax.linear_schedule(
-    #     init_value=1.0, end_value=0.0, transition_steps=config.rew_shaping_horizon
-    # )
-
     # Initialize the network
     rng = jax.random.PRNGKey(config.seed)
     init_env = train_envs[0]
+
+    config.num_actors = config.num_envs * init_env.num_agents
+
+    # network = QNetwork(
+    #     action_dim=init_env.max_action_space,
+    #     hidden_size=config.hidden_size,
+    # )
+
     network = QNetwork(
         action_dim=init_env.max_action_space,
         hidden_size=config.hidden_size,
+        encoder_type=config.network_name,
+        activation=config.activation,
+        big_network=config.big_network,
+        use_layer_norm=config.use_layer_norm,
+        use_multihead=config.use_multihead,
+        use_task_id=config.use_task_id
     )
 
     rng, agent_rng = jax.random.split(rng)
 
-    init_x = jnp.zeros((1, *init_env.observation_space().shape))
+    obs_dim = init_env.observation_space().shape
+    if not config.use_cnn:
+        obs_dim = np.prod(obs_dim)
+
+    init_x = jnp.zeros((1, *obs_dim)) if config.use_cnn else jnp.zeros((1, obs_dim,))
     init_network_params = network.init(agent_rng, init_x)
 
     lr_scheduler = optax.linear_schedule(
@@ -452,10 +494,14 @@ def main():
 
                 rng, rng_action, rng_step = jax.random.split(rng, 3)
 
+                # prepare the observations for the network
+                obs_batch = batchify(last_obs, env.agents, config.num_actors,
+                                     not config.use_cnn) 
+
                 # Compute Q-values for all agents
                 q_vals = jax.vmap(network.apply, in_axes=(None, 0))(
                     train_state.params,
-                    batchify(last_obs, env.agents), 
+                    obs_batch, 
                 )  # (num_agents, num_envs, num_actions)
 
                 # retrieve the valid actions
@@ -465,7 +511,7 @@ def main():
                 eps = eps_scheduler(train_state.n_updates)
                 _rngs = jax.random.split(rng_action, env.num_agents)
                 new_action = jax.vmap(eps_greedy_exploration, in_axes=(0, 0, None, 0))(
-                    _rngs, q_vals, eps, batchify(avail_actions, env.agents)
+                    _rngs, q_vals, eps, vdn_batchify(avail_actions, env.agents)
                 )
                 actions = unbatchify(new_action, env.agents)
 
@@ -475,7 +521,7 @@ def main():
 
                 # add shaped reward
                 shaped_reward = infos.pop("shaped_reward")
-                shaped_reward["__all__"] = batchify(shaped_reward, env.agents).sum(axis=0)
+                shaped_reward["__all__"] = vdn_batchify(shaped_reward, env.agents).sum(axis=0)
                 rewards = jax.tree.map(
                     lambda x, y: x + y * rew_shaping_anneal(train_state.timesteps),
                     rewards,
@@ -522,10 +568,12 @@ def main():
                 rng, _rng = jax.random.split(rng)
                 minibatch = buffer.sample(buffer_state, _rng).experience # collects a minibatch of size buffer_batch_size
 
+                batched_sample =  batchify(minibatch.second.obs, env.agents, config.num_actors,
+                                     not config.use_cnn) 
                 q_next_target = jax.vmap(network.apply, in_axes=(None, 0))(
-                    train_state.target_network_params, batchify(minibatch.second.obs, env.agents)
-                )  # (num_agents, batch_size, ...)
-                q_next_target = jnp.max(q_next_target, axis=-1)  # (batch_size,)
+                    train_state.target_network_params, batched_sample)
+                
+                q_next_target = jnp.max(q_next_target, axis=-1)  
 
                 vdn_target = minibatch.first.rewards["__all__"] + (
                     1 - minibatch.first.dones["__all__"]
@@ -534,14 +582,15 @@ def main():
                 )  # sum over agents
 
                 def _loss_fn(params):
+                    batched_obs =  batchify(minibatch.first.obs, env.agents, config.num_actors,
+                                     not config.use_cnn) 
                     q_vals = jax.vmap(network.apply, in_axes=(None, 0))(
-                        params, batchify(minibatch.first.obs, env.agents)
-                    )  # (num_agents, batch_size, ...)
+                        params, batched_obs)  
 
                     # get logits of the chosen actions
                     chosen_action_q_vals = jnp.take_along_axis(
                         q_vals,
-                        batchify(minibatch.first.actions, env.agents)[..., jnp.newaxis],
+                        vdn_batchify(minibatch.first.actions, env.agents)[..., jnp.newaxis],
                         axis=-1,
                     ).squeeze()  # (num_agents, batch_size, )
 

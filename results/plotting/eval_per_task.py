@@ -129,12 +129,12 @@ def plot():
             mean, ci = smooth_and_ci(curve, args.sigma, args.confidence)
             x = np.linspace(0, total, len(mean))
             ax.plot(x, mean, color=colours[i])
-            ax.fill_between(x, mean - ci, mean + ci, alpha=0.2, color=colours[i])
+            ax.fill_between(x, mean - ci, mean + ci, alpha=0.1, color=colours[i])
 
         ax.set_xlim(0, total)
         ax.set_ylim(0, 1)
         ax.set_ylabel("Normalized Score")
-        ax.set_title(method, fontsize=11)
+        ax.set_title(method, fontsize=13, fontweight="bold")
 
         twin = ax.twiny()
         twin.set_xlim(ax.get_xlim())
@@ -147,7 +147,7 @@ def plot():
 
     axes[-1].set_xlabel('Environment Steps')
     plt.tight_layout()
-    out = Path(__file__).resolve().parent.parent / 'plots'
+    out = Path(__file__).resolve().parent.parent / 'ti_plots'
     out.mkdir(exist_ok=True)
     name = args.plot_name or f"per_task_norm_reward"
     plt.savefig(out / f"{name}.png")

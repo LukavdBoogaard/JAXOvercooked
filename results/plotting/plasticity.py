@@ -25,13 +25,11 @@ CRIT = {0.9: 1, 0.95: 1.96, 0.99: 2.576}
 
 # add colours as you please
 COL = {
-    "CBP": "#2F4B7C",
     "EWC": "#12939A",
     "MAS": "#FF6E54",
     "AGEM": "#FFA600",
     "L2": "#003F5C",
     "PackNet": "#BC5090",
-    "ReDo": "#58508D",
 }
 
 
@@ -66,7 +64,7 @@ def _collect_runs(base: Path, algo: str, method: str, arch: str, strat: str,
     """Return array (n_seeds, T) of normalised cumulative-avg curves."""
     runs = []
     for seed in seeds:
-        run_dir = base / algo / method / arch / f"{strat}_{seq_len}" / f"seed_{seed}"
+        run_dir = base / algo / method / f"{strat}_{seq_len}" / f"seed_{seed}"
         if not run_dir.exists():
             continue
 

@@ -424,7 +424,7 @@ def main():
         obs_dim = np.prod(obs_dim)
 
     # Initialize the network
-    rng = jax.random.PRNGKey(config.seed)
+    rng = jax.random.PRNGKey(config.seed) 
     rng, network_rng = jax.random.split(rng)
     init_x = jnp.zeros((1, *obs_dim)) if config.use_cnn else jnp.zeros((1, obs_dim,))
     network_params = network.init(network_rng, init_x)
@@ -846,7 +846,10 @@ def main():
                 def do_not_log(metric, update_step):
                     return None
 
-                jax.lax.cond((update_step % config.log_interval) == 0, log_metrics, do_not_log, metric, update_step)
+                jax.lax.cond((update_step % config.log_interval) == 0, 
+                             log_metrics, do_not_log,
+                               metric, 
+                               update_step)
 
             # Evaluate the model and log the metrics
             evaluate_and_log(rng=rng, update_step=update_step)

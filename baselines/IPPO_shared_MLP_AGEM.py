@@ -21,13 +21,7 @@ from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer
 from jax_marl.wrappers.baselines import LogWrapper
 from architectures.shared_mlp import ActorCritic
 from baselines.utils import *
-from cl_methods.AGEM import (
-    init_agem_memory, 
-    sample_memory, 
-    compute_memory_gradient,
-    agem_project, 
-    update_agem_memory
-)
+from cl_methods.AGEM import *
 
 os.environ["TF_CUDNN_DETERMINISTIC"] = "1"
 
@@ -109,11 +103,11 @@ def main():
 
     config = tyro.cli(Config)
 
-     # generate a sequence of tasks 
+    # generate a sequence of tasks 
     config = generate_sequence_of_tasks(config)
 
     # generate the run name
-    network = "shared_cnn" if config.shared_backbone else "cnn"
+    network = "shared_mlp" if config.shared_backbone else "mlp"
     run_name = create_run_name(config, network)
     exp_dir = os.path.join("runs", run_name)
 
@@ -351,7 +345,7 @@ def main():
     config.num_updates = config.total_timesteps // config.num_steps // config.num_envs
     config.minibatch_size = (config.num_actors * config.num_steps) // config.num_minibatches
 
-    # Create a global memory for all tasks
+    # # Create a global memory for all tasks
     OBS_DIM = np.prod(temp_env.observation_space().shape)  # flatten shape
     agem_mem = init_agem_memory(config.max_memory_size, OBS_DIM)
 
@@ -440,7 +434,7 @@ def main():
         rew_shaping_anneal = optax.linear_schedule(
             init_value=1.,
             end_value=0.,
-            transition_steps=config.total_timesteps
+            transition_steps=config.reward_shaping_horizon
         )
 
         # TRAIN
@@ -727,6 +721,7 @@ def main():
                     )
 
                     # Pack all relevant results for logging
+                    new_train_state, agem_stats = do_plain(None)
                     ppo_stats = {
                         "total_loss": total_loss,
                         "value_loss": value_loss,
@@ -996,6 +991,8 @@ def main():
 
     # Run the model
     rng, train_rng = jax.random.split(rng)
+
+    agem_mem = None
 
     # apply the loop_over_envs function to the environments
     loop_over_envs(train_rng, train_state, envs, agem_mem)

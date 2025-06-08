@@ -21,7 +21,7 @@ class CustomTrainState(TrainState):
     grad_steps: int = 0
 
 
-def batchify(x: dict, agent_list: List[str]):
+def vdn_batchify(x: dict, agent_list: List[str]):
     '''
     stack the observations of all agents into a single array
     @param x: the observations
@@ -30,7 +30,7 @@ def batchify(x: dict, agent_list: List[str]):
     '''
     return jnp.stack([x[agent] for agent in agent_list], axis=0)
 
-def unbatchify(x: jnp.ndarray, agent_list: List[str]):
+def vdn_unbatchify(x: jnp.ndarray, agent_list: List[str]):
     '''
     unstack the observations of all agents into a dictionary
     @param x: the batchified observations

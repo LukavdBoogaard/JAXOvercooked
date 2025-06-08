@@ -4,7 +4,7 @@ import argparse
 
 from wandb.apis.public import Run
 
-FORBIDDEN_TAGS = {"TEST", "LOCAL"}
+FORBIDDEN_TAGS = {"TEST", "LOCAL", "old_L2"}
 
 
 # ---------------------------------------------------------------------------

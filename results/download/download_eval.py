@@ -28,7 +28,7 @@ from results.download.common import cli, want
 EVAL_PREFIX = "Scaled_returns/evaluation_"
 KEY_PATTERN = re.compile(rf"^{re.escape(EVAL_PREFIX)}(\d+)__(.+)_scaled$")
 TRAINING_KEY = "Scaled_returns/returned_episode_returns_scaled"
-TAG_ORDERING = ['shared_backbone', 'use_multihead', 'task_id']
+TAG_ORDERING = ["same_size_padded", "same_size_levels"]
 
 # ---------------------------------------------------------------------------
 # HELPERS
@@ -119,7 +119,7 @@ def main() -> None:
                     tag_path /= tag
 
         out_base = (base_workspace / args.output / algo / cl_method /
-                    f"{strategy}_{seq_len}" / f"seed_{seed}")
+                    f"{strategy}_{seq_len}" / tag_path / f"seed_{seed}") 
 
         # iterate keys, skipping existing files unless overwrite
         for key in discover_eval_keys(run):

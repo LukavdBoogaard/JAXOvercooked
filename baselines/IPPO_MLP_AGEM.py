@@ -47,7 +47,7 @@ class Config:
     anneal_lr: bool = True
     num_envs: int = 16
     num_steps: int = 128
-    total_timesteps: float = 1e7
+    total_timesteps: float = 7e6
     update_epochs: int = 8
     num_minibatches: int = 8
     gamma: float = 0.99
@@ -66,7 +66,6 @@ class Config:
     use_multihead: bool = False
     shared_backbone: bool = False
     big_network: bool = False
-    use_layer_norm: bool = False
     activation: str = "relu"
     use_cnn: bool = False
     regularize_critic: bool = False
@@ -76,7 +75,7 @@ class Config:
     # AGEM parameters
     max_memory_size: int = 10000
 
-    seq_length: int = 2
+    seq_length: int = 4 
     strategy: str = "random"
     layouts: Optional[Sequence[str]] = field(default_factory=lambda: [])
     env_kwargs: Optional[Sequence[dict]] = None
@@ -84,7 +83,7 @@ class Config:
 
     # Evaluation & Logging
     evaluation: bool = True
-    log_interval: int = 75
+    log_interval: int = 120
     eval_num_steps: int = 1000
     eval_num_episodes: int = 5
     gif_len: int = 300
