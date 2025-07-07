@@ -34,7 +34,7 @@ plt.rcParams['axes.grid'] = False
 # CRIT = {0.9: 1.833, 0.95: 1.96, 0.99: 2.576}
 CRIT = {0.9: 1, 0.95: 1.96, 0.99: 2.576}
 ALGO_COLORS = {
-    'CNN': '#12939A', 'FT': '#FF6E54'
+    'CNN': '#12939A', 'MLP': '#FF6E54'
 }
 
 
@@ -157,7 +157,7 @@ def plot():
     secax.tick_params(axis='x', length=0)
 
     # labels & legend
-    y_label = 'Average Success' if args.metric == 'success' else 'Average Performance'
+    y_label = 'Average Success' if args.metric == 'success' else 'IPPO Score Normalized '
     ax.set_xlabel('Environment Steps')
     ax.set_ylabel(y_label)
     ax.set_xlim(0, total_steps)

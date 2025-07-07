@@ -73,8 +73,7 @@ class Config:
     seq_length: int = 2
     strategy: str = "random"
     layouts: Optional[Sequence[str]] = field(
-        default_factory=lambda: ["asymm_advantages", "smallest_kitchen", "cramped_room", 
-                                 "easy_layout", "square_arena", "no_cooperation"])
+        default_factory=lambda: [])
     env_kwargs: Optional[Sequence[dict]] = None
     layout_name: Optional[Sequence[str]] = None
 

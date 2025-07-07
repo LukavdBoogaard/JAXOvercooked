@@ -632,6 +632,17 @@ WWWWWWWWWW
 WWWWWWWWWW
 """
 
+
+presentation_layout = """
+WWOWWWWPWWWW
+W          W
+W  A       W
+WWWWWWWBW  W
+W   A      W
+X          W
+WWWWWWWWWWWW
+"""
+
 ###############################################################################################################
 ###############################################################################################################
 ###############################################################################################################
@@ -688,6 +699,7 @@ same_size_easy_layouts = {
     "easy_layout_3": layout_grid_to_dict(easy_layout_3),
     "easy_layout_4": layout_grid_to_dict(easy_layout_4),
     "easy_layout_5": layout_grid_to_dict(easy_layout_5),
+    "presentation_layout": layout_grid_to_dict(presentation_layout),
 }   
 
 padded_layouts = {

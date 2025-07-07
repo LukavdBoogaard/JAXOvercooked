@@ -10,6 +10,8 @@ from jax_marl.environments.overcooked_environment.layouts import (
     hard_layouts,
     medium_layouts,
     easy_layouts,
+    same_size_easy_layouts,
+    padded_layouts
 )
 from jax_marl.viz.overcooked_visualizer import OvercookedVisualizer, TILE_PIXELS
 
@@ -41,6 +43,7 @@ def save_start_states(grouped_layouts, base_dir: str = "../../assets/screenshots
             _, state = env.reset(subkey)
 
             grid = np.asarray(crop_to_minimal(state, env.agent_view_size))
+            # grid = np.asarray(state.maze_map)
 
             img = vis._render_grid(
                 grid,
@@ -58,8 +61,7 @@ def save_start_states(grouped_layouts, base_dir: str = "../../assets/screenshots
 if __name__ == "__main__":
     save_start_states(
         {
-            "easy": easy_layouts,
-            "medium": medium_layouts,
-            "hard": hard_layouts,
+            "same_size": same_size_easy_layouts,
+            "padded": padded_layouts
         }
     )

@@ -22,6 +22,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 from scipy.ndimage import gaussian_filter1d
+import re
 
 # plotting defaults ---------------------------------------------------
 sns.set_theme(style="whitegrid", context="notebook")
@@ -54,8 +55,8 @@ def load_series(fp: Path) -> np.ndarray:
 
 
 def collect_env_curves(base: Path, algo: str, method: str, strat: str,
-                       seq_len: int, seeds: List[int]):
-    folder = base / algo / method / f"{strat}_{seq_len}"
+                       seq_len: int, seeds: List[int] ):
+    folder = base / algo / method / f"{strat}_{seq_len}" 
     env_names, per_env_seed = [], []
 
     # discover envs
@@ -63,13 +64,17 @@ def collect_env_curves(base: Path, algo: str, method: str, strat: str,
         sd = folder / f"seed_{seed}"
         if not sd.exists():
             continue
-        files = sorted(f for f in sd.glob(f"*_reward.*") if "training" not in f.name)
+        # files = sorted(f for f in sd.glob(f"*_reward.*") if "training" not in f.name)
+        files = sorted(
+            (f for f in sd.glob("*_reward.*") if "training" not in f.name),
+            key=lambda p: int(re.match(r"(\d+)_", p.name).group(1))
+        )
+        print(files)
         if not files:
             continue
         suffix = "_reward"
         env_names = [f.name.split('_', 1)[1].rsplit(suffix, 1)[0] for f in files]
         per_env_seed = [[] for _ in env_names]
-        break
     if not env_names: raise RuntimeError(f'No data for {method}')
 
     # gather
@@ -77,9 +82,7 @@ def collect_env_curves(base: Path, algo: str, method: str, strat: str,
         sd = folder / f"seed_{seed}"
         if not sd.exists(): continue
         for idx, env in enumerate(env_names):
-            fp = sd / f"{idx}_{env}_reward.json"
-            if not fp.exists(): fp = sd / f"{idx}_{env}_reward.npz"
-            if not fp.exists(): continue
+            fp = list(sd.glob(f"{idx}_*_reward.json"))[0]
             arr = load_series(fp)
             per_env_seed[idx].append(arr)
 
@@ -97,7 +100,7 @@ def collect_env_curves(base: Path, algo: str, method: str, strat: str,
 
 
 def smooth_and_ci(data: np.ndarray, sigma: float, conf: float):
-    mean = gaussian_filter1d(np.nanmean(data, axis=0), sigma=sigma)
+    mean = gaussian_filter1d(np.nanmean(data, axis=0), sigma=1)
     sd = gaussian_filter1d(np.nanstd(data, axis=0), sigma=sigma)
     ci = CRIT[conf] * sd / np.sqrt(data.shape[0])
     return mean, ci

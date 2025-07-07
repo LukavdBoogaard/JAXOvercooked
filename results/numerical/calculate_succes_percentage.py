@@ -45,7 +45,7 @@ avg_count_vdn = loop_over_seeds(vdn_path, 5, [0, 1, 2, 3, 4], file_name)
 
 ippo_path = Path("/home/luka/repo/JAXOvercooked/results/data/experiment_1/ippo/CNN/random_15")
 file_name = "training_reward.json"
-avg_count_ippo_15 = loop_over_seeds(ippo_path, 15, [0, 2, 3, 4, 5], file_name)
+avg_count_ippo_15 = loop_over_seeds(ippo_path, 15, [0, 2, 3, 4, 1], file_name)
 vdn_path = Path("/home/luka/repo/JAXOvercooked/results/data/experiment_1/vdn/CNN/random_15")
 avg_count_vdn_15 = loop_over_seeds(vdn_path, 15, [0, 1, 2, 3, 4], file_name)
 
@@ -69,6 +69,8 @@ rects1 = ax.bar(x - width/2, ippo, width, label='IPPO')
 rects2 = ax.bar(x + width/2, vdn, width, label='VDN')
 
 # Add some text for labels, title and axes ticks
+ax.spines['top'].set_visible(False)
+ax.spines['right'].set_visible(False)
 ax.set_ylabel('Success Percentage')
 ax.set_xlabel('Sequence Length')
 # ax.set_title('Comparison of IPPO and VDN')

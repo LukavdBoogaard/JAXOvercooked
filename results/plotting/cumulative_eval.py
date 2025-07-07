@@ -75,7 +75,7 @@ def plot():
 
     # Calculate total steps and set up figure
     total_steps = args.seq_len * args.steps_per_task
-    fig, ax = setup_figure(width=10, height=4)
+    fig, ax = setup_figure(width=12, height=4)
 
     # Dictionary to store data for each method
     method_data = {}
@@ -118,7 +118,7 @@ def plot():
     )
 
     # Save the plot
-    out_dir = Path(__file__).resolve().parent.parent / 'plots'
+    out_dir = Path(__file__).resolve().parent.parent / 'ti_plots'
     stem = args.plot_name or "avg_cumulative"
     save_plot(fig, out_dir, stem)
 

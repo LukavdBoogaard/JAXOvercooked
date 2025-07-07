@@ -60,6 +60,7 @@ df = pd.DataFrame(records)
 df
 
 print(df.head())
+exit(0)
 
 print(df['avg_reward'].describe())   # sanity check on your metric
 for col in ['cnn','shared','multihead','task_id']:

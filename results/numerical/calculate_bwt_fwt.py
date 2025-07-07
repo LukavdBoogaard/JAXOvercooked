@@ -11,135 +11,13 @@ import statistics
 import matplotlib.pyplot as plt
 import jax.numpy as jnp
 import seaborn as sns
-
-# def chunk_list_by(array: list[float], seq_length) -> list[list[float]]:
-#     n = len(array) // seq_length
-#     return [array[i * n:(i + 1) * n] for i in range(seq_length)]
-
-
-# def create_matrix(seq_len, chunks):
-#     pass
-
-
-
-# def compute_fwt(matrix):
-#     """
-#     Computes the forward transfer for all tasks in a sequence
-#     param matrix: a 2D array of shape (num_tasks + 1, num_tasks) where each entry is the performance of the model on the task
-#     """
-#     # Assert that the matrix has the correct shape
-#     assert matrix.shape[0] == matrix.shape[1] + 1, "Matrix must have shape (num_tasks + 1, num_tasks)"
-
-#     num_tasks = matrix.shape[1]
-
-#     fwt_matrix = np.full((num_tasks, num_tasks), np.nan)
-
-#     for i in range(1, num_tasks):
-#         for j in range(i):  # j < i
-#             before_learning = matrix[0, i]
-#             after_task_j = matrix[j + 1, i]
-#             fwt_matrix[i, j] = after_task_j - before_learning
-
-#     return fwt_matrix
-
-
-# def compute_bwt(matrix):
-#     """
-#     Computes the backward transfer for all tasks in a sequence
-#     param matrix: a 2D array of shape (num_tasks + 1, num_tasks) where each entry is the performance of the model on the task
-#     """
-#     assert matrix.shape[0] == matrix.shape[1] + 1, "Matrix must have shape (num_tasks + 1, num_tasks)"
-#     num_tasks = matrix.shape[1]
-
-#     bwt_matrix = jnp.full((num_tasks, num_tasks), jnp.nan)
-
-#     for i in range(num_tasks - 1):
-#         for j in range(i + 1, num_tasks):
-#             after_j = matrix[j + 1, i]  # performance on task i after learning task j
-#             after_i = matrix[i + 1, i]  # performance on task i after learning task i
-#             bwt_matrix = bwt_matrix.at[i, j].set(after_j - after_i)
-
-#     return bwt_matrix
-
-
-# def show_heatmap_bwt(matrix, run_name, save_folder="heatmap_images"):
-#     # Ensure the save folder exists
-#     if not os.path.exists(save_folder):
-#         os.makedirs(save_folder)
-
-#     bwt_matrix = compute_bwt(matrix)
-#     avg_bwt_per_step = np.nanmean(bwt_matrix, axis=0)
-
-#     fig, ax = plt.subplots(figsize=(10, 7))
-#     sns.heatmap(bwt_matrix, annot=True, cmap="coolwarm", center=0, fmt=".2f",
-#                 xticklabels=[f"Task {j}" for j in range(bwt_matrix.shape[1])],
-#                 yticklabels=[f"Task {i}" for i in range(bwt_matrix.shape[0])],
-#                 cbar_kws={"label": "BWT"})
-#     ax.set_title("Progressive Backward Transfer Matrix")
-#     ax.set_xlabel("Task B")
-#     ax.set_ylabel("Task A")
-#     plt.xticks(rotation=45, ha='right', rotation_mode='anchor')
-
-#     # Add average BWT per step below the heatmap
-#     for j, val in enumerate(avg_bwt_per_step):
-#         if not np.isnan(val):
-#             ax.text(j + 0.5, len(avg_bwt_per_step) + 0.2, f"{val:.2f}",
-#                     ha='center', va='bottom', fontsize=9, color='black')
-#     plt.text(-0.7, len(avg_bwt_per_step) + 0.2, "Avg", fontsize=10, va='bottom', weight='bold')
-
-#     plt.tight_layout()
-
-#     # Save the figure
-#     file_path = os.path.join(save_folder, f"{run_name}_bwt_heatmap.png")
-#     plt.savefig(file_path)
-#     plt.close()
-
-
-# def show_heatmap_fwt(matrix, run_name, save_folder="heatmap_images"):
-#     if not os.path.exists(save_folder):
-#         os.makedirs(save_folder)
-
-#     fwt_matrix = compute_fwt(matrix)
-#     avg_fwt_per_step = np.nanmean(fwt_matrix, axis=0)
-
-#     fig, ax = plt.subplots(figsize=(10, 7))
-#     sns.heatmap(fwt_matrix, annot=True, cmap="coolwarm", center=0, fmt=".2f",
-#                 xticklabels=[f"Task {j}" for j in range(fwt_matrix.shape[1])],
-#                 yticklabels=[f"Task {i}" for i in range(fwt_matrix.shape[0])],
-#                 cbar_kws={"label": "FWT"})
-#     ax.set_title("Progressive Forward Transfer Matrix")
-#     ax.set_xlabel("Task B")
-#     ax.set_ylabel("Task A")
-
-#     plt.xticks(rotation=45, ha='right', rotation_mode='anchor')
-
-#     for j, val in enumerate(avg_fwt_per_step):
-#         if not np.isnan(val):
-#             ax.text(j + 0.5, len(avg_fwt_per_step) + 0.2, f"{val:.2f}",
-#                     ha='center', va='bottom', fontsize=9, color='black')
-
-#     plt.text(-0.7, len(avg_fwt_per_step) + 0.2, "Avg", fontsize=10, va='bottom', weight='bold')
-
-#     plt.tight_layout()
-
-#     file_path = os.path.join(save_folder, f"{run_name}_fwt_heatmap.png")
-#     plt.savefig(file_path)
-#     plt.close()
-
-
 import os, re, json, glob
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
 from typing import List, Dict
-
-# ───────────────────────────── CONFIG ───────────────────────────── #
-ROOT      = Path("/home/luka/repo/JAXOvercooked/results/data/experiment_2/ippo")
-METHODS   = ["EWC"]
-SEQUENCES = ["random_5"]
-SEEDS     = [0, 1, 2, 3, 4]
-# ─────────────────────────────────────────────────────────────────── #
+from scipy import stats
 
 # ---------- helpers ------------------------------------------------
 def load_json_array(fname: Path) -> np.ndarray:
@@ -184,7 +62,6 @@ def build_R(task_traces: List[np.ndarray],
     for i in range(T):
         for j in range(T):
             R[i+1, j] = np.mean(chunked[j][i][-n_points:])   # last n_points
-    print(R)
     return R
 
 # ---------- transfer matrices -------------------------------------
@@ -203,69 +80,226 @@ def compute_bwt_matrix(R: np.ndarray) -> np.ndarray:
     bwt = np.full((T, T), np.nan)
     for i in range(T-1):
         for j in range(i+1, T):
-            bwt[i, j] = R[i+1, i] - R[j+1, i]
+            bwt[i, j] = R[j+1, i] - R[i+1, i]
     return bwt
+
+CUT_OFFS = [5, 10, 15, 20, 25]      # evaluate after these many tasks
+EPS      = 1e-6   
+
+def compute_nbwt_matrix(R: np.ndarray, eps: float = EPS) -> np.ndarray:
+    """
+    NBWT[i, j] = (R[j+1, i] – R[i+1, i]) / R[i+1, i]
+                 for every j > i, provided R[i+1, i] > eps.
+    Invalid entries are set to NaN so they drop out of np.nanmean.
+    """
+    assert R.shape[0] == R.shape[1] + 1
+    T = R.shape[1]
+    nbwt = np.full((T, T), np.nan, dtype=np.float32)
+
+    for i in range(T - 1):
+        denom = R[i + 1, i]         # score immediately after finishing task i
+        if denom <= eps:
+            continue                # model never really learned task i
+        for j in range(i + 1, T):
+            nbwt[i, j] = (R[j + 1, i] - denom) / denom
+    return nbwt
+
+
+def compute_single_nbwt(nbwt_matrix: np.ndarray) -> float:
+    if np.all(np.isnan(nbwt_matrix)):
+        return np.nan
+    return float(np.nanmean(nbwt_matrix))
+
+
+def compute_single_bwt(bwt_matrix: np.ndarray) -> float:
+    """Return the average of all valid (non‑NaN) entries of *bwt_matrix*."""
+    if np.all(np.isnan(bwt_matrix)):
+        return np.nan
+    return float(np.nanmean(bwt_matrix))
+
+
+
+def mean_and_count(mat: np.ndarray) -> tuple[float, int]:
+    """Return (nan-aware mean, number of finite entries)."""
+    mask  = ~np.isnan(mat)
+    count = int(mask.sum())
+    mean  = float(np.nanmean(mat)) if count else np.nan
+    return mean, count
+
+
+def mean_ci95(values: list[float]) -> tuple[float, float]:
+    arr  = np.asarray(values, dtype=np.float32)
+    mean = np.nanmean(arr)
+    # ignore NaNs when counting df
+    n    = np.sum(~np.isnan(arr))
+    if n < 2:
+        return float(mean), np.nan
+    sem  = stats.sem(arr, nan_policy="omit")
+    ci95 = 1.96 * sem            # normal approx.
+    return float(mean), float(ci95)
+
+# ───────────────────────────── CONFIG ───────────────────────────── #
+ROOT      = Path("/home/luka/repo/JAXOvercooked/results/layout_data_raw/ippo/Online EWC/random_5/TI")
+METHODS   = ["easy_levels", "hard_levels", "medium_levels"]
+SEEDS     = [1, 2, 3, 4]
+# ─────────────────────────────────────────────────────────────────── #
+LABELS = {"easy_levels":   "Easy",
+          "medium_levels": "Medium",
+          "hard_levels":   "Hard"}
+
 
 # ---------- aggregation & plotting --------------------------------
 def aggregate_fwt_bwt(run_root: Path,
                       n_points: int = 5,
                       plot: bool = True):
     """
-    Loop over METHODS × SEQUENCES, average FWT and BWT over SEEDS.
+    
     """
-    for method in METHODS:
-        for seq in SEQUENCES:
-            R_list, fwt_list, bwt_list = [], [], []
+    bwt_rows = []
+    nbwt_rows = []
+    # -------------- inside aggregate_fwt_bwt --------------------------
+    for method in METHODS:                          # "easy_levels" … "hard_levels"
+        single_bwt_per_seed  = []
+        single_nbwt_per_seed = []
 
-            for seed in SEEDS:
-                run_dir = run_root / method / seq / f"seed_{seed}"
-                json_files = natural_sort(run_dir.glob("*_reward.json"))
-                # ignore training_reward.json
-                json_files = [f for f in json_files if not f.name.startswith("training_reward")]
-
-                if not json_files:
-                    print(f"No reward files in {run_dir}")
-                    continue
-
-                task_traces = [load_json_array(f) for f in json_files]
-                R = build_R(task_traces, n_points=n_points)
-                R_list.append(R)
-                fwt_list.append(compute_fwt_matrix(R))
-                bwt_list.append(compute_bwt_matrix(R))
-
-            if not R_list:
+        for seed in SEEDS:
+            run_dir = run_root / method / f"seed_{seed}"
+            json_files = natural_sort(run_dir.glob("*_reward.json"))
+            json_files = [f for f in json_files
+                        if not f.name.startswith("training_reward")]
+            if not json_files:
+                print(f"No reward files in {run_dir}")
                 continue
 
-            R_mean = np.nanmean(R_list, axis=0)
-            fwt_mean = np.nanmean(fwt_list, axis=0)
-            fwt_std  = np.nanstd (fwt_list, axis=0)
-            bwt_mean = np.nanmean(bwt_list, axis=0)
-            bwt_std  = np.nanstd (bwt_list, axis=0)
+            task_traces = [load_json_array(f) for f in json_files]
+            R        = build_R(task_traces, n_points=n_points)
+            bwt_mat  = compute_bwt_matrix(R)
+            nbwt_mat = compute_nbwt_matrix(R)
 
-            # ── optional plots ────────────────────────────────────────────
-            if plot:
-                save_dir = run_root / method / seq / "heatmaps"
-                save_dir.mkdir(exist_ok=True, parents=True)
+            single_bwt_per_seed.append(compute_single_bwt(bwt_mat))
+            single_nbwt_per_seed.append(compute_single_nbwt(nbwt_mat))
 
-                for name, mat in [("fwt", fwt_mean), ("bwt", bwt_mean)]:
-                    plt.figure(figsize=(8,6))
-                    sns.heatmap(mat, annot=True, fmt=".2f",
-                                cmap="coolwarm", center=0,
-                                xticklabels=[f"Task {j}" for j in range(mat.shape[1])],
-                                yticklabels=[f"Task {i}" for i in range(mat.shape[0])])
-                    plt.title(f"{method} – {seq} – mean {name.upper()} over {len(R_list)} seeds")
-                    plt.xlabel("Task B"), plt.ylabel("Task A")
-                    plt.tight_layout()
-                    plt.savefig(save_dir / f"{name}_mean.png")
-                    plt.close()
+        # ---------- store per-difficulty aggregate ------------------- #
+        mean_bwt,  ci95_bwt  = mean_ci95(single_bwt_per_seed)
+        mean_nbwt, ci95_nbwt = mean_ci95(single_nbwt_per_seed)
 
-            # ── report numbers ───────────────────────────────────────────
-            print(f"\n{method} / {seq}  – averaged over {len(R_list)} seeds")
-            print("Mean FWT:\n", fwt_mean)
-            print("Std  FWT:\n", fwt_std)
-            print("Mean BWT:\n", bwt_mean)
-            print("Std  BWT:\n", bwt_std)
-            print("Average performance: \n", R_mean)
+        bwt_rows.append(
+            {"difficulty": method,          # <- keep raw key
+            "mean":       mean_bwt,
+            "ci95":       ci95_bwt,
+            "n":          len(single_bwt_per_seed)}
+        )
+        nbwt_rows.append(
+            {"difficulty": method,
+            "mean":       mean_nbwt,       # <- the NBWT mean
+            "ci95":       ci95_nbwt,
+            "n":          len(single_nbwt_per_seed)}
+        )
+
+    # ------------------------------------------------------------------
+    # DataFrames
+    bwt_df  = pd.DataFrame(bwt_rows)
+    nbwt_df = pd.DataFrame(nbwt_rows)
+
+    # plotting (example for BWT)
+    palette   = {"easy_levels": '#4E79A7',
+                "medium_levels": '#F28E2B',
+                "hard_levels": '#E15759'}
+    seq_order = ["easy_levels", "medium_levels", "hard_levels"]
+
+    # plot_df = bwt_df.set_index("difficulty").reindex(seq_order).reset_index()
+    plot_df = nbwt_df.set_index("difficulty").reindex(seq_order).reset_index()
+
+    fig, ax = plt.subplots(figsize=(6, 4))
+    x = np.arange(len(seq_order))
+    bar_w = 0.55
+
+    ax.bar(
+        x,
+        plot_df["mean"].values,
+        bar_w,
+        yerr=plot_df["ci95"].values,
+        capsize=5,
+        color=[palette[s] for s in seq_order],
+        alpha=0.95,
+        zorder=3,
+    )
+
+    ax.set_xticks(x)
+    ax.set_xticklabels([LABELS[s] for s in seq_order])   # "Easy Medium Hard"
+    ax.set_ylabel("Backward Transfer (BWT)")
+    ax.yaxis.grid(True, linestyle='-', alpha=0.5, zorder=0)
+
+    plt.tight_layout()
+    out = run_root / "plots";  out.mkdir(exist_ok=True)
+    stem = "ewc_nbwt_difficulty_barchart"
+    plt.savefig(out / f"{stem}.png",  bbox_inches="tight")
+    plt.savefig(out / f"{stem}.pdf",  bbox_inches="tight")
+    plt.show()
+
+        # ── optional plots ────────────────────────────────────────────
+        # if plot:
+        #     save_dir = run_root / method / "heatmaps"
+        #     save_dir.mkdir(exist_ok=True, parents=True)
+
+        #     # for name, mat in [("bwt", bwt_mean), ("nbwt", nbwt_mean)]:
+        #     #     plt.figure(figsize=(16,10))
+        #     #     sns.heatmap(mat, annot=False, fmt=".2f",
+        #     #                 cmap="coolwarm", center=0,
+        #     #                 vmin=-1, vmax=0.1,
+        #     #                 xticklabels=[f"Task {j}" for j in range(mat.shape[1])],
+        #     #                 yticklabels=[f"Task {i}" for i in range(mat.shape[0])])
+        #     #     plt.title(f"{method} – {seq} – mean {name.upper()} over {len(R_list)} seeds")
+        #     #     plt.xlabel("Task B"), plt.ylabel("Task A")
+        #     #     plt.tight_layout()
+        #     #     plt.savefig(save_dir / f"{name}_mean_{method}.png")
+        #     #     plt.close()
+
+        #     for name, mat in [("bwt", bwt_mean), ("nbwt", nbwt_mean)]:
+        #         fig, ax = plt.subplots(figsize=(14, 10))          # a bit narrower than 16 × 10
+
+        #         hm = sns.heatmap(
+        #             mat,
+        #             ax=ax,
+        #             annot=True,                   # show the numbers
+        #             fmt=".2f",
+        #             cmap="coolwarm",
+        #             center=0,
+        #             vmin=-1,
+        #             vmax=0.1,
+        #             xticklabels=list(range(mat.shape[1])),   # 0, 1, 2 …
+        #             yticklabels=list(range(mat.shape[0])),
+        #             cbar_kws={
+        #                 "fraction": 0.035,        # width of the colour-bar (smaller = thinner)
+        #                 "pad": 0.02,              # space between heat-map and colour-bar
+        #             },
+        #         )
+
+        #         # Bigger tick labels
+        #         ax.set_xticklabels(ax.get_xticklabels(), fontsize=14)
+        #         ax.set_yticklabels(ax.get_yticklabels(), fontsize=14)
+
+        #         cbar = hm.collections[0].colorbar
+        #         cbar.ax.tick_params(labelsize=14)
+
+        #         # Bigger annotation numbers
+        #         for text in ax.texts:
+        #             text.set_fontsize(12)
+
+        #         # ax.set_title(f"{method} – {seq} – mean {name.upper()} over {len(R_list)} seeds",
+        #         #             fontsize=16, pad=12)
+        #         ax.set_xlabel("Task B", fontsize=14)
+        #         ax.set_ylabel("Task A", fontsize=14)
+
+        #         plt.tight_layout()
+        #         fig.savefig(save_dir / f"{name}_mean_{method}_annotated.png", dpi=300)
+        #         plt.close(fig)
+
+#────────────────────────────────────────────────────────────── #
+    # report numbers
+    print()
+    
+
 
 # ─────────────────────────── entry point ───────────────────────────
 if __name__ == "__main__":

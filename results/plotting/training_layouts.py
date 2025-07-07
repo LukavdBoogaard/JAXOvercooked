@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import List
 
 import numpy as np
+import json
 
 # Import utilities from the utils package
 try:
@@ -54,6 +55,24 @@ METHOD_COLORS = {
     'FT':      '#FFA600',  # brown
 }
 
+LAYOUT_COLORS = {
+    "easy_levels": '#1f77b4',
+    "medium_levels": "#FF320E",
+    "hard_levels": '#2ca02c',
+    'same_size_levels': '#1f77b4', 
+    'same_size_padded': "#FF320E",
+}
+
+LAYOUT_LABELS = {
+    "easy_levels":        "Easy levels",
+    "medium_levels":      "Medium levels",
+    "hard_levels":        "Hard levels",
+    "same_size_levels":   "Same size levels",
+    "same_size_padded":   "Same size padded levels",
+}
+
+
+
 
 def parse_args():
     """Parse command line arguments for the training plot script."""
@@ -61,7 +80,9 @@ def parse_args():
     p.add_argument('--data_root', required=True, help="Root directory for data")
     p.add_argument('--algo', required=True, help="Algorithm name")
     p.add_argument('--arch', required=True, help="Architecture name")
-    p.add_argument('--methods', nargs='+', required=True, help="Method names to plot")
+    p.add_argument('--methods', required=True, help="Method names to plot")
+    p.add_argument('--layouts', nargs='+', required=True, help="Layout categories to plot")
+    p.add_argument("--cl_setting", required=True, choices=["DI", "TI"], help="Task-incremental or Domain-incremental")
     p.add_argument('--strategy', required=True, help="Training strategy")
     p.add_argument('--seq_len', type=int, required=True, help="Sequence length")
     p.add_argument('--steps_per_task', type=float, default=1e7, help="Steps per task")
@@ -72,6 +93,76 @@ def parse_args():
     p.add_argument('--plot_name', default=None, help="Custom plot name")
     p.add_argument('--legend_anchor', type=float, default=0.87, help="Legend anchor position")
     return p.parse_args()
+
+
+def load_series(fp: Path) -> np.ndarray:
+    """
+    Load a time series from a file.
+    
+    Args:
+        fp: Path to the file (.json or .npz)
+        
+    Returns:
+        numpy array containing the time series data
+        
+    Raises:
+        ValueError: If the file has an unsupported extension
+    """
+    if fp.suffix == '.json':
+        return np.array(json.loads(fp.read_text()), dtype=float)
+    if fp.suffix == '.npz':
+        return np.load(fp)['data'].astype(float)
+    raise ValueError(f'Unsupported file suffix: {fp.suffix}')
+
+def collect_runs_on_layout(base, algo, method, strategy, seq_len, seeds, layouts, cl_setting):
+    """
+    Collect run data for training plots.
+    
+    Args:
+        base: Base directory for data
+        algo: Algorithm name
+        method: Method name
+        strat: Strategy name
+        seq_len: Sequence length
+        seeds: List of seeds to collect
+        layouts: easy, medium, hard, same_size, padded 
+        
+    Returns:
+        Tuple of (data_array, environment_names)
+    """
+    folder = base / algo / method / f"{strategy}_{seq_len}" / cl_setting / layouts
+    print(folder)
+    env_names, per_seed = [], []
+
+    for seed in seeds:
+        sd = folder / f"seed_{seed}"
+        if not sd.exists():
+            continue
+        files = sorted(sd.glob(f"training_reward.json"))
+        if not files:
+            continue
+
+        # first pass → env name order
+        if not env_names:
+            suffix = f"_reward"
+            env_names = [f.name.split('_', 1)[1].rsplit(suffix, 1)[0]
+                        for f in files]
+
+        arrs = [load_series(f) for f in files]
+        L = max(map(len, arrs))
+        padded = [np.pad(a, (0, L - len(a)), constant_values=np.nan)
+                 for a in arrs]
+
+        per_seed.append(np.nanmean(padded, axis=0))
+
+    if not per_seed:
+        raise RuntimeError(f'No data for method {method}')
+
+    N = max(map(len, per_seed))
+    data = np.vstack([np.pad(a, (0, N - len(a)), constant_values=np.nan)
+                     for a in per_seed])
+    return data, env_names
+
 
 
 def plot():
@@ -90,23 +181,24 @@ def plot():
     fig, ax = setup_figure(width=width, height=4)
 
     # Dictionary to store data for each method
-    method_data = {}
+    layouts_data = {}
 
     # Collect data for each method
-    for method in args.methods:
-        data, env_names = collect_runs(
-            data_root, args.algo, method, args.arch,
-            args.strategy, args.seq_len, args.seeds, args.metric
+    for layout in args.layouts:
+        data, env_names = collect_runs_on_layout(
+            data_root, args.algo, args.methods,
+            args.strategy, args.seq_len, args.seeds, layout, args.cl_setting
         )
-        method_data[method] = data
+        layouts_data[layout] = data
 
         # Calculate smoothed mean and confidence interval
         mu, ci = smooth_and_ci(data, args.sigma, args.confidence)
 
         # Plot the method curve
         x = np.linspace(0, total_steps, len(mu))
-        color = METHOD_COLORS.get(method)
-        ax.plot(x, mu, label=method, color=color)
+        color = LAYOUT_COLORS.get(layout)
+        label = LAYOUT_LABELS.get(layout, layout)
+        ax.plot(x, mu, label=label, color=color)
         ax.fill_between(x, mu - ci, mu + ci, color=color, alpha=0.1)
 
     # Add task boundaries
@@ -120,12 +212,12 @@ def plot():
     finalize_plot(
         ax,
         xlabel='Environment Steps',
-        ylabel=f'IPPO Score Normalized',
+        ylabel=f'Average Return',
         xlim=(0, total_steps),
         ylim=(0, None),
         legend_loc='lower center',
         legend_bbox_to_anchor=(0.5, args.legend_anchor),
-        legend_ncol=len(args.methods)
+        legend_ncol=len(args.layouts)
     )
 
     # Save the plot
