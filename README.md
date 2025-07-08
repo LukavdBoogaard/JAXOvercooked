@@ -1,5 +1,5 @@
-# JAXOvercooked
-Implementation of multiple Multi-Agent Reinforcement Learning (MARL) methods on the overcooked environment using JAX.
+# COOX: Benchmarking Continual Multi-Agent Reinforcement Learning in Overcooked with JAX
+Implementation of multiple Multi-Agent Reinforcement Learning (MARL) method and Continual Learning (CL) methods on the overcooked environment using JAX.
 
 ![IPPO gif](./overcooked_gif.gif)
 
@@ -36,7 +36,7 @@ pip install -r requirements.txt
 ## Running IPPO
 After installing, the IPPO implementation can be run from the base folder:
 ```
-python -m baselines.IPPO_original
+python -m baselines.IPPO_CL
 python -m baselines.IPPO_continual
 ```
 
