@@ -25,7 +25,7 @@ from results.download.common import cli, want
 # ---------------------------------------------------------------------------
 # CONSTANTS
 # ---------------------------------------------------------------------------
-EVAL_PREFIX = "Evaluation/evaluation_"
+EVAL_PREFIX = "Evaluation/"
 KEY_PATTERN = re.compile(rf"^{re.escape(EVAL_PREFIX)}(\d+)__(.+)$")
 TRAINING_KEY = "returned_episode_returns"
 TAG_ORDERING = ['shared_backbone', 'use_multihead', 'task_id']
@@ -103,7 +103,6 @@ def main() -> None:
         strategy = cfg.get("strategy")
         seq_len = cfg.get("seq_length")
         seed = cfg.get("seed", 0)
-        print('\n', seed, '\n')
         arch = "CNN" if cfg.get("use_cnn") else "MLP"
 
         # find eval keys as W&B actually logged them
@@ -113,14 +112,21 @@ def main() -> None:
             continue
 
         tags = cfg.get("tags", [])
-        tag_path = Path()
-        for tag_substr in TAG_ORDERING:
-            for tag in tags:
-                if tag_substr in tag:
-                    tag_path /= tag
+        run_tags = run.tags
+        # print(tags)
+        # Find type tag (TI or DI)
+        type_tag = next((tag for tag in run_tags if tag in ["DI", "TI"]), None)
+        # Find difficulty tag
+        difficulty_tag = next((tag for tag in run_tags if tag in ["easy_levels", "medium_levels", "hard_levels"]), None)
+
+        # tag_path = Path()
+        # if type_tag:
+        #     tag_path /= type_tag
+        # if difficulty_tag:
+        #     tag_path /= difficulty_tag
 
         out_base = (base_workspace / args.output / algo / cl_method /
-                    f"{strategy}_{seq_len}" / f"seed_{seed}")
+                    f"{strategy}_{seq_len}" / type_tag / difficulty_tag / f"seed_{seed}") 
 
         # iterate keys, skipping existing files unless overwrite
         for key in discover_eval_keys(run):

@@ -28,6 +28,7 @@ from results.download.common import cli, want
 EVAL_PREFIX = "Scaled_returns/evaluation_"
 KEY_PATTERN = re.compile(rf"^{re.escape(EVAL_PREFIX)}(\d+)__(.+)_scaled$")
 TRAINING_KEY = "Scaled_returns/returned_episode_returns_scaled"
+SPARSITY_KEY = "PackNet/sparsity_actor"
 TAG_ORDERING = ["same_size_padded", "same_size_levels"]
 
 # ---------------------------------------------------------------------------
@@ -41,6 +42,9 @@ def discover_eval_keys(run: Run) -> List[str]:
     # include training series, if logged
     if TRAINING_KEY in df.columns:
         keys.append(TRAINING_KEY)
+    # include sparsity series, if logged
+    if SPARSITY_KEY in df.columns:
+        keys.append(SPARSITY_KEY)
 
     # sort eval ones by idx, leave training last
     def idx_of(key: str) -> int:
@@ -98,6 +102,8 @@ def main() -> None:
             cl_method = 'MAS'
         elif cl_method is None:
             cl_method = "FT"
+        elif 'PackNet' in run.name:
+            cl_method = 'PackNet'
         # --- Temporary replacements because old runs are still using the old names --- #
 
         strategy = cfg.get("strategy")
@@ -119,13 +125,15 @@ def main() -> None:
                     tag_path /= tag
 
         out_base = (base_workspace / args.output / algo / cl_method /
-                    f"{strategy}_{seq_len}" / tag_path / f"seed_{seed}") 
+                    f"{strategy}_{seq_len}" / f"seed_{seed}") 
 
         # iterate keys, skipping existing files unless overwrite
         for key in discover_eval_keys(run):
             # choose filename
             if key == TRAINING_KEY:
                 filename = f"training_reward.{ext}"
+            elif key == SPARSITY_KEY:
+                filename = f"sparsity_actor.{ext}"
             else:
                 idx, name = KEY_PATTERN.match(key).groups()
                 filename = f"{idx}_{name}_reward.{ext}"
