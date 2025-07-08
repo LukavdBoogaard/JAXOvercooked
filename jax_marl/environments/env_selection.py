@@ -1,7 +1,7 @@
 import random
 from typing import List, Dict, Any, Sequence, Tuple
 
-from jax_marl.environments.overcooked_environment import hard_layouts, medium_layouts, easy_layouts, overcooked_layouts
+from jax_marl.environments.overcooked_environment import hard_layouts, medium_layouts, easy_layouts, same_size_easy_layouts, padded_layouts, overcooked_layouts
 from jax_marl.environments.overcooked_environment.env_generator import generate_random_layout
 
 
@@ -11,6 +11,8 @@ def _resolve_pool(names: Sequence[str] | None) -> List[str]:
         "hard_levels": list(hard_layouts),
         "medium_levels": list(medium_layouts),
         "easy_levels": list(easy_layouts),
+        "same_size_levels": list(same_size_easy_layouts), 
+        "same_size_padded_levels": list(padded_layouts)
     }
 
     if not names:  # None, [] or other falsy → all layouts

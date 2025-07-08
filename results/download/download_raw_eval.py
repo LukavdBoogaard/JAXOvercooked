@@ -25,11 +25,10 @@ from results.download.common import cli, want
 # ---------------------------------------------------------------------------
 # CONSTANTS
 # ---------------------------------------------------------------------------
-EVAL_PREFIX = "Scaled_returns/evaluation_"
-KEY_PATTERN = re.compile(rf"^{re.escape(EVAL_PREFIX)}(\d+)__(.+)_scaled$")
-TRAINING_KEY = "Scaled_returns/returned_episode_returns_scaled"
-SPARSITY_KEY = "PackNet/sparsity_actor"
-TAG_ORDERING = ["same_size_padded", "same_size_levels"]
+EVAL_PREFIX = "Evaluation/"
+KEY_PATTERN = re.compile(rf"^{re.escape(EVAL_PREFIX)}(\d+)__(.+)$")
+TRAINING_KEY = "returned_episode_returns"
+TAG_ORDERING = ['shared_backbone', 'use_multihead', 'task_id']
 
 # ---------------------------------------------------------------------------
 # HELPERS
@@ -42,9 +41,6 @@ def discover_eval_keys(run: Run) -> List[str]:
     # include training series, if logged
     if TRAINING_KEY in df.columns:
         keys.append(TRAINING_KEY)
-    # include sparsity series, if logged
-    if SPARSITY_KEY in df.columns:
-        keys.append(SPARSITY_KEY)
 
     # sort eval ones by idx, leave training last
     def idx_of(key: str) -> int:
@@ -102,8 +98,6 @@ def main() -> None:
             cl_method = 'MAS'
         elif cl_method is None:
             cl_method = "FT"
-        elif 'PackNet' in run.name:
-            cl_method = 'PackNet'
         # --- Temporary replacements because old runs are still using the old names --- #
 
         strategy = cfg.get("strategy")
@@ -118,22 +112,27 @@ def main() -> None:
             continue
 
         tags = cfg.get("tags", [])
-        tag_path = Path()
-        for tag_substr in TAG_ORDERING:
-            for tag in tags:
-                if tag_substr in tag:
-                    tag_path /= tag
+        run_tags = run.tags
+        # print(tags)
+        # Find type tag (TI or DI)
+        type_tag = next((tag for tag in run_tags if tag in ["DI", "TI"]), None)
+        # Find difficulty tag
+        difficulty_tag = next((tag for tag in run_tags if tag in ["easy_levels", "medium_levels", "hard_levels"]), None)
+
+        # tag_path = Path()
+        # if type_tag:
+        #     tag_path /= type_tag
+        # if difficulty_tag:
+        #     tag_path /= difficulty_tag
 
         out_base = (base_workspace / args.output / algo / cl_method /
-                    f"{strategy}_{seq_len}" / f"seed_{seed}") 
+                    f"{strategy}_{seq_len}" / type_tag / difficulty_tag / f"seed_{seed}") 
 
         # iterate keys, skipping existing files unless overwrite
         for key in discover_eval_keys(run):
             # choose filename
             if key == TRAINING_KEY:
                 filename = f"training_reward.{ext}"
-            elif key == SPARSITY_KEY:
-                filename = f"sparsity_actor.{ext}"
             else:
                 idx, name = KEY_PATTERN.match(key).groups()
                 filename = f"{idx}_{name}_reward.{ext}"

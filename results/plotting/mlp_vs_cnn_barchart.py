@@ -75,8 +75,10 @@ def ci95(vals: np.ndarray) -> float:
 def main():
     args = parse_args()
     root = Path(__file__).resolve().parent.parent
-    base = root / args.data_root / args.algo
+    base = root / args.data_root / args.algo 
     rows = []
+
+   
 
     for method in args.methods:
         for arch in ("MLP", "CNN"):
@@ -115,6 +117,8 @@ def main():
                color=palette[arch], label=arch, alpha=0.9)
 
     ax.set_xticks(x)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
     ax.set_xticklabels(args.methods)
     ax.set_ylabel(f"Normalized Score")
     ax.set_xlabel("CL Method")

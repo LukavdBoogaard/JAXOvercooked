@@ -35,7 +35,7 @@ plt.rcParams['axes.grid'] = False
 CRIT = {0.9: 1, 0.95: 1.96, 0.99: 2.576}
 METHOD_COLORS = {
     'EWC': '#12939A', 'MAS': '#FF6E54', 'AGEM': '#FFA600',
-    'L2': '#003F5C', 'PackNet': '#BC5090', 'ReDo': '#58508D', 'CBP': '#2F4B7C'
+    'L2': '#003F5C', 'PackNet': '#BC5090'
 }
 
 
@@ -43,7 +43,7 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('--data_root', required=True)
     p.add_argument('--algo', required=True)
-    p.add_argument('--arch', required=True)
+    # p.add_argument('--arch', required=True)
     p.add_argument('--methods', nargs='+', required=True)
     p.add_argument('--strategy', required=True)
     p.add_argument('--seq_len', type=int, required=True)
@@ -69,10 +69,10 @@ def load_series(fp: Path) -> np.ndarray:
     raise ValueError(f'Unsupported file suffix: {fp.suffix}')
 
 
-def collect_runs(base: Path, algo: str, method: str, arch: str, strat: str,
+def collect_runs(base: Path, algo: str, method: str,  strat: str,
                  seq_len: int, seeds: List[int], metric: str,
                  baselines: dict | None):
-    folder = base / algo / method / arch / f"{strat}_{seq_len}"
+    folder = base / algo / method / f"{strat}_{seq_len}"
     env_names, per_seed = [], []
 
     for seed in seeds:
@@ -128,11 +128,10 @@ def plot():
     fig, ax = plt.subplots(figsize=(width, 4))
 
     for method in args.methods:
-        data, env_names = collect_runs(data_root, args.algo, method, args.arch,
+        data, env_names = collect_runs(data_root, args.algo, method,
                                        args.strategy, args.seq_len,
                                        args.seeds, args.metric, baselines)
         print(data.shape, data)
-        exit(0)
         mu = gaussian_filter1d(np.nanmean(data, axis=0), sigma=args.sigma)
         sd = gaussian_filter1d(np.nanstd(data, axis=0), sigma=args.sigma)
         ci = CRIT[args.confidence] * sd / np.sqrt(data.shape[0])

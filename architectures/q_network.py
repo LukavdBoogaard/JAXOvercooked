@@ -7,7 +7,47 @@ import numpy as np
 from flax.linen.initializers import constant, orthogonal
 from typing import Sequence
 import distrax
-from architectures.cnn import CNN
+
+
+class CNN(nn.Module):
+    activation: str = "relu"
+    @nn.compact
+    def __call__(self, x):
+        if self.activation == "relu":
+            activation = nn.relu
+        else:
+            activation = nn.tanh
+        x = nn.Conv(
+            features=32,
+            kernel_size=(5, 5),
+            kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0),
+        )(x)
+        x = activation(x)
+        x = nn.Conv(
+            features=32,
+            kernel_size=(3, 3),
+            kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0),
+        )(x)
+        x = activation(x)
+        x = nn.Conv(
+            features=32,
+            kernel_size=(3, 3),
+            kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0),
+        )(x)
+        x = activation(x)
+        x = x.reshape((x.shape[0], -1))  # Flatten
+
+        x = nn.Dense(
+            features=64, 
+            kernel_init=orthogonal(np.sqrt(2)), 
+            bias_init=constant(0.0)
+        )(x)
+        x = activation(x)
+
+        return x
 
 class QNetwork(nn.Module):
     action_dim: int

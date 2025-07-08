@@ -1,20 +1,16 @@
 #!/bin/bash
 cd /home/luka/repo/JAXOvercooked
 
-models=(IPPO_CNN
-        IPPO_multihead_L2
-        IPPO_decoupled_MLP_Packnet
-        IPPO_decoupled_MLP
-        IPPO_shared_MLP_AGEM 
-        IPPO_shared_MLP_EWC 
-        IPPO_shared_MLP_MAS 
-        IPPO_MLP_CBP
-        IPPO_shared_MLP
-        vdn_cnn
-        )
+seeds=(0 1 2 3 4)
 
-for model in "${models[@]}"; do
-  echo "Running $model"
+for seed in "${seeds[@]}"; do
+  echo "Running $seed"
   # Run the model with the specified parameters
-   python -m baselines.${model} --seq_length=2 --anneal_lr --evaluation --seed=0 --group="test"
+   python -m baselines.vdn_cnn --seq_length=2  \
+                                --seed=$seed \
+                                --group="test vdn" \
+                                --tags $seed \
+                                --layouts "easy_levels" \
+                                --test_interval 0.05 \
+                                --num_envs 64 
 done

@@ -56,6 +56,12 @@ def agem_project(grads_ppo, grads_mem):
     }
     return grads_projected, stats
 
+def scale_by_batch_size(grads_mem, mem_bs, ppo_bs):
+    """Multiply every leaf so that the *average* per-sample gradient
+       of the memory batch has the same magnitude as that of PPO."""
+    factor = ppo_bs / mem_bs          # e.g. 2048 / 128 = 16
+    return jax.tree_util.tree_map(lambda g: g * factor, grads_mem)
+
 
 def sample_memory(agem_mem: AGEMMemory, sample_size: int, rng: jax.random.PRNGKey):
     idxs = jax.random.randint(rng, (sample_size,), minval=0, maxval=agem_mem.obs.shape[0])
@@ -68,7 +74,7 @@ def sample_memory(agem_mem: AGEMMemory, sample_size: int, rng: jax.random.PRNGKe
     return obs, actions, log_probs, advs, targets, vals
 
 
-def compute_memory_gradient(network, params,
+def compute_memory_gradient(train_state, params,
                             clip_eps, vf_coef, ent_coef,
                             mem_obs, mem_actions,
                             mem_advs, mem_log_probs,
@@ -76,7 +82,9 @@ def compute_memory_gradient(network, params,
     """Compute the same clipped PPO loss on the memory data."""
 
     def loss_fn(params):
-        pi, value = network.apply(params, mem_obs)  # shapes: [B]
+        # pi, value = network.apply(params, mem_obs)  # shapes: [B]
+        network_apply = train_state.apply_fn
+        pi, value = network_apply(params, mem_obs)
         log_prob = pi.log_prob(mem_actions)
 
         ratio = jnp.exp(log_prob - mem_log_probs)

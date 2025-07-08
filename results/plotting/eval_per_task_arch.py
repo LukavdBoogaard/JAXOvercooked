@@ -16,13 +16,13 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import re
 from typing import List
 
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
 from scipy.ndimage import gaussian_filter1d
-import re
 
 # plotting defaults ---------------------------------------------------
 sns.set_theme(style="whitegrid", context="notebook")
@@ -35,7 +35,8 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('--data_root', required=True)
     p.add_argument('--algo', required=True)
-    p.add_argument('--methods', nargs='+', required=True)
+    p.add_argument('--method', required=True)
+    p.add_argument('--arch', nargs='+', default=['easy_levels', 'medium_levels', 'hard_levels'])
     p.add_argument('--strategy', required=True)
     p.add_argument('--seq_len', type=int, required=True)
     p.add_argument('--steps_per_task', type=float, default=1e7)
@@ -55,8 +56,8 @@ def load_series(fp: Path) -> np.ndarray:
 
 
 def collect_env_curves(base: Path, algo: str, method: str, strat: str,
-                       seq_len: int, seeds: List[int] ):
-    folder = base / algo / method / f"{strat}_{seq_len}" 
+                       seq_len: int, seeds: List[int], arch: str):
+    folder = base / algo / method / f"{strat}_{seq_len}" / "TI" / arch
     env_names, per_env_seed = [], []
 
     # discover envs
@@ -69,7 +70,6 @@ def collect_env_curves(base: Path, algo: str, method: str, strat: str,
             (f for f in sd.glob("*_reward.*") if "training" not in f.name),
             key=lambda p: int(re.match(r"(\d+)_", p.name).group(1))
         )
-        print(files)
         if not files:
             continue
         suffix = "_reward"
@@ -100,9 +100,11 @@ def collect_env_curves(base: Path, algo: str, method: str, strat: str,
 
 
 def smooth_and_ci(data: np.ndarray, sigma: float, conf: float):
-    mean = gaussian_filter1d(np.nanmean(data, axis=0), sigma=1)
+    mean = gaussian_filter1d(np.nanmean(data, axis=0), sigma=sigma)
     sd = gaussian_filter1d(np.nanstd(data, axis=0), sigma=sigma)
-    ci = CRIT[conf] * sd / np.sqrt(data.shape[0])
+    n_eff = np.sum(~np.isnan(data), axis=0) 
+    ci = CRIT[conf] * sd / np.sqrt(n_eff)
+    # ci = CRIT[conf] * sd / np.sqrt(data.shape[0])
     return mean, ci
 
 
@@ -115,14 +117,14 @@ def plot():
     boundaries = [i * args.steps_per_task for i in range(args.seq_len + 1)]
     mids = [(boundaries[i] + boundaries[i + 1]) / 2 for i in range(args.seq_len)]
 
-    methods = args.methods
-    fig_h = 2.5 * len(methods) if len(methods) > 1 else 2.8
-    fig, axes = plt.subplots(len(methods), 1, sharex=False, sharey=True, figsize=(12, fig_h))
-    if len(methods) == 1: axes = [axes]
+    archs = args.arch
+    fig_h = 2.5 * len(archs) if len(archs) > 1 else 2.8
+    fig, axes = plt.subplots(len(archs), 1, sharex=False, sharey=True, figsize=(12, fig_h))
+    if len(archs) == 1: axes = [axes]
 
-    for m_idx, method in enumerate(methods):
+    for m_idx, arch in enumerate(archs):
         ax = axes[m_idx]
-        envs, curves = collect_env_curves(data_root, args.algo, method, args.strategy, args.seq_len, args.seeds)
+        envs, curves = collect_env_curves(data_root, args.algo, args.method, args.strategy, args.seq_len, args.seeds, arch)
 
         ax.set_xticks(boundaries)
         ax.ticklabel_format(style='scientific', axis='x', scilimits=(0, 0))
@@ -137,7 +139,7 @@ def plot():
         ax.set_xlim(0, total)
         ax.set_ylim(0, 1)
         ax.set_ylabel("Normalized Score")
-        ax.set_title(method, fontsize=13, fontweight="bold")
+        ax.set_title(arch, fontsize=11)
 
         twin = ax.twiny()
         twin.set_xlim(ax.get_xlim())
@@ -150,7 +152,7 @@ def plot():
 
     axes[-1].set_xlabel('Environment Steps')
     plt.tight_layout()
-    out = Path(__file__).resolve().parent.parent / 'ti_plots'
+    out = Path(__file__).resolve().parent.parent / 'plots'
     out.mkdir(exist_ok=True)
     name = args.plot_name or f"per_task_norm_reward"
     plt.savefig(out / f"{name}.png")

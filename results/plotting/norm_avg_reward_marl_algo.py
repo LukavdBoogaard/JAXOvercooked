@@ -33,18 +33,18 @@ plt.rcParams['axes.grid'] = False
 
 # CRIT = {0.9: 1.833, 0.95: 1.96, 0.99: 2.576}
 CRIT = {0.9: 1, 0.95: 1.96, 0.99: 2.576}
-METHOD_COLORS = {
-    'EWC': '#12939A', 'MAS': '#FF6E54', 'AGEM': '#FFA600',
-    'L2': '#003F5C', 'PackNet': '#BC5090', 'ReDo': '#58508D', 'CBP': '#2F4B7C'
+ALGO_COLORS = {
+    'CNN': '#12939A', 'MLP': '#FF6E54'
 }
+
 
 
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('--data_root', required=True)
     p.add_argument('--algo', required=True)
-    p.add_argument('--arch', required=True)
-    p.add_argument('--methods', nargs='+', required=True)
+    p.add_argument('--archs', nargs='+', required=True)
+    # p.add_argument('--methods', nargs='+', required=True)
     p.add_argument('--strategy', required=True)
     p.add_argument('--seq_len', type=int, required=True)
     p.add_argument('--steps_per_task', type=float, default=1e7)
@@ -69,10 +69,10 @@ def load_series(fp: Path) -> np.ndarray:
     raise ValueError(f'Unsupported file suffix: {fp.suffix}')
 
 
-def collect_runs(base: Path, algo: str, method: str, arch: str, strat: str,
+def collect_runs(base: Path, algo: str, arch: str, strat: str,
                  seq_len: int, seeds: List[int], metric: str,
                  baselines: dict | None):
-    folder = base / algo / method / arch / f"{strat}_{seq_len}"
+    folder = base / algo / arch / f"{strat}_{seq_len}"
     env_names, per_seed = [], []
 
     for seed in seeds:
@@ -107,7 +107,7 @@ def collect_runs(base: Path, algo: str, method: str, arch: str, strat: str,
         per_seed.append(np.nanmean(padded, axis=0))
 
     if not per_seed:
-        raise RuntimeError(f'No data for method {method}')
+        raise RuntimeError(f'No data for algo {algo}')
 
     N = max(map(len, per_seed))
     data = np.vstack([np.pad(a, (0, N - len(a)), constant_values=np.nan)
@@ -127,18 +127,17 @@ def plot():
     width = min(max(args.seq_len, 8), 14)
     fig, ax = plt.subplots(figsize=(width, 4))
 
-    for method in args.methods:
-        data, env_names = collect_runs(data_root, args.algo, method, args.arch,
+    for arch in args.archs:
+        data, env_names = collect_runs(data_root, args.algo, arch,
                                        args.strategy, args.seq_len,
                                        args.seeds, args.metric, baselines)
         print(data.shape, data)
-        exit(0)
         mu = gaussian_filter1d(np.nanmean(data, axis=0), sigma=args.sigma)
         sd = gaussian_filter1d(np.nanstd(data, axis=0), sigma=args.sigma)
         ci = CRIT[args.confidence] * sd / np.sqrt(data.shape[0])
         x = np.linspace(0, total_steps, len(mu))
-        color = METHOD_COLORS.get(method)
-        ax.plot(x, mu, label=method, color=color)
+        color = ALGO_COLORS.get(arch)
+        ax.plot(x, mu, label=arch, color=color)
         ax.fill_between(x, mu - ci, mu + ci, color=color, alpha=0.2)
 
     # vertical lines at task boundaries
@@ -158,12 +157,12 @@ def plot():
     secax.tick_params(axis='x', length=0)
 
     # labels & legend
-    y_label = 'Average Success' if args.metric == 'success' else 'Average Performance'
+    y_label = 'Average Success' if args.metric == 'success' else 'IPPO Score Normalized '
     ax.set_xlabel('Environment Steps')
     ax.set_ylabel(y_label)
     ax.set_xlim(0, total_steps)
     ax.set_ylim(0, None)
-    ax.legend(loc='lower center', bbox_to_anchor=(0.5, args.legend_anchor), ncol=len(args.methods))
+    ax.legend(loc='lower center', bbox_to_anchor=(0.5, args.legend_anchor), ncol=len(args.archs))
 
     plt.tight_layout()
     out = Path(__file__).resolve().parent.parent / 'plots'

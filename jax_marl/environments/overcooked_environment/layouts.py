@@ -301,6 +301,14 @@ X     W
 WWBWWWW
 """
 
+basic_kitchen_large_horizontal = """
+WOWWWWW
+W     W
+W  AA W
+W     B
+WPWWXWW
+"""
+
 basic_kitchen_small = """
 WWWW
 P  O
@@ -308,6 +316,13 @@ W  W
 WAAW
 X  B
 WWWW
+"""
+
+basic_kitchen_small_horizontal = """
+WOWWBW
+W  A W
+W  A W
+WPWWXW
 """
 
 shared_wall = """
@@ -318,6 +333,17 @@ WPOBXWWW
 W      W
 W A    W
 WWWWWWWW
+"""
+
+shared_wall_vertical = """
+WWWWWWW
+W  W  W
+W  W  W
+W  X  W
+WA B  W
+W  O AW
+W  P  W
+WWWWWWW
 """
 
 smallest_kitchen = """
@@ -335,6 +361,31 @@ B    W
 W  X W
 WWWWWW
 """
+
+easy_layout_horizontal = """
+WWWWWW
+WAA XW
+W    W
+WOPBWW
+"""
+
+mirrored_wings = """
+WWWWWWWW
+WOA   PW
+W  B   W
+WP X AOW
+WWWWWWWW
+"""
+
+central_station = """
+WWWWWWW
+W     W
+W  XB W
+W  PO W
+WA   AW
+WWWWWWW
+"""
+
 
 big_kitchen = """
 WWWWWWWWWW
@@ -470,6 +521,132 @@ W     A   W
 WWWWWWWWWWW
 """
 
+
+###############################################################################################################
+###############################################################################################################
+###############################################################################################################
+
+# We create several copies for the 'easy_layout' layout so that we can test the performance of the model
+# on very similar environments 
+
+easy_layout_2 = """
+WWWWWW
+W A  X
+W    W
+W A  W
+O    B
+WWPWWW
+"""
+
+easy_layout_3 = """
+WWWWWW
+WO   P
+W A  W
+W  A W
+X    B
+WWWWWW
+"""
+
+easy_layout_4 = """
+WWWWWW
+WB  AW
+W    W
+W A  O
+W    P
+WWWXWW
+"""
+
+easy_layout_5 = """
+WWOXWW
+W A  W
+W    W
+W A  W
+W    W
+WBPWWW
+"""
+
+# And now we create the same ones but with extra padding: 
+
+easy_layout_padded = """
+WWWWWWWWWW
+WWWWWWWWWW
+WWWWWWWWWW
+WWO  A WWW
+WWP  A WWW
+WWB    WWW
+WWW  X WWW
+WWWWWWWWWW
+WWWWWWWWWW
+WWWWWWWWWW
+"""
+
+easy_layout_2_padded = """
+WWWWWWWWWW
+WWWWWWWWWW
+WWWWWWWWWW
+WWW A  XWW
+WWW    WWW
+WWW A  WWW
+WWO    BWW
+WWWWPWWWWW
+WWWWWWWWWW
+WWWWWWWWWW
+"""
+
+easy_layout_3_padded = """
+WWWWWWWWWW
+WWWWWWWWWW
+WWWWWWWWWW
+WWWO   PWW
+WWW A  WWW
+WWW  A WWW
+WWX    BWW
+WWWWWWWWWW
+WWWWWWWWWW
+WWWWWWWWWW
+"""
+
+easy_layout_4_padded = """
+WWWWWWWWWW
+WWWWWWWWWW
+WWWWWWWWWW
+WWWB  AWWW
+WWW    WWW
+WWW A  OWW
+WWW    PWW
+WWWWWXWWWW
+WWWWWWWWWW
+WWWWWWWWWW
+"""
+
+easy_layout_5_padded = """
+WWWWWWWWWW
+WWWWWWWWWW
+WWWWOXWWWW
+WWW A  WWW
+WWW    WWW
+WWW A  WWW
+WWW    WWW
+WWWBPWWWWW
+WWWWWWWWWW
+WWWWWWWWWW
+"""
+
+
+presentation_layout = """
+WWOWWWWPWWWW
+W          W
+W  A       W
+WWWWWWWBW  W
+W   A      W
+X          W
+WWWWWWWWWWWW
+"""
+
+###############################################################################################################
+###############################################################################################################
+###############################################################################################################
+
 # Hard layouts
 hard_layouts = {
     "forced_coord": FrozenDict(forced_coord),
@@ -499,12 +676,38 @@ easy_layouts = {
     "shared_wall": layout_grid_to_dict(shared_wall),
     "smallest_kitchen": layout_grid_to_dict(smallest_kitchen),
     "easy_layout": layout_grid_to_dict(easy_layout),
+    "easy_layout_2": layout_grid_to_dict(easy_layout_2),
+    "easy_layout_3": layout_grid_to_dict(easy_layout_3),
+    "easy_layout_4": layout_grid_to_dict(easy_layout_4),
+    "easy_layout_5": layout_grid_to_dict(easy_layout_5),
     "no_cooperation": layout_grid_to_dict(no_cooperation),
     "vertical_corridors": layout_grid_to_dict(vertical_corridors),
     "horizontal_corridors": layout_grid_to_dict(horizontal_corridors),
     # "big_kitchen" : layout_grid_to_dict(big_kitchen),  The env is too big to be considered easy
     "resource_sharing": layout_grid_to_dict(resource_sharing),
     "basic_kitchen_large": layout_grid_to_dict(basic_kitchen_large),
+    "basic_kitchen_large_horizontal": layout_grid_to_dict(basic_kitchen_large_horizontal),
+    "basic_kitchen_small_horizontal": layout_grid_to_dict(basic_kitchen_small_horizontal),
+    "mirrored_wings": layout_grid_to_dict(mirrored_wings),
+    "central_station": layout_grid_to_dict(central_station),
+    "shared_wall_vertical": layout_grid_to_dict(shared_wall_vertical),
+}
+
+same_size_easy_layouts = { 
+    "easy_layout": layout_grid_to_dict(easy_layout),
+    "easy_layout_2": layout_grid_to_dict(easy_layout_2),
+    "easy_layout_3": layout_grid_to_dict(easy_layout_3),
+    "easy_layout_4": layout_grid_to_dict(easy_layout_4),
+    "easy_layout_5": layout_grid_to_dict(easy_layout_5),
+    "presentation_layout": layout_grid_to_dict(presentation_layout),
+}   
+
+padded_layouts = {
+    "easy_layout_padded": layout_grid_to_dict(easy_layout_padded),
+    "easy_layout_padded_2": layout_grid_to_dict(easy_layout_2_padded),
+    "easy_layout_padded_3": layout_grid_to_dict(easy_layout_3_padded),
+    "easy_layout_padded_4": layout_grid_to_dict(easy_layout_4_padded),
+    "easy_layout_padded_5": layout_grid_to_dict(easy_layout_5_padded),
 }
 
 # All layouts
@@ -512,4 +715,5 @@ overcooked_layouts = {
     **hard_layouts,
     **medium_layouts,
     **easy_layouts,
+    **padded_layouts
 }
