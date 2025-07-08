@@ -1,7 +1,7 @@
 # JAXOvercooked
 Implementation of multiple Multi-Agent Reinforcement Learning (MARL) methods on the overcooked environment using JAX.
 
-![IPPO gif](./overcooked_cramped_room_new.gif)
+![IPPO gif](./overcooked_gif.gif)
 
 
 ## Install
